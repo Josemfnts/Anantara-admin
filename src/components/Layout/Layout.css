@@ -1,0 +1,94 @@
+/* ─── Wrapper principal ──────────────────────────────────────────── */
+.admin-layout {
+  display: flex;
+  min-height: 100vh;
+  width: 100%;
+}
+
+/* ─── Main (derecha del sidebar) ─────────────────────────────────── */
+.admin-main {
+  margin-left: var(--sidebar-w);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .admin-main { margin-left: 0; }
+}
+
+/* ─── Topbar ─────────────────────────────────────────────────────── */
+.admin-topbar {
+  height: var(--topbar-h);
+  background: var(--white);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 24px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.admin-hamburger {
+  display: none;
+  background: none; border: none;
+  font-size: 20px; color: var(--text-mid);
+  padding: 4px;
+}
+@media (max-width: 900px) {
+  .admin-hamburger { display: flex; }
+}
+
+.admin-topbar-title {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--text);
+  flex: 1;
+}
+
+.admin-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Notificación badge en topbar */
+.notif-bell {
+  position: relative;
+  background: none; border: none;
+  font-size: 20px;
+  padding: 4px;
+  color: var(--text-muted);
+  transition: color .15s;
+}
+.notif-bell:hover { color: var(--green); }
+.notif-badge {
+  position: absolute;
+  top: 0; right: 0;
+  width: 16px; height: 16px;
+  background: var(--red);
+  color: #fff;
+  font-size: 9px; font-weight: 800;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  animation: blink .8s ease-in-out infinite alternate;
+}
+@keyframes blink {
+  from { opacity: .7; }
+  to   { opacity: 1; transform: scale(1.1); }
+}
+
+/* ─── Content ────────────────────────────────────────────────────── */
+.admin-content {
+  flex: 1;
+  padding: 24px;
+  max-width: 1400px;
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  .admin-content { padding: 16px; }
+}

@@ -1,40 +1,31 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
-import Login from './pages/auth/Login'
 
-// Placeholder temporal — reemplazamos en la siguiente fase
-function Placeholder({ title }) {
-  const { signOut, user } = useAuth()
-  return (
-    <div style={{ padding: 24, fontFamily: 'sans-serif' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <h2 style={{ color: '#1d5c2e' }}>Panel · {title}</h2>
-        <button
-          onClick={signOut}
-          style={{ padding: '8px 16px', background: '#f0f5f0', border: 'none', borderRadius: 8, cursor: 'pointer', color: '#666' }}
-        >
-          Cerrar sesión
-        </button>
-      </div>
-      <p style={{ color: '#888' }}>Conectado como {user?.email}</p>
-      <p style={{ color: '#aaa', marginTop: 8, fontSize: 14 }}>Esta sección está en construcción.</p>
-    </div>
-  )
-}
+import Login        from './pages/auth/Login'
+import Dashboard    from './pages/dashboard/Dashboard'
+import Agenda       from './pages/agenda/Agenda'
+import Horarios     from './pages/agenda/Horarios'
+import Bloqueados   from './pages/agenda/Bloqueados'
+import Espera       from './pages/agenda/Espera'
+import SlotsManager from './pages/slots/SlotsManager'
+import Pacientes    from './pages/pacientes/Pacientes'
 
-// Ruta privada: solo admins
+// Ruta solo para admins
 function PrivateRoute({ children }) {
   const { user, isAdmin, loading } = useAuth()
   if (loading) return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f0f5f0' }}>
-      <p style={{ color: '#2d7a3f', fontFamily: 'sans-serif' }}>Cargando...</p>
+    <div style={{
+      minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: '#f0f5f0', fontFamily: 'sans-serif',
+    }}>
+      <p style={{ color: '#2d7a3f' }}>Cargando panel…</p>
     </div>
   )
   if (!user || !isAdmin) return <Navigate to="/login" replace />
   return children
 }
 
-// Ruta pública: si ya es admin manda al dashboard
+// Ruta pública: si ya es admin, redirige al panel
 function PublicRoute({ children }) {
   const { user, isAdmin, loading } = useAuth()
   if (loading) return null
@@ -45,27 +36,33 @@ function PublicRoute({ children }) {
 function AppRoutes() {
   return (
     <Routes>
+      {/* Auth */}
       <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
 
       {/* Dashboard */}
-      <Route path="/" element={<PrivateRoute><Placeholder title="Dashboard" /></PrivateRoute>} />
+      <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
 
-      {/* Osteopatía */}
-      <Route path="/agenda"                 element={<PrivateRoute><Placeholder title="Agenda" /></PrivateRoute>} />
-      <Route path="/agenda/horarios"        element={<PrivateRoute><Placeholder title="Horarios" /></PrivateRoute>} />
-      <Route path="/agenda/dias-bloqueados" element={<PrivateRoute><Placeholder title="Días bloqueados" /></PrivateRoute>} />
-      <Route path="/agenda/lista-espera"    element={<PrivateRoute><Placeholder title="Lista de espera" /></PrivateRoute>} />
+      {/* Osteopatía — Agenda */}
+      <Route path="/agenda"
+        element={<PrivateRoute><Agenda /></PrivateRoute>} />
+      <Route path="/agenda/horarios"
+        element={<PrivateRoute><Horarios /></PrivateRoute>} />
+      <Route path="/agenda/bloqueados"
+        element={<PrivateRoute><Bloqueados /></PrivateRoute>} />
+      <Route path="/agenda/espera"
+        element={<PrivateRoute><Espera /></PrivateRoute>} />
 
-      {/* Yoga */}
-      <Route path="/yoga"    element={<PrivateRoute><Placeholder title="Yoga · Slots" /></PrivateRoute>} />
+      {/* Clases */}
+      <Route path="/yoga"
+        element={<PrivateRoute><SlotsManager section="yoga" /></PrivateRoute>} />
+      <Route path="/belleza"
+        element={<PrivateRoute><SlotsManager section="belleza" /></PrivateRoute>} />
 
-      {/* Belleza */}
-      <Route path="/belleza" element={<PrivateRoute><Placeholder title="Belleza · Slots" /></PrivateRoute>} />
+      {/* Centro */}
+      <Route path="/pacientes"
+        element={<PrivateRoute><Pacientes /></PrivateRoute>} />
 
-      {/* General */}
-      <Route path="/servicios" element={<PrivateRoute><Placeholder title="Servicios" /></PrivateRoute>} />
-      <Route path="/pacientes" element={<PrivateRoute><Placeholder title="Pacientes" /></PrivateRoute>} />
-
+      {/* Fallback */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
