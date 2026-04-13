@@ -1,79 +1,1546 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { AuthProvider, useAuth } from './context/AuthContext'
+import { createClient } from '@supabase/supabase-js'
+import { useState, useEffect, useCallback } from 'react'
 
-import Login        from './pages/auth/Login'
-import Dashboard    from './pages/dashboard/Dashboard'
-import Agenda       from './pages/agenda/Agenda'
-import Horarios     from './pages/agenda/Horarios'
-import Bloqueados   from './pages/agenda/Bloqueados'
-import Espera       from './pages/agenda/Espera'
-import SlotsManager from './pages/slots/SlotsManager'
-import Pacientes    from './pages/pacientes/Pacientes'
+// ─── Supabase ────────────────────────────────────────────────────────────────
+const sb = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY,
+  { auth: { storageKey: 'anantara-admin' } }
+)
 
-// Ruta solo para admins
-function PrivateRoute({ children }) {
-  const { user, isAdmin, loading } = useAuth()
-  if (loading) return (
-    <div style={{
-      minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: '#f0f5f0', fontFamily: 'sans-serif',
-    }}>
-      <p style={{ color: '#2d7a3f' }}>Cargando panel…</p>
+// ─── CSS ─────────────────────────────────────────────────────────────────────
+const CSS = `
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0 }
+  :root {
+    --green-dark:   #1d5c2e;
+    --green:        #2d7a3f;
+    --green-light:  #3a9150;
+    --green-subtle: #e8f4eb;
+    --gold:         #C8A535;
+    --gold-light:   #f5e8a3;
+    --purple:       #7a52b0;
+    --purple-light: #ede8f7;
+    --bg:           #f0f5f0;
+    --white:        #ffffff;
+    --text:         #1a2e1d;
+    --text2:        #3d5c42;
+    --text-muted:   #7a9c80;
+    --border:       #d4e6d8;
+    --radius:       10px;
+    --radius-lg:    14px;
+    --shadow:       0 2px 12px rgba(29,92,46,.10);
+    --shadow-lg:    0 6px 24px rgba(29,92,46,.15);
+    --sidebar-w:    220px;
+  }
+  body { font-family:'Inter',system-ui,sans-serif; background:var(--bg); color:var(--text); font-size:14px; line-height:1.5 }
+  button,input,select,textarea { font-family:inherit }
+
+  /* ── Shell ── */
+  .app-shell { display:flex; min-height:100vh }
+  .main-wrap  { margin-left:var(--sidebar-w); flex:1; display:flex; flex-direction:column; min-height:100vh }
+  @media(max-width:768px){ .main-wrap { margin-left:0 } }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    width:var(--sidebar-w); background:var(--green-dark); color:#fff;
+    display:flex; flex-direction:column; position:fixed; top:0; left:0; bottom:0;
+    z-index:100; transition:transform .25s;
+  }
+  @media(max-width:768px){ .sidebar{ transform:translateX(-100%) } .sidebar.open{ transform:translateX(0) } }
+  .sidebar-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:99 }
+  @media(max-width:768px){ .sidebar-overlay.open{ display:block } }
+  .sidebar-logo { padding:20px 18px 14px; font-size:17px; font-weight:800; letter-spacing:-.3px; border-bottom:1px solid rgba(255,255,255,.1) }
+  .sidebar-logo span { color:var(--gold) }
+  .sidebar-nav { flex:1; padding:8px 10px; overflow-y:auto }
+  .sidebar-group { margin-bottom:16px }
+  .sidebar-group-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:rgba(255,255,255,.4); padding:0 8px 5px }
+  .nav-btn {
+    display:flex; align-items:center; gap:9px; padding:9px 10px; border-radius:8px;
+    cursor:pointer; font-size:13px; font-weight:500; color:rgba(255,255,255,.75);
+    transition:all .15s; margin-bottom:2px; border:none; background:none; width:100%; text-align:left;
+  }
+  .nav-btn:hover { background:rgba(255,255,255,.1); color:#fff }
+  .nav-btn.active { background:var(--green-light); color:#fff; font-weight:700 }
+  .nav-btn .ico { font-size:15px; flex-shrink:0; width:20px; text-align:center }
+  .sidebar-footer { padding:14px 10px; border-top:1px solid rgba(255,255,255,.1) }
+
+  /* ── Topbar ── */
+  .topbar {
+    height:56px; background:var(--white); border-bottom:1px solid var(--border);
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 24px; position:sticky; top:0; z-index:50;
+  }
+  .topbar-left { display:flex; align-items:center; gap:12px }
+  .topbar-title { font-size:18px; font-weight:800; color:var(--text) }
+  .hamburger { display:none; background:none; border:none; font-size:20px; cursor:pointer; color:var(--text); padding:4px }
+  @media(max-width:768px){ .hamburger{ display:flex } }
+  .notif-btn { position:relative; background:none; border:none; font-size:20px; cursor:pointer; padding:4px }
+  .notif-badge { position:absolute; top:-2px; right:-2px; background:#dc2626; color:#fff; font-size:9px; font-weight:800; border-radius:99px; min-width:16px; height:16px; display:flex; align-items:center; justify-content:center; padding:0 3px }
+
+  /* ── Page ── */
+  .page-content { padding:24px; flex:1 }
+  @media(max-width:600px){ .page-content{ padding:16px } }
+
+  /* ── Cards ── */
+  .card { background:var(--white); border-radius:var(--radius-lg); border:1px solid var(--border); box-shadow:var(--shadow) }
+  .section-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px }
+  .section-title { font-size:15px; font-weight:800; color:var(--text) }
+
+  /* ── Buttons ── */
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:8px 16px; border-radius:8px; font-size:13px; font-weight:700; cursor:pointer; border:none; transition:all .15s }
+  .btn:disabled { opacity:.5; cursor:default }
+  .btn-primary   { background:var(--green); color:#fff }
+  .btn-primary:hover:not(:disabled)   { background:var(--green-dark) }
+  .btn-secondary { background:var(--green-subtle); color:var(--green); border:1.5px solid var(--border) }
+  .btn-secondary:hover { background:var(--border) }
+  .btn-ghost     { background:transparent; color:var(--text); border:1.5px solid var(--border) }
+  .btn-ghost:hover { background:var(--bg) }
+  .btn-danger    { background:#fee2e2; color:#dc2626; border:1.5px solid #fecaca }
+  .btn-danger:hover { background:#fecaca }
+
+  /* ── Badges ── */
+  .badge        { display:inline-flex; align-items:center; padding:2px 8px; border-radius:99px; font-size:11px; font-weight:700 }
+  .badge-green  { background:var(--green-subtle); color:var(--green-dark) }
+  .badge-gold   { background:var(--gold-light);   color:#7a5c10 }
+  .badge-red    { background:#fee2e2; color:#dc2626 }
+  .badge-gray   { background:#f1f5f9; color:#64748b }
+  .badge-purple { background:var(--purple-light); color:var(--purple) }
+
+  /* ── Fields ── */
+  .field { margin-bottom:14px }
+  .field-label { font-size:12px; font-weight:700; color:var(--text2); margin-bottom:5px; display:block }
+  .field-input {
+    width:100%; padding:9px 12px; border:1.5px solid var(--border); border-radius:8px;
+    font-size:13px; color:var(--text); background:var(--white); outline:none; transition:border-color .15s;
+  }
+  .field-input:focus { border-color:var(--green) }
+
+  /* ── Modal ── */
+  .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.5); backdrop-filter:blur(3px); display:flex; align-items:center; justify-content:center; z-index:200; padding:20px }
+  .modal { background:var(--white); border-radius:var(--radius-lg); padding:24px; width:100%; max-width:440px; max-height:90vh; overflow-y:auto; box-shadow:var(--shadow-lg) }
+  .modal-title { font-size:17px; font-weight:800; margin-bottom:18px; color:var(--text) }
+
+  /* ── Toast ── */
+  .toast { position:fixed; bottom:24px; right:24px; background:var(--green-dark); color:#fff; padding:12px 20px; border-radius:10px; font-size:13px; font-weight:600; z-index:300; box-shadow:var(--shadow-lg); animation:slideUp .25s ease; max-width:320px }
+  .toast.error { background:#dc2626 }
+  @keyframes slideUp { from{ transform:translateY(20px); opacity:0 } to{ transform:translateY(0); opacity:1 } }
+
+  /* ── Skeleton ── */
+  .skel { background:linear-gradient(90deg,#e8f0ea 25%,#f0f5f0 50%,#e8f0ea 75%); background-size:200% 100%; animation:shimmer 1.4s infinite; border-radius:8px }
+  @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+
+  /* ── Empty ── */
+  .empty-state { text-align:center; padding:40px 20px; color:var(--text-muted) }
+  .empty-state-icon  { font-size:36px; margin-bottom:10px }
+  .empty-state-title { font-size:15px; font-weight:700; color:var(--text2); margin-bottom:4px }
+  .empty-state-sub   { font-size:13px }
+
+  /* ── Stats ── */
+  .stats-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:24px }
+  @media(max-width:700px){ .stats-grid{ grid-template-columns:1fr 1fr } }
+  .stat-card  { padding:20px }
+  .stat-label { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text-muted); margin-bottom:4px }
+  .stat-value { font-size:28px; font-weight:900; color:var(--green-dark); margin-bottom:2px }
+  .stat-sub   { font-size:11px; color:var(--text-muted) }
+
+  /* ── Agenda ── */
+  .agenda-scroll { overflow-x:auto }
+  .agenda-grid {
+    display:grid; border:1px solid var(--border); border-radius:var(--radius-lg); overflow:hidden;
+    background:var(--white); min-width:600px; width:100%;
+  }
+  .ag-header { background:var(--green-subtle); font-size:12px; font-weight:700; text-align:center; padding:10px 4px; border-right:1px solid var(--border); border-bottom:2px solid var(--border); color:var(--text2) }
+  .ag-header.today { background:var(--green); color:#fff }
+  .ag-header.time-col { background:var(--bg) }
+  .ag-time { font-size:10px; color:var(--text-muted); text-align:right; padding:0 6px; border-right:1px solid var(--border); display:flex; align-items:flex-start; padding-top:2px; height:60px }
+  .ag-col  { position:relative; border-right:1px solid var(--border); height:60px }
+  .ag-col:last-child { border-right:none }
+  .ag-hour-line { position:absolute; left:0; right:0; top:0; border-top:1px dashed var(--border); pointer-events:none }
+  .appt-block { position:absolute; left:2px; right:2px; border-radius:6px; padding:3px 5px; overflow:hidden; cursor:pointer; font-size:10px; font-weight:700; z-index:3 }
+
+  /* ── Horarios ── */
+  .hours-row { display:grid; grid-template-columns:110px 44px 1fr; gap:10px; align-items:center; padding:8px 0; border-bottom:1px solid var(--border) }
+  .hours-row:last-child { border-bottom:none }
+  .hours-times { display:flex; gap:6px; align-items:center; font-size:12px; color:var(--text-muted) }
+
+  /* ── Mini calendar ── */
+  .mini-cal-nav { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px }
+  .mini-cal-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:3px }
+  .cal-day-label { font-size:10px; font-weight:700; text-align:center; color:var(--text-muted); padding:4px 0 }
+  .cal-day { aspect-ratio:1; display:flex; align-items:center; justify-content:center; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; transition:all .15s; border:1.5px solid transparent }
+  .cal-day:hover    { background:var(--green-subtle) }
+  .cal-day.blocked  { background:var(--green); color:#fff; border-color:var(--green) }
+  .cal-day.is-today { border-color:var(--green) }
+  .cal-day.other-month { opacity:.3; cursor:default }
+
+  /* ── Pacientes ── */
+  .pac-layout { display:grid; grid-template-columns:340px 1fr; gap:20px; align-items:start }
+  @media(max-width:900px){ .pac-layout{ grid-template-columns:1fr } }
+  .pac-search-bar { display:flex; align-items:center; gap:10px; background:var(--white); border:1.5px solid var(--border); border-radius:var(--radius-lg); padding:10px 14px; margin-bottom:8px; transition:border-color .15s }
+  .pac-search-bar:focus-within { border-color:var(--green) }
+  .pac-search-input { flex:1; border:none; outline:none; font-size:14px; color:var(--text); background:transparent }
+  .pac-row { display:flex; align-items:center; gap:12px; padding:12px 16px; cursor:pointer; border-bottom:1px solid var(--border); transition:background .1s }
+  .pac-row:last-child { border-bottom:none }
+  .pac-row:hover  { background:var(--green-subtle) }
+  .pac-row.active { background:var(--green-subtle); border-right:3px solid var(--green) }
+  .pac-avatar { width:36px; height:36px; border-radius:50%; background:linear-gradient(135deg,var(--green-dark),var(--green-light)); color:#fff; font-size:12px; font-weight:800; display:flex; align-items:center; justify-content:center; flex-shrink:0 }
+
+  /* ── Slots ── */
+  .slot-card { display:flex; align-items:center; gap:12px; padding:12px 16px; border-bottom:1px solid var(--border) }
+  .slot-card:last-child { border-bottom:none }
+  .slot-info { flex:1; min-width:0 }
+  .slot-title { font-size:13px; font-weight:700; color:var(--text) }
+  .slot-meta  { font-size:11px; color:var(--text-muted); margin-top:2px }
+  .slot-bar   { height:4px; background:var(--border); border-radius:2px; overflow:hidden; margin-top:6px }
+  .slot-bar-fill { height:100%; background:var(--green); border-radius:2px; transition:width .3s }
+
+  /* ── Espera ── */
+  .wait-card { display:flex; align-items:center; gap:12px; padding:14px 16px; border-bottom:1px solid var(--border) }
+  .wait-card:last-child { border-bottom:none }
+
+  /* ── Toggle ── */
+  .toggle { width:38px; height:22px; border-radius:11px; border:none; cursor:pointer; position:relative; flex-shrink:0; transition:background .2s }
+  .toggle-knob { position:absolute; top:3px; left:3px; width:16px; height:16px; background:#fff; border-radius:50%; transition:transform .2s; box-shadow:0 1px 3px rgba(0,0,0,.2) }
+  .toggle.on { background:var(--green) }
+  .toggle.off { background:#cbd5e1 }
+  .toggle.on .toggle-knob { transform:translateX(16px) }
+
+  /* ── Login ── */
+  .login-wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; background:linear-gradient(135deg,var(--green-dark),var(--green)); padding:20px }
+  .login-card { background:var(--white); border-radius:20px; padding:36px 32px; width:100%; max-width:380px; box-shadow:var(--shadow-lg) }
+  .login-logo  { text-align:center; margin-bottom:24px }
+  .login-logo h1 { font-size:22px; font-weight:900; color:var(--green-dark) }
+  .login-logo span { color:var(--gold) }
+  .login-subtitle { font-size:13px; color:var(--text-muted); text-align:center; margin-bottom:24px }
+  .login-err { background:#fee2e2; border:1px solid #fecaca; color:#dc2626; font-size:12px; padding:10px 14px; border-radius:8px; margin-bottom:14px }
+
+  /* ── Dashboard ── */
+  .dash-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px }
+  @media(max-width:800px){ .dash-grid{ grid-template-columns:1fr } }
+  .dash-appt-row { display:flex; align-items:center; gap:10px; padding:10px 16px; border-bottom:1px solid var(--border) }
+  .dash-appt-row:last-child { border-bottom:none }
+
+  /* ── Tab pills ── */
+  .tab-pills { display:flex; background:var(--bg); border-radius:10px; padding:3px; border:1.5px solid var(--border); margin-bottom:16px }
+  .tab-pill { padding:7px 16px; font-size:12px; font-weight:700; border:none; border-radius:7px; cursor:pointer; transition:all .15s; background:transparent; color:var(--text-muted) }
+  .tab-pill.active { background:var(--green); color:#fff }
+`
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+const MONTHS   = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic']
+const DAYS_ES  = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb']
+const DAYS_FULL= ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
+
+function fD(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`
+}
+function fDT(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} · ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+function fTime(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+function pad(n) { return String(n).padStart(2, '0') }
+function toK(date) {
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}`
+}
+function getWeekDays(refDate) {
+  const d = new Date(refDate)
+  const day = d.getDay()
+  const mon = new Date(d); mon.setDate(d.getDate() - (day === 0 ? 6 : day - 1))
+  return Array.from({ length: 7 }, (_, i) => {
+    const x = new Date(mon); x.setDate(mon.getDate() + i); return x
+  })
+}
+function gMD(year, month) {
+  const first = new Date(year, month, 1)
+  const last  = new Date(year, month+1, 0)
+  const startDow = (first.getDay() + 6) % 7
+  const days = []
+  for (let i = 0; i < startDow; i++) {
+    const d = new Date(year, month, 1 - (startDow - i)); days.push({ date: d, other: true })
+  }
+  for (let d = 1; d <= last.getDate(); d++) days.push({ date: new Date(year, month, d), other: false })
+  const rem = 7 - (days.length % 7); if (rem < 7) for (let i = 1; i <= rem; i++) days.push({ date: new Date(year, month+1, i), other: true })
+  return days
+}
+
+const STATUS_TXT = { confirmed:'Confirmada', pending:'Pendiente', cancelled:'Cancelada', completed:'Completada' }
+const STATUS_CLS = { confirmed:'badge-green', pending:'badge-gold', cancelled:'badge-red', completed:'badge-gray' }
+
+// ─── Atom Components ─────────────────────────────────────────────────────────
+function Btn({ variant='primary', children, style, ...props }) {
+  return <button className={`btn btn-${variant}`} style={style} {...props}>{children}</button>
+}
+
+function Inp({ label, style, ...props }) {
+  return (
+    <div className="field" style={style}>
+      {label && <label className="field-label">{label}</label>}
+      <input className="field-input" {...props} />
     </div>
   )
-  if (!user || !isAdmin) return <Navigate to="/login" replace />
-  return children
 }
 
-// Ruta pública: si ya es admin, redirige al panel
-function PublicRoute({ children }) {
-  const { user, isAdmin, loading } = useAuth()
-  if (loading) return null
-  if (user && isAdmin) return <Navigate to="/" replace />
-  return children
-}
-
-function AppRoutes() {
+function Sel({ label, options, style, ...props }) {
   return (
-    <Routes>
-      {/* Auth */}
-      <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
-
-      {/* Dashboard */}
-      <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
-
-      {/* Osteopatía — Agenda */}
-      <Route path="/agenda"
-        element={<PrivateRoute><Agenda /></PrivateRoute>} />
-      <Route path="/agenda/horarios"
-        element={<PrivateRoute><Horarios /></PrivateRoute>} />
-      <Route path="/agenda/bloqueados"
-        element={<PrivateRoute><Bloqueados /></PrivateRoute>} />
-      <Route path="/agenda/espera"
-        element={<PrivateRoute><Espera /></PrivateRoute>} />
-
-      {/* Clases */}
-      <Route path="/yoga"
-        element={<PrivateRoute><SlotsManager section="yoga" /></PrivateRoute>} />
-      <Route path="/belleza"
-        element={<PrivateRoute><SlotsManager section="belleza" /></PrivateRoute>} />
-
-      {/* Centro */}
-      <Route path="/pacientes"
-        element={<PrivateRoute><Pacientes /></PrivateRoute>} />
-
-      {/* Fallback */}
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <div className="field" style={style}>
+      {label && <label className="field-label">{label}</label>}
+      <select className="field-input" {...props}>
+        {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+      </select>
+    </div>
   )
+}
+
+function Modal({ title, onClose, children }) {
+  useEffect(() => {
+    const h = e => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [onClose])
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        {title && <div className="modal-title">{title}</div>}
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function Sp() {
+  return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:40 }}>
+    <div style={{ width:32, height:32, border:'3px solid var(--border)', borderTopColor:'var(--green)', borderRadius:'50%', animation:'spin .7s linear infinite' }} />
+    <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+  </div>
+}
+
+function Em({ icon='📋', title, sub }) {
+  return <div className="empty-state">
+    <div className="empty-state-icon">{icon}</div>
+    {title && <div className="empty-state-title">{title}</div>}
+    {sub   && <div className="empty-state-sub">{sub}</div>}
+  </div>
+}
+
+function Bg({ variant='gray', children }) {
+  return <span className={`badge badge-${variant}`}>{children}</span>
+}
+
+function Toggle({ on, onChange }) {
+  return (
+    <button className={`toggle ${on ? 'on' : 'off'}`} onClick={() => onChange(!on)}>
+      <span className="toggle-knob" />
+    </button>
+  )
+}
+
+function Toast({ msg, type = 'ok', onDone }) {
+  useEffect(() => { const t = setTimeout(onDone, 3000); return () => clearTimeout(t) }, [onDone])
+  return <div className={`toast${type === 'error' ? ' error' : ''}`}>{msg}</div>
+}
+
+// ─── useToast hook ─────────────────────────────────────────────────────────
+function useToast() {
+  const [toast, setToast] = useState(null)
+  const show = useCallback((msg, type = 'ok') => setToast({ msg, type, key: Date.now() }), [])
+  const el = toast
+    ? <Toast key={toast.key} msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />
+    : null
+  return [show, el]
+}
+
+// ─── Login Page ───────────────────────────────────────────────────────────────
+function LoginPage({ onLogin }) {
+  const [email, setEmail] = useState('')
+  const [pass,  setPass]  = useState('')
+  const [err,   setErr]   = useState('')
+  const [busy,  setBusy]  = useState(false)
+
+  const submit = async e => {
+    e.preventDefault()
+    setBusy(true); setErr('')
+    const { data, error } = await sb.auth.signInWithPassword({ email, password: pass })
+    if (error) { setErr(error.message); setBusy(false); return }
+    const role = data.user?.user_metadata?.role
+    if (role !== 'admin') {
+      await sb.auth.signOut()
+      setErr('No tienes acceso al panel de administración.')
+      setBusy(false); return
+    }
+    onLogin(data.user)
+  }
+
+  return (
+    <div className="login-wrap">
+      <div className="login-card">
+        <div className="login-logo">
+          <h1>Centro <span>Anantara</span></h1>
+        </div>
+        <p className="login-subtitle">Panel de administración</p>
+        {err && <div className="login-err">{err}</div>}
+        <form onSubmit={submit}>
+          <Inp label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="admin@anantara.com" />
+          <Inp label="Contraseña" type="password" value={pass} onChange={e => setPass(e.target.value)} required placeholder="••••••••" />
+          <Btn style={{ width:'100%', padding:'11px', marginTop:4 }} disabled={busy}>
+            {busy ? 'Accediendo…' : 'Entrar al panel'}
+          </Btn>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+// ─── Sidebar ─────────────────────────────────────────────────────────────────
+const NAV_GROUPS = [
+  { label: 'Principal', items: [
+    { id:'dashboard', icon:'📊', label:'Dashboard' },
+  ]},
+  { label: 'Osteopatía', items: [
+    { id:'agenda',    icon:'📅', label:'Agenda' },
+    { id:'horarios',  icon:'🕐', label:'Horarios' },
+    { id:'bloqueados',icon:'🚫', label:'Días bloqueados' },
+    { id:'espera',    icon:'⏳', label:'Lista de espera' },
+  ]},
+  { label: 'Clases', items: [
+    { id:'yoga',    icon:'🧘', label:'Yoga' },
+    { id:'belleza', icon:'✨', label:'Belleza' },
+  ]},
+  { label: 'Centro', items: [
+    { id:'pacientes', icon:'👥', label:'Pacientes' },
+  ]},
+]
+
+function Sidebar({ page, onNav, open, onClose, onLogout }) {
+  return (
+    <>
+      <div className={`sidebar-overlay ${open ? 'open' : ''}`} onClick={onClose} />
+      <nav className={`sidebar ${open ? 'open' : ''}`}>
+        <div className="sidebar-logo">Centro <span>Anantara</span></div>
+        <div className="sidebar-nav">
+          {NAV_GROUPS.map(g => (
+            <div key={g.label} className="sidebar-group">
+              <div className="sidebar-group-label">{g.label}</div>
+              {g.items.map(it => (
+                <button
+                  key={it.id}
+                  className={`nav-btn ${page === it.id ? 'active' : ''}`}
+                  onClick={() => { onNav(it.id); onClose() }}
+                >
+                  <span className="ico">{it.icon}</span>
+                  {it.label}
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+        <div className="sidebar-footer">
+          <button className="nav-btn" onClick={onLogout}>
+            <span className="ico">🚪</span>Cerrar sesión
+          </button>
+        </div>
+      </nav>
+    </>
+  )
+}
+
+// ─── Layout ───────────────────────────────────────────────────────────────────
+function Layout({ title, children, sidebarOpen, onToggleSidebar, notifCount, page, onNav, onLogout }) {
+  return (
+    <div className="app-shell">
+      <Sidebar page={page} onNav={onNav} open={sidebarOpen} onClose={() => onToggleSidebar(false)} onLogout={onLogout} />
+      <div className="main-wrap">
+        <header className="topbar">
+          <div className="topbar-left">
+            <button className="hamburger" onClick={() => onToggleSidebar(true)}>☰</button>
+            <span className="topbar-title">{title}</span>
+          </div>
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <button className="notif-btn" title="Notificaciones">
+              🔔
+              {notifCount > 0 && <span className="notif-badge">{notifCount}</span>}
+            </button>
+          </div>
+        </header>
+        <main className="page-content">{children}</main>
+      </div>
+    </div>
+  )
+}
+
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+function Dashboard() {
+  const [stats,   setStats]   = useState({ today: 0, week: 0, patients: 0 })
+  const [todayA,  setTodayA]  = useState([])
+  const [slots,   setSlots]   = useState([])
+  const [loading, setLoading] = useState(true)
+  const [notifs,  setNotifs]  = useState([])
+  const [showNotif, setShowNotif] = useState(false)
+  const [showToast, setShowToast] = useState(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const today = toK(new Date())
+    const weekEnd = toK(new Date(Date.now() + 6*86400000))
+
+    const [apToday, apWeek, pats, upSlots] = await Promise.all([
+      sb.from('appointments').select('id,start_time,status,patients(full_name),services(name),professionals(full_name)', { count:'exact' })
+        .gte('start_time', today + 'T00:00:00').lte('start_time', today + 'T23:59:59')
+        .neq('status','cancelled').order('start_time').limit(10),
+      sb.from('appointments').select('id', { count:'exact' })
+        .gte('start_time', today + 'T00:00:00').lte('start_time', weekEnd + 'T23:59:59')
+        .neq('status','cancelled'),
+      sb.from('patients').select('id', { count:'exact' }),
+      sb.from('availability_slots').select('id,start_time,capacity,services(name),bookings(id)')
+        .gte('start_time', today + 'T00:00:00').order('start_time').limit(6),
+    ])
+
+    setStats({
+      today: apToday.count || 0,
+      week:  apWeek.count  || 0,
+      patients: pats.count || 0,
+    })
+    setTodayA(apToday.data || [])
+    setSlots((upSlots.data || []).map(s => ({
+      ...s,
+      booked: s.bookings?.length || 0,
+    })))
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  // Realtime
+  useEffect(() => {
+    const ch = sb.channel('admin-notifs')
+      .on('postgres_changes', { event:'INSERT', schema:'public', table:'appointments' }, p => {
+        setNotifs(n => [{ id:Date.now(), msg:`Nueva cita: ${p.new.start_time?.slice(0,10)}`, ts:Date.now() }, ...n.slice(0,19)])
+        setShowToast({ msg:'Nueva cita registrada', type:'ok' })
+        load()
+      })
+      .on('postgres_changes', { event:'INSERT', schema:'public', table:'bookings' }, p => {
+        setNotifs(n => [{ id:Date.now(), msg:'Nueva reserva de clase', ts:Date.now() }, ...n.slice(0,19)])
+        setShowToast({ msg:'Nueva reserva de clase', type:'ok' })
+        load()
+      })
+      .subscribe()
+    return () => sb.removeChannel(ch)
+  }, [load])
+
+  if (loading) return <Sp />
+
+  return (
+    <>
+      {showToast && (
+        <Toast msg={showToast.msg} type={showToast.type} onDone={() => setShowToast(null)} />
+      )}
+
+      {/* Stats */}
+      <div className="stats-grid">
+        <div className="card stat-card">
+          <div className="stat-label">Citas hoy</div>
+          <div className="stat-value">{stats.today}</div>
+          <div className="stat-sub">osteopatía</div>
+        </div>
+        <div className="card stat-card">
+          <div className="stat-label">Esta semana</div>
+          <div className="stat-value">{stats.week}</div>
+          <div className="stat-sub">próximos 7 días</div>
+        </div>
+        <div className="card stat-card">
+          <div className="stat-label">Pacientes</div>
+          <div className="stat-value">{stats.patients}</div>
+          <div className="stat-sub">registrados</div>
+        </div>
+      </div>
+
+      <div className="dash-grid">
+        {/* Citas de hoy */}
+        <div>
+          <div className="section-header">
+            <span className="section-title">Citas de hoy</span>
+          </div>
+          <div className="card" style={{ overflow:'hidden' }}>
+            {todayA.length === 0
+              ? <Em icon="📅" title="Sin citas hoy" sub="No hay citas programadas para hoy" />
+              : todayA.map(a => (
+                <div key={a.id} className="dash-appt-row">
+                  <span style={{ fontSize:12, fontWeight:700, color:'var(--green)', minWidth:44 }}>
+                    {fTime(a.start_time)}
+                  </span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:13, fontWeight:700, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                      {a.patients?.full_name || 'Sin nombre'}
+                    </div>
+                    <div style={{ fontSize:11, color:'var(--text-muted)' }}>
+                      {a.services?.name} {a.professionals?.full_name ? `· ${a.professionals.full_name}` : ''}
+                    </div>
+                  </div>
+                  <Bg variant={STATUS_CLS[a.status]?.replace('badge-','') || 'gray'}>{STATUS_TXT[a.status] || a.status}</Bg>
+                </div>
+              ))
+            }
+          </div>
+        </div>
+
+        {/* Próximas clases */}
+        <div>
+          <div className="section-header">
+            <span className="section-title">Próximas clases</span>
+          </div>
+          <div className="card" style={{ overflow:'hidden' }}>
+            {slots.length === 0
+              ? <Em icon="🧘" title="Sin clases próximas" />
+              : slots.map(s => {
+                const pct = s.capacity > 0 ? Math.round(s.booked/s.capacity*100) : 0
+                return (
+                  <div key={s.id} className="slot-card">
+                    <div className="slot-info">
+                      <div className="slot-title">{s.services?.name || 'Clase'}</div>
+                      <div className="slot-meta">{fDT(s.start_time)} · {s.booked}/{s.capacity} plazas</div>
+                      <div className="slot-bar"><div className="slot-bar-fill" style={{ width:`${pct}%` }} /></div>
+                    </div>
+                    <Bg variant={pct >= 100 ? 'red' : pct >= 80 ? 'gold' : 'green'}>{pct}%</Bg>
+                  </div>
+                )
+              })
+            }
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
+// ─── Agenda ───────────────────────────────────────────────────────────────────
+const HOUR_START = 8
+const HOUR_END   = 20
+const SLOT_H     = 60   // px per hour
+const TOTAL_H    = (HOUR_END - HOUR_START) * SLOT_H
+
+function timeToY(t) {
+  if (!t) return 0
+  const [h, m] = t.split(':').map(Number)
+  return (h - HOUR_START + m / 60) * SLOT_H
+}
+function durToH(mins) { return (mins / 60) * SLOT_H }
+
+function Agenda() {
+  const [weekRef,    setWeekRef]    = useState(new Date())
+  const [appointments, setAppts]   = useState([])
+  const [profs,      setProfs]     = useState([])
+  const [services,   setServices]  = useState([])
+  const [loading,    setLoading]   = useState(true)
+  const [modal,      setModal]     = useState(null)   // null | 'create' | appt object
+  const [patSearch,  setPatSearch] = useState('')
+  const [patResults, setPatResults]= useState([])
+  const [selPat,     setSelPat]    = useState(null)
+  const [form,       setForm]      = useState({ prof_id:'', svc_id:'', date:'', time:'', notes:'' })
+  const [showToast, setShowToast] = useState(null)
+
+  const days = getWeekDays(weekRef)
+  const weekStr = `${fD(days[0])} – ${fD(days[6])}`
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const from = toK(days[0]) + 'T00:00:00'
+    const to   = toK(days[6]) + 'T23:59:59'
+    const [appts, profsR] = await Promise.all([
+      sb.from('appointments')
+        .select('id,start_time,end_time,status,professional_id,patients(full_name),services(name,duration),professionals(full_name)')
+        .gte('start_time', from).lte('start_time', to)
+        .neq('status','cancelled'),
+      sb.from('professionals').select('id,full_name').eq('active',true).order('full_name'),
+    ])
+    setAppts(appts.data || [])
+    setProfs(profsR.data || [])
+    setLoading(false)
+  }, [weekRef])  // eslint-disable-line
+
+  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    sb.from('services').select('id,name,duration').eq('active',true).order('name')
+      .then(({ data }) => setServices(data || []))
+  }, [])
+
+  useEffect(() => {
+    if (!patSearch.trim()) { setPatResults([]); return }
+    const t = setTimeout(async () => {
+      const { data } = await sb.from('patients')
+        .select('id,full_name,phone')
+        .or(`full_name.ilike.%${patSearch}%,phone.ilike.%${patSearch}%`)
+        .limit(6)
+      setPatResults(data || [])
+    }, 250)
+    return () => clearTimeout(t)
+  }, [patSearch])
+
+  const cancelAppt = async (id) => {
+    await sb.from('appointments').update({ status:'cancelled' }).eq('id', id)
+    setModal(null)
+    setShowToast({ msg:'Cita cancelada', type:'ok' })
+    load()
+  }
+
+  const createAppt = async () => {
+    if (!selPat || !form.prof_id || !form.svc_id || !form.date || !form.time) return
+    const svc = services.find(s => s.id === form.svc_id)
+    const dur = svc?.duration || 60
+    const startDT = `${form.date}T${form.time}:00`
+    const endDate = new Date(startDT); endDate.setMinutes(endDate.getMinutes() + dur)
+    const endDT = endDate.toISOString()
+    const { error } = await sb.from('appointments').insert({
+      patient_id: selPat.id,
+      professional_id: form.prof_id,
+      service_id: form.svc_id,
+      start_time: startDT,
+      end_time: endDT,
+      notes: form.notes || null,
+      status: 'confirmed',
+    })
+    if (error) { setShowToast({ msg: error.message, type:'error' }); return }
+    setModal(null); setSelPat(null); setPatSearch('')
+    setForm({ prof_id:'', svc_id:'', date:'', time:'', notes:'' })
+    setShowToast({ msg:'Cita creada', type:'ok' })
+    load()
+  }
+
+  const hours = Array.from({ length: HOUR_END - HOUR_START }, (_, i) => HOUR_START + i)
+
+  const apptColor = (status) => {
+    if (status === 'confirmed') return { bg:'#d1fae5', border:'#10b981', text:'#065f46' }
+    if (status === 'completed') return { bg:'#e0e7ff', border:'#6366f1', text:'#3730a3' }
+    return { bg:'#f1f5f9', border:'#94a3b8', text:'#64748b' }
+  }
+
+  const dayAppts = (date, profId) => {
+    const dk = toK(date)
+    return appointments.filter(a =>
+      a.start_time?.startsWith(dk) &&
+      (profId ? a.professional_id === profId : true)
+    )
+  }
+
+  const today = toK(new Date())
+
+  // Show calendar per professional or merged
+  const cols = profs.length > 0 ? profs : [{ id: null, full_name: 'Agenda' }]
+
+  return (
+    <>
+      {showToast && <Toast msg={showToast.msg} type={showToast.type} onDone={() => setShowToast(null)} />}
+
+      <div className="section-header">
+        <span className="section-title">{weekStr}</span>
+        <div style={{ display:'flex', gap:8 }}>
+          <Btn variant="ghost" style={{ padding:'6px 12px' }} onClick={() => setWeekRef(new Date(weekRef.getTime() - 7*86400000))}>← Semana anterior</Btn>
+          <Btn variant="ghost" style={{ padding:'6px 12px' }} onClick={() => setWeekRef(new Date())}>Hoy</Btn>
+          <Btn variant="ghost" style={{ padding:'6px 12px' }} onClick={() => setWeekRef(new Date(weekRef.getTime() + 7*86400000))}>Semana siguiente →</Btn>
+          <Btn style={{ padding:'6px 14px' }} onClick={() => setModal('create')}>+ Cita</Btn>
+        </div>
+      </div>
+
+      {loading ? <Sp /> : (
+        <div className="agenda-scroll">
+          <div className="agenda-grid" style={{ '--day-count': days.length + 1 }}>
+            {/* Header row */}
+            <div className="ag-header time-col" style={{ gridColumn:1, gridRow:1 }}></div>
+            {days.map((d, i) => {
+              const dk = toK(d)
+              return (
+                <div key={i} className={`ag-header ${dk === today ? 'today' : ''}`}
+                  style={{ gridColumn: i+2, gridRow:1 }}>
+                  <div>{DAYS_ES[d.getDay()]}</div>
+                  <div style={{ fontSize:16, fontWeight:900 }}>{d.getDate()}</div>
+                </div>
+              )
+            })}
+
+            {/* Hour rows */}
+            {hours.map((h, hi) => (
+              <>
+                <div key={`t-${h}`} className="ag-time" style={{ gridColumn:1, gridRow: hi+2 }}>
+                  {pad(h)}:00
+                </div>
+                {days.map((d, di) => {
+                  const da = dayAppts(d, cols[0]?.id !== null ? null : null)
+                  return (
+                    <div key={`c-${h}-${di}`} className="ag-col" style={{ gridColumn: di+2, gridRow: hi+2 }}>
+                      {hi === 0 && da.map(a => {
+                        const t = a.start_time?.slice(11,16) || '08:00'
+                        const et = a.end_time?.slice(11,16)
+                        const dur = et ? (new Date('2000-01-01T'+et) - new Date('2000-01-01T'+t))/60000 : 60
+                        const y = timeToY(t) - hi*SLOT_H
+                        const h2 = Math.max(durToH(dur) - 2, 18)
+                        const c = apptColor(a.status)
+                        return (
+                          <div key={a.id} className="appt-block" onClick={() => setModal(a)}
+                            style={{
+                              top: y, height: h2,
+                              background: c.bg, borderLeft:`3px solid ${c.border}`, color: c.text,
+                            }}>
+                            <div style={{ fontWeight:700, fontSize:10, overflow:'hidden', whiteSpace:'nowrap', textOverflow:'ellipsis' }}>
+                              {t} {a.patients?.full_name || ''}
+                            </div>
+                            <div style={{ fontSize:9, opacity:.8, overflow:'hidden', whiteSpace:'nowrap', textOverflow:'ellipsis' }}>
+                              {a.services?.name}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
+                })}
+              </>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Create modal */}
+      {modal === 'create' && (
+        <Modal title="Nueva cita" onClose={() => setModal(null)}>
+          <div style={{ position:'relative', marginBottom:14 }}>
+            <label className="field-label">Paciente</label>
+            <input
+              className="field-input"
+              placeholder="Buscar por nombre o teléfono…"
+              value={selPat ? selPat.full_name : patSearch}
+              onChange={e => { setPatSearch(e.target.value); setSelPat(null) }}
+            />
+            {patResults.length > 0 && !selPat && (
+              <div style={{ position:'absolute', top:'100%', left:0, right:0, background:'var(--white)', border:'1px solid var(--border)', borderRadius:8, zIndex:10, boxShadow:'var(--shadow)' }}>
+                {patResults.map(p => (
+                  <div key={p.id} style={{ padding:'10px 14px', cursor:'pointer', borderBottom:'1px solid var(--border)', fontSize:13 }}
+                    onClick={() => { setSelPat(p); setPatSearch(''); setPatResults([]) }}>
+                    <strong>{p.full_name}</strong> <span style={{ color:'var(--text-muted)' }}>{p.phone}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <Sel label="Profesional" value={form.prof_id} onChange={e => setForm(f => ({...f, prof_id:e.target.value}))}
+            options={[['','Seleccionar…'], ...profs.map(p => [p.id, p.full_name])]} />
+          <Sel label="Servicio" value={form.svc_id} onChange={e => setForm(f => ({...f, svc_id:e.target.value}))}
+            options={[['','Seleccionar…'], ...services.map(s => [s.id, s.name])]} />
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+            <Inp label="Fecha" type="date" value={form.date} onChange={e => setForm(f => ({...f, date:e.target.value}))} />
+            <Inp label="Hora" type="time" value={form.time} onChange={e => setForm(f => ({...f, time:e.target.value}))} />
+          </div>
+          <Inp label="Notas (opcional)" value={form.notes} onChange={e => setForm(f => ({...f, notes:e.target.value}))} />
+          <div style={{ display:'flex', gap:10, marginTop:4 }}>
+            <Btn variant="ghost" onClick={() => setModal(null)} style={{ flex:1 }}>Cancelar</Btn>
+            <Btn onClick={createAppt} disabled={!selPat || !form.prof_id || !form.svc_id || !form.date || !form.time} style={{ flex:1 }}>Guardar cita</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {/* Detail modal */}
+      {modal && modal !== 'create' && (
+        <Modal title="Detalle de cita" onClose={() => setModal(null)}>
+          <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+            <div>
+              <div style={{ fontSize:11, color:'var(--text-muted)', fontWeight:700 }}>PACIENTE</div>
+              <div style={{ fontSize:15, fontWeight:700 }}>{modal.patients?.full_name || '—'}</div>
+            </div>
+            <div>
+              <div style={{ fontSize:11, color:'var(--text-muted)', fontWeight:700 }}>SERVICIO</div>
+              <div style={{ fontSize:14 }}>{modal.services?.name || '—'}</div>
+            </div>
+            <div>
+              <div style={{ fontSize:11, color:'var(--text-muted)', fontWeight:700 }}>PROFESIONAL</div>
+              <div style={{ fontSize:14 }}>{modal.professionals?.full_name || '—'}</div>
+            </div>
+            <div>
+              <div style={{ fontSize:11, color:'var(--text-muted)', fontWeight:700 }}>FECHA Y HORA</div>
+              <div style={{ fontSize:14 }}>{fDT(modal.start_time)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize:11, color:'var(--text-muted)', fontWeight:700 }}>ESTADO</div>
+              <Bg variant={STATUS_CLS[modal.status]?.replace('badge-','') || 'gray'}>{STATUS_TXT[modal.status] || modal.status}</Bg>
+            </div>
+            {modal.notes && <div>
+              <div style={{ fontSize:11, color:'var(--text-muted)', fontWeight:700 }}>NOTAS</div>
+              <div style={{ fontSize:13 }}>{modal.notes}</div>
+            </div>}
+          </div>
+          <div style={{ display:'flex', gap:10, marginTop:20 }}>
+            <Btn variant="ghost" onClick={() => setModal(null)} style={{ flex:1 }}>Cerrar</Btn>
+            {modal.status !== 'cancelled' && (
+              <Btn variant="danger" onClick={() => cancelAppt(modal.id)} style={{ flex:1 }}>Cancelar cita</Btn>
+            )}
+          </div>
+        </Modal>
+      )}
+    </>
+  )
+}
+
+// ─── Horarios ─────────────────────────────────────────────────────────────────
+function Horarios() {
+  const [profs,    setProfs]    = useState([])
+  const [selProf,  setSelProf]  = useState(null)
+  const [rows,     setRows]     = useState([])
+  const [saving,   setSaving]   = useState(false)
+  const [showToast, setShowToast] = useState(null)
+
+  const WORK_DAYS = [1,2,3,4,5,6]
+  const DAY_NAMES = ['','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
+
+  useEffect(() => {
+    sb.from('professionals').select('id,full_name').eq('active',true).order('full_name')
+      .then(({ data }) => { setProfs(data || []); if (data?.length) setSelProf(data[0]) })
+  }, [])
+
+  useEffect(() => {
+    if (!selProf) return
+    sb.from('working_hours').select('*').eq('professional_id', selProf.id)
+      .then(({ data }) => {
+        setRows(WORK_DAYS.map(d => {
+          const ex = data?.find(r => r.day_of_week === d)
+          return ex
+            ? { day_of_week:d, active:ex.active, start_time:ex.start_time?.slice(0,5)||'09:00', end_time:ex.end_time?.slice(0,5)||'18:00' }
+            : { day_of_week:d, active:true, start_time:'09:00', end_time:'18:00' }
+        })
+      )
+    })
+  }, [selProf])
+
+  const save = async () => {
+    setSaving(true)
+    for (const row of rows) {
+      await sb.from('working_hours').upsert({
+        professional_id: selProf.id,
+        day_of_week: row.day_of_week,
+        active: row.active,
+        start_time: row.start_time,
+        end_time: row.end_time,
+      }, { onConflict:'professional_id,day_of_week' })
+    }
+    setSaving(false)
+    setShowToast({ msg:'Horarios guardados', type:'ok' })
+  }
+
+  const upd = (idx, key, val) => setRows(rs => rs.map((r,i) => i===idx ? {...r,[key]:val} : r))
+
+  return (
+    <>
+      {showToast && <Toast msg={showToast.msg} type={showToast.type} onDone={() => setShowToast(null)} />}
+
+      <div className="section-header">
+        <span className="section-title">Horarios de trabajo</span>
+        <Btn onClick={save} disabled={saving}>{saving ? 'Guardando…' : 'Guardar cambios'}</Btn>
+      </div>
+
+      {profs.length > 1 && (
+        <div className="tab-pills" style={{ marginBottom:20 }}>
+          {profs.map(p => (
+            <button key={p.id} className={`tab-pill ${selProf?.id===p.id?'active':''}`} onClick={() => setSelProf(p)}>
+              {p.full_name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="card" style={{ padding:'4px 20px 16px', overflow:'hidden' }}>
+        <div style={{ display:'grid', gridTemplateColumns:'120px 44px 1fr', gap:10, padding:'10px 0', borderBottom:'1.5px solid var(--border)', fontWeight:700, fontSize:11, color:'var(--text-muted)', textTransform:'uppercase' }}>
+          <span>Día</span><span>Activo</span><span>Horario</span>
+        </div>
+        {rows.map((row, i) => (
+          <div key={row.day_of_week} className="hours-row">
+            <span style={{ fontSize:13, fontWeight:700, color: row.active ? 'var(--text)' : 'var(--text-muted)' }}>
+              {DAY_NAMES[row.day_of_week]}
+            </span>
+            <Toggle on={row.active} onChange={v => upd(i,'active',v)} />
+            {row.active ? (
+              <div className="hours-times">
+                <input type="time" className="field-input" style={{ width:100, padding:'6px 8px' }}
+                  value={row.start_time} onChange={e => upd(i,'start_time',e.target.value)} />
+                <span>–</span>
+                <input type="time" className="field-input" style={{ width:100, padding:'6px 8px' }}
+                  value={row.end_time} onChange={e => upd(i,'end_time',e.target.value)} />
+              </div>
+            ) : (
+              <span style={{ fontSize:12, color:'var(--text-muted)' }}>Día libre</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </>
+  )
+}
+
+// ─── Bloqueados ───────────────────────────────────────────────────────────────
+function Bloqueados() {
+  const [calYear,  setCalYear]  = useState(new Date().getFullYear())
+  const [calMonth, setCalMonth] = useState(new Date().getMonth())
+  const [blocked,  setBlocked]  = useState([])
+  const [profs,    setProfs]    = useState([])
+  const [selProf,  setSelProf]  = useState(null)
+  const [showToast, setShowToast] = useState(null)
+
+  const todayK = toK(new Date())
+
+  useEffect(() => {
+    sb.from('professionals').select('id,full_name').eq('active',true).order('full_name')
+      .then(({ data }) => { setProfs(data||[]); if(data?.length) setSelProf(data[0]) })
+  }, [])
+
+  useEffect(() => {
+    if (!selProf) return
+    const from = `${calYear}-${pad(calMonth+1)}-01`
+    const to   = `${calYear}-${pad(calMonth+1)}-31`
+    sb.from('blocked_days').select('blocked_date')
+      .eq('professional_id', selProf.id)
+      .gte('blocked_date', from).lte('blocked_date', to)
+      .then(({ data }) => setBlocked((data||[]).map(r => r.blocked_date)))
+  }, [selProf, calYear, calMonth])
+
+  const toggle = async (dateK) => {
+    if (!selProf) return
+    if (blocked.includes(dateK)) {
+      await sb.from('blocked_days').delete().eq('professional_id', selProf.id).eq('blocked_date', dateK)
+      setBlocked(b => b.filter(d => d !== dateK))
+      setShowToast({ msg:'Día desbloqueado', type:'ok' })
+    } else {
+      const { error } = await sb.from('blocked_days').insert({ professional_id: selProf.id, blocked_date: dateK })
+      if (!error) { setBlocked(b => [...b, dateK]); setShowToast({ msg:'Día bloqueado', type:'ok' }) }
+    }
+  }
+
+  const days = gMD(calYear, calMonth)
+  const monthName = new Date(calYear, calMonth, 1).toLocaleString('es-ES', { month:'long', year:'numeric' })
+
+  return (
+    <>
+      {showToast && <Toast msg={showToast.msg} type={showToast.type} onDone={() => setShowToast(null)} />}
+
+      <div className="section-header">
+        <span className="section-title">Días bloqueados</span>
+      </div>
+
+      {profs.length > 1 && (
+        <div className="tab-pills">
+          {profs.map(p => (
+            <button key={p.id} className={`tab-pill ${selProf?.id===p.id?'active':''}`} onClick={() => setSelProf(p)}>
+              {p.full_name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="card" style={{ padding:20, maxWidth:440 }}>
+        <div className="mini-cal-nav">
+          <Btn variant="ghost" style={{ padding:'4px 10px' }} onClick={() => {
+            if (calMonth === 0) { setCalYear(y => y-1); setCalMonth(11) } else setCalMonth(m => m-1)
+          }}>←</Btn>
+          <span style={{ fontWeight:800, fontSize:15, textTransform:'capitalize' }}>{monthName}</span>
+          <Btn variant="ghost" style={{ padding:'4px 10px' }} onClick={() => {
+            if (calMonth === 11) { setCalYear(y => y+1); setCalMonth(0) } else setCalMonth(m => m+1)
+          }}>→</Btn>
+        </div>
+
+        <div className="mini-cal-grid">
+          {['L','M','X','J','V','S','D'].map(d => (
+            <div key={d} className="cal-day-label">{d}</div>
+          ))}
+          {days.map(({ date, other }, i) => {
+            const dk = toK(date)
+            const isBlocked = blocked.includes(dk)
+            const isToday   = dk === todayK
+            const isPast    = dk < todayK
+            return (
+              <div key={i}
+                className={`cal-day ${other?'other-month':''} ${isBlocked?'blocked':''} ${isToday?'is-today':''}`}
+                style={{ opacity: isPast && !other ? .5 : 1, cursor: isPast || other ? 'default' : 'pointer' }}
+                onClick={() => !isPast && !other && toggle(dk)}
+              >
+                {date.getDate()}
+              </div>
+            )
+          })}
+        </div>
+
+        <p style={{ fontSize:11, color:'var(--text-muted)', marginTop:12, textAlign:'center' }}>
+          Pulsa un día para bloquearlo o desbloquearlo
+        </p>
+
+        {blocked.length > 0 && (
+          <div style={{ marginTop:16 }}>
+            <div style={{ fontWeight:700, fontSize:12, marginBottom:8, color:'var(--text2)' }}>
+              {blocked.length} día{blocked.length!==1?'s':''} bloqueado{blocked.length!==1?'s':''}
+            </div>
+            <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+              {blocked.sort().map(d => (
+                <Bg key={d} variant="red">{fD(d)}</Bg>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
+
+// ─── Espera ───────────────────────────────────────────────────────────────────
+function Espera() {
+  const [list,    setList]    = useState([])
+  const [loading, setLoading] = useState(true)
+  const [showToast, setShowToast] = useState(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const { data } = await sb.from('waiting_list')
+      .select('id,created_at,notes,patients(full_name,phone),services(name),professionals(full_name)')
+      .order('created_at')
+    setList(data || [])
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const remove = async (id) => {
+    await sb.from('waiting_list').delete().eq('id', id)
+    setShowToast({ msg:'Eliminado de la lista', type:'ok' })
+    load()
+  }
+
+  if (loading) return <Sp />
+
+  return (
+    <>
+      {showToast && <Toast msg={showToast.msg} type={showToast.type} onDone={() => setShowToast(null)} />}
+
+      <div className="section-header">
+        <span className="section-title">Lista de espera</span>
+        <Bg variant="gold">{list.length} en espera</Bg>
+      </div>
+
+      <div className="card" style={{ overflow:'hidden' }}>
+        {list.length === 0
+          ? <Em icon="✅" title="Lista vacía" sub="No hay pacientes en lista de espera" />
+          : list.map(item => (
+            <div key={item.id} className="wait-card">
+              <div className="pac-avatar">{item.patients?.full_name?.slice(0,2).toUpperCase() || '?'}</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:13, fontWeight:700 }}>{item.patients?.full_name || '—'}</div>
+                <div style={{ fontSize:11, color:'var(--text-muted)' }}>
+                  {item.patients?.phone || 'Sin tel.'} {item.services?.name ? `· ${item.services.name}` : ''} {item.professionals?.full_name ? `· ${item.professionals.full_name}` : ''}
+                </div>
+                {item.notes && <div style={{ fontSize:11, color:'var(--text2)', marginTop:2 }}>{item.notes}</div>}
+              </div>
+              <div style={{ textAlign:'right', flexShrink:0 }}>
+                <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:6 }}>{fD(item.created_at)}</div>
+                <Btn variant="danger" style={{ padding:'4px 10px', fontSize:11 }} onClick={() => remove(item.id)}>Eliminar</Btn>
+              </div>
+            </div>
+          ))
+        }
+      </div>
+    </>
+  )
+}
+
+// ─── SlotsManager (Yoga / Belleza) ────────────────────────────────────────────
+function SlotsManager({ section }) {
+  const isYoga = section === 'yoga'
+  const title  = isYoga ? 'Yoga' : 'Belleza'
+  const [slots,   setSlots]   = useState([])
+  const [loading, setLoading] = useState(true)
+  const [modal,   setModal]   = useState(null)  // null | 'create' | slot obj
+  const [bookings,setBookings]= useState([])
+  const [showBook,setShowBook]= useState(null)
+  const [form,    setForm]    = useState({ start:'', end:'', capacity:8, service_id:'' })
+  const [services,setServices]= useState([])
+  const [showToast, setShowToast] = useState(null)
+  const [tab,     setTab]     = useState('upcoming') // 'upcoming' | 'past'
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const { data: svcs } = await sb.from('services').select('id,name')
+      .ilike('name', isYoga ? '%yoga%' : '%belleza%').eq('active',true)
+    setServices(svcs || [])
+
+    const svcIds = (svcs||[]).map(s => s.id)
+    if (svcIds.length === 0) { setSlots([]); setLoading(false); return }
+
+    const now = new Date().toISOString()
+    let q = sb.from('availability_slots')
+      .select('id,start_time,end_time,capacity,published,services(id,name),bookings(id,status,patients(full_name,phone))')
+      .in('service_id', svcIds)
+      .order('start_time', { ascending: tab==='upcoming' })
+
+    if (tab === 'upcoming') q = q.gte('start_time', now)
+    else q = q.lt('start_time', now)
+
+    const { data } = await q.limit(30)
+    setSlots((data||[]).map(s => ({ ...s, booked: (s.bookings||[]).filter(b=>b.status!=='cancelled').length })))
+    setLoading(false)
+  }, [section, tab])
+
+  useEffect(() => { load() }, [load])
+
+  const saveSlot = async () => {
+    if (!form.start || !form.capacity || !form.service_id) return
+    const payload = {
+      service_id: form.service_id,
+      start_time: form.start,
+      end_time: form.end || null,
+      capacity: Number(form.capacity),
+      published: false,
+    }
+    if (modal?.id) {
+      await sb.from('availability_slots').update(payload).eq('id', modal.id)
+    } else {
+      await sb.from('availability_slots').insert(payload)
+    }
+    setModal(null); setForm({ start:'', end:'', capacity:8, service_id:'' })
+    setShowToast({ msg: modal?.id ? 'Clase actualizada' : 'Clase creada', type:'ok' })
+    load()
+  }
+
+  const deleteSlot = async (id) => {
+    await sb.from('availability_slots').delete().eq('id', id)
+    setShowToast({ msg:'Clase eliminada', type:'ok' })
+    load()
+  }
+
+  const togglePublish = async (slot) => {
+    await sb.from('availability_slots').update({ published: !slot.published }).eq('id', slot.id)
+    setShowToast({ msg: slot.published ? 'Clase ocultada' : 'Clase publicada', type:'ok' })
+    load()
+  }
+
+  const openEdit = (slot) => {
+    setForm({
+      start: slot.start_time?.slice(0,16) || '',
+      end:   slot.end_time?.slice(0,16) || '',
+      capacity: slot.capacity,
+      service_id: slot.services?.id || '',
+    })
+    setModal(slot)
+  }
+
+  const openBookings = (slot) => {
+    setShowBook(slot)
+    setBookings(slot.bookings || [])
+  }
+
+  if (loading) return <Sp />
+
+  return (
+    <>
+      {showToast && <Toast msg={showToast.msg} type={showToast.type} onDone={() => setShowToast(null)} />}
+
+      <div className="section-header">
+        <span className="section-title">Clases de {title}</span>
+        <div style={{ display:'flex', gap:8 }}>
+          <div className="tab-pills" style={{ margin:0 }}>
+            {[['upcoming','Próximas'],['past','Pasadas']].map(([id,l]) => (
+              <button key={id} className={`tab-pill ${tab===id?'active':''}`} onClick={() => setTab(id)}>{l}</button>
+            ))}
+          </div>
+          <Btn onClick={() => { setModal('new'); setForm({ start:'', end:'', capacity:8, service_id:'' }) }}>+ Nueva clase</Btn>
+        </div>
+      </div>
+
+      <div className="card" style={{ overflow:'hidden' }}>
+        {slots.length === 0
+          ? <Em icon={isYoga?'🧘':'✨'} title="Sin clases" sub={`No hay clases de ${title.toLowerCase()} ${tab==='upcoming'?'próximas':'pasadas'}`} />
+          : slots.map(slot => {
+            const pct = slot.capacity > 0 ? Math.round(slot.booked/slot.capacity*100) : 0
+            return (
+              <div key={slot.id} className="slot-card">
+                <div className="slot-info">
+                  <div className="slot-title">{slot.services?.name || title}</div>
+                  <div className="slot-meta">{fDT(slot.start_time)} · {slot.booked}/{slot.capacity} reservas</div>
+                  <div className="slot-bar"><div className="slot-bar-fill" style={{ width:`${pct}%` }} /></div>
+                </div>
+                <div style={{ display:'flex', flexDirection:'column', gap:4, alignItems:'flex-end' }}>
+                  <Bg variant={slot.published ? 'green' : 'gray'}>{slot.published ? 'Publicada' : 'Borrador'}</Bg>
+                  <div style={{ display:'flex', gap:4, marginTop:4 }}>
+                    <Btn variant="ghost" style={{ padding:'4px 8px', fontSize:11 }} onClick={() => openBookings(slot)}>
+                      👥 {slot.booked}
+                    </Btn>
+                    <Btn variant="ghost" style={{ padding:'4px 8px', fontSize:11 }} onClick={() => openEdit(slot)}>✏️</Btn>
+                    <Btn variant={slot.published?'secondary':'primary'} style={{ padding:'4px 8px', fontSize:11 }} onClick={() => togglePublish(slot)}>
+                      {slot.published ? 'Ocultar' : 'Publicar'}
+                    </Btn>
+                    <Btn variant="danger" style={{ padding:'4px 8px', fontSize:11 }} onClick={() => deleteSlot(slot.id)}>🗑</Btn>
+                  </div>
+                </div>
+              </div>
+            )
+          })
+        }
+      </div>
+
+      {/* Create/Edit modal */}
+      {modal && (
+        <Modal title={modal?.id ? 'Editar clase' : 'Nueva clase'} onClose={() => setModal(null)}>
+          <Sel label="Servicio" value={form.service_id} onChange={e => setForm(f=>({...f,service_id:e.target.value}))}
+            options={[['','Seleccionar…'], ...services.map(s=>[s.id,s.name])]} />
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+            <Inp label="Inicio" type="datetime-local" value={form.start} onChange={e => setForm(f=>({...f,start:e.target.value}))} />
+            <Inp label="Fin (opcional)" type="datetime-local" value={form.end} onChange={e => setForm(f=>({...f,end:e.target.value}))} />
+          </div>
+          <Inp label="Plazas máximas" type="number" min={1} value={form.capacity} onChange={e => setForm(f=>({...f,capacity:e.target.value}))} />
+          <div style={{ display:'flex', gap:10, marginTop:4 }}>
+            <Btn variant="ghost" onClick={() => setModal(null)} style={{ flex:1 }}>Cancelar</Btn>
+            <Btn onClick={saveSlot} disabled={!form.start || !form.service_id} style={{ flex:1 }}>Guardar</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {/* Bookings modal */}
+      {showBook && (
+        <Modal title={`Reservas — ${showBook.services?.name}`} onClose={() => setShowBook(null)}>
+          <div style={{ marginBottom:14, fontSize:13, color:'var(--text-muted)' }}>
+            {fDT(showBook.start_time)} · {showBook.booked}/{showBook.capacity} plazas
+          </div>
+          {bookings.length === 0
+            ? <Em icon="👥" title="Sin reservas" />
+            : bookings.filter(b=>b.status!=='cancelled').map(b => (
+              <div key={b.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 0', borderBottom:'1px solid var(--border)' }}>
+                <div className="pac-avatar">{b.patients?.full_name?.slice(0,2).toUpperCase()||'?'}</div>
+                <div>
+                  <div style={{ fontSize:13, fontWeight:700 }}>{b.patients?.full_name||'—'}</div>
+                  <div style={{ fontSize:11, color:'var(--text-muted)' }}>{b.patients?.phone||'Sin teléfono'}</div>
+                </div>
+              </div>
+            ))
+          }
+          <Btn variant="ghost" onClick={() => setShowBook(null)} style={{ width:'100%', marginTop:16 }}>Cerrar</Btn>
+        </Modal>
+      )}
+    </>
+  )
+}
+
+// ─── Pacientes ────────────────────────────────────────────────────────────────
+function Pacientes() {
+  const [patients,    setPatients]    = useState([])
+  const [loading,     setLoading]     = useState(true)
+  const [query,       setQuery]       = useState('')
+  const [selected,    setSelected]    = useState(null)
+  const [history,     setHistory]     = useState([])
+  const [histLoading, setHistLoading] = useState(false)
+  const [page,        setPage]        = useState(0)
+  const [total,       setTotal]       = useState(0)
+  const PAGE_SIZE = 20
+
+  useEffect(() => {
+    const t = setTimeout(() => fetchPats(query, 0), 300)
+    return () => clearTimeout(t)
+  }, [query])
+
+  const fetchPats = async (q, p) => {
+    setLoading(true)
+    let req = sb.from('patients')
+      .select('id,full_name,phone,created_at', { count:'exact' })
+      .order('full_name')
+      .range(p*PAGE_SIZE, (p+1)*PAGE_SIZE-1)
+    if (q.trim()) req = req.or(`full_name.ilike.%${q}%,phone.ilike.%${q}%`)
+    const { data, count } = await req
+    setPatients(data||[]); setTotal(count||0); setPage(p); setLoading(false)
+  }
+
+  const fetchHistory = async (patId) => {
+    setHistLoading(true)
+    const [appts, bookings] = await Promise.all([
+      sb.from('appointments')
+        .select('id,start_time,status,professionals(full_name),services(name)')
+        .eq('patient_id', patId).order('start_time',{ascending:false}).limit(20),
+      sb.from('bookings')
+        .select('id,status,created_at,availability_slots(start_time,services(name))')
+        .eq('patient_id', patId).order('created_at',{ascending:false}).limit(10),
+    ])
+    const a = (appts.data||[]).map(x => ({
+      id:x.id, type:'osteo', typeLabel:'Osteopatía',
+      name:x.services?.name||'Osteopatía', pro:x.professionals?.full_name,
+      date:x.start_time, status:x.status,
+    }))
+    const b = (bookings.data||[]).map(x => {
+      const name = x.availability_slots?.services?.name || 'Clase'
+      return {
+        id:x.id, type:name.toLowerCase().includes('yoga')?'yoga':'belleza',
+        typeLabel:name.toLowerCase().includes('yoga')?'Yoga':'Belleza',
+        name, date:x.availability_slots?.start_time||x.created_at, status:x.status,
+      }
+    })
+    const all = [...a,...b].sort((x,y) => new Date(y.date)-new Date(x.date))
+    setHistory(all); setHistLoading(false)
+  }
+
+  const selectPat = (p) => { setSelected(p); fetchHistory(p.id) }
+  const totalPages = Math.ceil(total/PAGE_SIZE)
+
+  return (
+    <div className="pac-layout">
+      {/* Left: list */}
+      <div>
+        <div className="pac-search-bar">
+          <span style={{ fontSize:16 }}>🔍</span>
+          <input className="pac-search-input" placeholder="Buscar por nombre o teléfono…"
+            value={query} onChange={e => setQuery(e.target.value)} autoFocus />
+          {query && <button style={{ background:'none',border:'none',cursor:'pointer',color:'var(--text-muted)',fontSize:14 }} onClick={() => setQuery('')}>✕</button>}
+        </div>
+        <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:8, paddingLeft:4 }}>
+          {total} paciente{total!==1?'s':''}
+        </div>
+        <div className="card" style={{ overflow:'hidden' }}>
+          {loading
+            ? [1,2,3,4,5].map(i => <div key={i} className="skel" style={{ height:56, margin:'6px 12px', borderRadius:10 }} />)
+            : patients.length === 0
+              ? <Em icon="👥" title="Sin resultados" sub="Prueba con otro nombre o teléfono" />
+              : patients.map(p => (
+                <div key={p.id} className={`pac-row ${selected?.id===p.id?'active':''}`} onClick={() => selectPat(p)}>
+                  <div className="pac-avatar">{p.full_name?.slice(0,2).toUpperCase()||'?'}</div>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div className="pac-name">{p.full_name}</div>
+                    <div className="pac-phone">{p.phone||'Sin teléfono'}</div>
+                  </div>
+                  <span style={{ fontSize:10, color:'#ccc' }}>›</span>
+                </div>
+              ))
+          }
+        </div>
+        {totalPages > 1 && (
+          <div style={{ display:'flex', justifyContent:'center', gap:8, marginTop:12 }}>
+            <Btn variant="ghost" style={{ padding:'6px 12px' }} disabled={page===0} onClick={() => fetchPats(query,page-1)}>← Anterior</Btn>
+            <span style={{ alignSelf:'center', fontSize:12, color:'var(--text-muted)' }}>{page+1} / {totalPages}</span>
+            <Btn variant="ghost" style={{ padding:'6px 12px' }} disabled={page>=totalPages-1} onClick={() => fetchPats(query,page+1)}>Siguiente →</Btn>
+          </div>
+        )}
+      </div>
+
+      {/* Right: detail */}
+      <div>
+        {!selected ? (
+          <Em icon="👆" title="Selecciona un paciente" sub="Haz click en un paciente para ver su historial" />
+        ) : (
+          <>
+            <div className="card" style={{ padding:20, marginBottom:20, display:'flex', alignItems:'center', gap:16 }}>
+              <div className="pac-avatar" style={{ width:52, height:52, fontSize:18, fontWeight:900 }}>
+                {selected.full_name?.slice(0,2).toUpperCase()}
+              </div>
+              <div>
+                <div style={{ fontSize:18, fontWeight:800 }}>{selected.full_name}</div>
+                <div style={{ fontSize:14, color:'var(--text-muted)', marginTop:4 }}>{selected.phone||'Sin teléfono registrado'}</div>
+                <div style={{ fontSize:11, color:'var(--text-muted)', marginTop:4 }}>
+                  Paciente desde {fD(selected.created_at)}
+                </div>
+              </div>
+            </div>
+
+            <div className="section-header" style={{ marginBottom:12 }}>
+              <span className="section-title">Historial de citas</span>
+              <span style={{ fontSize:12, color:'var(--text-muted)' }}>{history.length} registros</span>
+            </div>
+
+            {histLoading
+              ? [1,2,3].map(i => <div key={i} className="skel" style={{ height:64, marginBottom:8, borderRadius:12 }} />)
+              : history.length === 0
+                ? <Em icon="📋" title="Sin historial" sub="Este paciente no tiene citas registradas" />
+                : history.map(item => (
+                  <div key={`${item.type}-${item.id}`} style={{ display:'flex', alignItems:'center', gap:12, padding:'12px 16px', background:'var(--white)', borderRadius:'var(--radius-lg)', border:'1px solid var(--border)', marginBottom:8 }}>
+                    <Bg variant={item.type==='osteo'?'green':item.type==='yoga'?'gold':'purple'}>{item.typeLabel}</Bg>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:13, fontWeight:700 }}>{item.name}{item.pro?` · ${item.pro}`:''}</div>
+                      <div style={{ fontSize:11, color:'var(--text-muted)', marginTop:2 }}>{fDT(item.date)}</div>
+                    </div>
+                    <Bg variant={STATUS_CLS[item.status]?.replace('badge-','')||'gray'}>{STATUS_TXT[item.status]||item.status}</Bg>
+                  </div>
+                ))
+            }
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+const PAGE_TITLES = {
+  dashboard:'Dashboard', agenda:'Agenda', horarios:'Horarios', bloqueados:'Días bloqueados',
+  espera:'Lista de espera', yoga:'Yoga', belleza:'Belleza', pacientes:'Pacientes',
 }
 
 export default function App() {
+  const [user,        setUser]        = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
+  const [page,        setPage]        = useState('dashboard')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [notifCount,  setNotifCount]  = useState(0)
+
+  // Inject CSS
+  useEffect(() => {
+    const el = document.createElement('style')
+    el.textContent = CSS
+    document.head.appendChild(el)
+    return () => document.head.removeChild(el)
+  }, [])
+
+  // Auth
+  useEffect(() => {
+    sb.auth.getSession().then(({ data }) => {
+      const u = data.session?.user
+      if (u?.user_metadata?.role === 'admin') setUser(u)
+      setAuthLoading(false)
+    })
+    const { data: sub } = sb.auth.onAuthStateChange((_, session) => {
+      const u = session?.user
+      if (u?.user_metadata?.role === 'admin') setUser(u)
+      else setUser(null)
+    })
+    return () => sub.subscription.unsubscribe()
+  }, [])
+
+  const logout = async () => {
+    await sb.auth.signOut()
+    setUser(null)
+  }
+
+  if (authLoading) return (
+    <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'var(--bg)', fontFamily:'sans-serif' }}>
+      <div style={{ color:'var(--green)' }}>Cargando…</div>
+    </div>
+  )
+
+  if (!user) return <LoginPage onLogin={setUser} />
+
+  const renderPage = () => {
+    switch (page) {
+      case 'dashboard':  return <Dashboard />
+      case 'agenda':     return <Agenda />
+      case 'horarios':   return <Horarios />
+      case 'bloqueados': return <Bloqueados />
+      case 'espera':     return <Espera />
+      case 'yoga':       return <SlotsManager section="yoga" />
+      case 'belleza':    return <SlotsManager section="belleza" />
+      case 'pacientes':  return <Pacientes />
+      default:           return <Dashboard />
+    }
+  }
+
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <AppRoutes />
-      </AuthProvider>
-    </BrowserRouter>
+    <Layout
+      title={PAGE_TITLES[page] || 'Panel'}
+      page={page}
+      onNav={setPage}
+      sidebarOpen={sidebarOpen}
+      onToggleSidebar={setSidebarOpen}
+      notifCount={notifCount}
+      onLogout={logout}
+    >
+      {renderPage()}
+    </Layout>
   )
 }
