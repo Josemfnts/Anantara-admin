@@ -85,12 +85,12 @@ const CSS = `
   .empty-state-icon { font-size:36px; margin-bottom:10px }
   .empty-state-title { font-size:15px; font-weight:700; color:var(--text2); margin-bottom:4px }
   .empty-state-sub { font-size:13px }
-  .stats-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:20px }
+  .stats-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:20px; align-items:stretch }
   @media(max-width:700px){ .stats-grid{ grid-template-columns:1fr 1fr } }
-  .stat-card { padding:20px }
-  .stat-label { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text-muted); margin-bottom:4px }
-  .stat-value { font-size:28px; font-weight:900; color:var(--green-dark); margin-bottom:2px }
-  .stat-sub { font-size:11px; color:var(--text-muted) }
+  .stat-card { padding:20px; display:flex; flex-direction:column; min-height:100px }
+  .stat-label { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text-muted); margin-bottom:8px }
+  .stat-value { font-size:32px; font-weight:900; color:var(--green-dark); margin-bottom:4px; line-height:1 }
+  .stat-sub { font-size:12px; color:var(--text-muted); margin-top:auto }
   .alert-banner { display:flex; align-items:center; gap:10px; background:var(--gold-light); border:1.5px solid var(--gold); border-radius:var(--radius-lg); padding:12px 16px; margin-bottom:20px; cursor:pointer }
   .alert-banner-text { font-size:13px; font-weight:700; color:#7a5c10; flex:1 }
   .dash-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px }
@@ -384,6 +384,10 @@ function Agenda(){
   const[editProfId,setEditProfId]=useState('')
   const[saving,setSaving]=useState(false)
   const[toast,setToast]=useState(null)
+  // Filters
+  const[filterProf,setFilterProf]=useState('all')  // 'all' | professional_id
+  const[hourFrom,setHourFrom]=useState(8)
+  const[hourTo,setHourTo]=useState(20)
 
   const days=getWeekDays(weekRef)
 
@@ -452,7 +456,7 @@ function Agenda(){
     setToast({msg:'Cita creada',type:'ok'});load()
   }
 
-  const hours=Array.from({length:HOUR_END-HOUR_START},(_,i)=>HOUR_START+i)
+  const hours=Array.from({length:hourTo-hourFrom},(_,i)=>hourFrom+i)
   const today=toK(new Date())
   const weekStr=`${fD(days[0])} – ${fD(days[6])}`
 
@@ -463,17 +467,52 @@ function Agenda(){
     return{bg:'#f1f5f9',border:'#94a3b8',text:'#64748b'}
   }
 
-  const dayAppts=date=>{ const dk=toK(date); return appointments.filter(a=>a.start_time?.startsWith(dk)) }
+  const dayAppts=date=>{
+    const dk=toK(date)
+    return appointments.filter(a=>{
+      if(!a.start_time?.startsWith(dk)) return false
+      if(filterProf!=='all' && a.professional_id!==filterProf) return false
+      return true
+    })
+  }
+
+  const timeToYLocal=t=>{if(!t)return 0;const[h,m]=t.split(':').map(Number);return(h-hourFrom+m/60)*SLOT_H}
+
+  const HOUR_OPTIONS=Array.from({length:24},(_,i)=>i)
 
   return<>
     {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
     <div className="section-header">
       <span className="section-title">{weekStr}</span>
-      <div style={{display:'flex',gap:8}}>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
         <Btn variant="ghost"style={{padding:'6px 12px'}}onClick={()=>setWeekRef(new Date(weekRef.getTime()-7*86400000))}>← Anterior</Btn>
         <Btn variant="ghost"style={{padding:'6px 10px'}}onClick={()=>setWeekRef(new Date())}>Hoy</Btn>
         <Btn variant="ghost"style={{padding:'6px 12px'}}onClick={()=>setWeekRef(new Date(weekRef.getTime()+7*86400000))}>Siguiente →</Btn>
         <Btn style={{padding:'6px 14px'}}onClick={()=>setModal('create')}>+ Cita</Btn>
+      </div>
+    </div>
+
+    {/* Filters bar */}
+    <div style={{display:'flex',gap:12,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
+      <div style={{display:'flex',alignItems:'center',gap:6}}>
+        <span style={{fontSize:12,fontWeight:700,color:'var(--text-muted)'}}>Profesional</span>
+        <select className="field-input"style={{width:'auto',padding:'6px 10px',fontSize:13}}
+          value={filterProf} onChange={e=>setFilterProf(e.target.value)}>
+          <option value="all">Todos</option>
+          {profs.map(p=><option key={p.id}value={p.id}>{p.full_name}</option>)}
+        </select>
+      </div>
+      <div style={{display:'flex',alignItems:'center',gap:6}}>
+        <span style={{fontSize:12,fontWeight:700,color:'var(--text-muted)'}}>Desde</span>
+        <select className="field-input"style={{width:'auto',padding:'6px 10px',fontSize:13}}
+          value={hourFrom} onChange={e=>setHourFrom(Number(e.target.value))}>
+          {HOUR_OPTIONS.filter(h=>h<hourTo).map(h=><option key={h}value={h}>{pad(h)}:00</option>)}
+        </select>
+        <span style={{fontSize:12,fontWeight:700,color:'var(--text-muted)'}}>Hasta</span>
+        <select className="field-input"style={{width:'auto',padding:'6px 10px',fontSize:13}}
+          value={hourTo} onChange={e=>setHourTo(Number(e.target.value))}>
+          {HOUR_OPTIONS.filter(h=>h>hourFrom).map(h=><option key={h}value={h}>{pad(h)}:00</option>)}
+        </select>
       </div>
     </div>
 
@@ -494,9 +533,9 @@ function Agenda(){
                 const dur=et?(new Date('2000-01-01T'+et)-new Date('2000-01-01T'+t))/60000:60
                 const c=apptColor(a.status)
                 return<div key={a.id}className="appt-block"onClick={()=>setModal(a)}
-                  style={{top:timeToY(t),height:Math.max(durToH(dur)-2,18),background:c.bg,borderLeft:`3px solid ${c.border}`,color:c.text}}>
+                  style={{top:timeToYLocal(t),height:Math.max(durToH(dur)-2,18),background:c.bg,borderLeft:`3px solid ${c.border}`,color:c.text}}>
                   <div style={{fontWeight:700,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{t} {a.patients?.full_name||''}</div>
-                  <div style={{fontSize:9,opacity:.8,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{a.services?.name}</div>
+                  <div style={{fontSize:9,opacity:.8,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{a.services?.name}{filterProf==='all'&&a.professionals?.full_name?` · ${a.professionals.full_name}`:''}</div>
                 </div>
               })}
             </div>
