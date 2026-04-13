@@ -236,6 +236,7 @@ const NAV_GROUPS = [
   ]},
   {label:'Centro',items:[
     {id:'pacientes',icon:'👥',label:'Pacientes'},
+    {id:'profesionales',icon:'👩‍⚕️',label:'Profesionales'},
     {id:'servicios',icon:'🛠',label:'Servicios'},
   ]},
 ]
@@ -1146,8 +1147,130 @@ function Servicios(){
   </>
 }
 
+// ─── Profesionales ────────────────────────────────────────────────────────────
+function Profesionales(){
+  const[items,   setItems]   =useState([])
+  const[loading, setLoading] =useState(true)
+  const[modal,   setModal]   =useState(null)   // null | 'new' | {id,...}
+  const[form,    setForm]    =useState({full_name:'',specialty:'',bio:'',active:true})
+  const[delConfirm,setDelConfirm]=useState(null)
+  const[saving,  setSaving]  =useState(false)
+  const[toast,   setToast]   =useState(null)
+
+  const load=useCallback(async()=>{
+    setLoading(true)
+    const{data}=await sb.from('professionals').select('*').order('full_name')
+    setItems(data||[]);setLoading(false)
+  },[])
+  useEffect(()=>{load()},[load])
+
+  const openNew=()=>{setForm({full_name:'',specialty:'',bio:'',active:true});setModal('new')}
+  const openEdit=p=>{setForm({full_name:p.full_name,specialty:p.specialty||'',bio:p.bio||'',active:p.active});setModal(p)}
+
+  const save=async()=>{
+    if(!form.full_name.trim())return
+    setSaving(true)
+    const payload={full_name:form.full_name.trim(),specialty:form.specialty.trim()||null,bio:form.bio.trim()||null,active:form.active}
+    if(modal?.id){
+      await sb.from('professionals').update(payload).eq('id',modal.id)
+    }else{
+      await sb.from('professionals').insert(payload)
+    }
+    setSaving(false);setModal(null);setToast({msg:modal?.id?'Profesional actualizado':'Profesional creado',type:'ok'});load()
+  }
+
+  const del=async id=>{
+    await sb.from('professionals').update({active:false}).eq('id',id)
+    setDelConfirm(null);setToast({msg:'Profesional desactivado',type:'ok'});load()
+  }
+
+  const toggleActive=async(id,val)=>{
+    await sb.from('professionals').update({active:val}).eq('id',id)
+    setItems(prev=>prev.map(p=>p.id===id?{...p,active:val}:p))
+  }
+
+  const upd=e=>setForm(f=>({...f,[e.target.name]:e.target.value}))
+  const SPECIALTIES=['Osteópata','Fisioterapeuta','Terapeuta','Instructora de Yoga','Esteticista','Masajista','Nutricionista','Otro']
+
+  return<>
+    <div className="section-header">
+      <span className="section-title">Profesionales ({items.length})</span>
+      <Btn onClick={openNew}>+ Nuevo profesional</Btn>
+    </div>
+
+    {loading&&<div style={{padding:40,textAlign:'center',color:'var(--text-muted)'}}>Cargando…</div>}
+
+    {!loading&&items.length===0&&<div style={{padding:40,textAlign:'center',color:'var(--text-muted)'}}>
+      <div style={{fontSize:36,marginBottom:8}}>👩‍⚕️</div>
+      <div style={{fontWeight:700,marginBottom:4}}>Sin profesionales</div>
+      <div style={{fontSize:13}}>Añade el primer profesional para empezar a gestionar citas.</div>
+    </div>}
+
+    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:14}}>
+      {items.map(p=>(
+        <div key={p.id} className="card" style={{padding:18,display:'flex',flexDirection:'column',gap:12}}>
+          <div style={{display:'flex',alignItems:'center',gap:12}}>
+            <div style={{width:48,height:48,borderRadius:'50%',background:'linear-gradient(135deg,var(--green-dark),var(--green-light))',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,fontWeight:900,flexShrink:0}}>
+              {p.full_name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase()}
+            </div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontWeight:800,fontSize:15,color:'var(--text)'}}>{p.full_name}</div>
+              <div style={{fontSize:12,color:'var(--text-muted)'}}>{p.specialty||'Sin especialidad'}</div>
+            </div>
+            <span className={`badge ${p.active?'badge-green':'badge-gray'}`}>{p.active?'Activo':'Inactivo'}</span>
+          </div>
+          {p.bio&&<p style={{fontSize:12,color:'var(--text-muted)',lineHeight:1.6,margin:0}}>{p.bio}</p>}
+          <div style={{display:'flex',gap:8,borderTop:'1px solid var(--border)',paddingTop:12}}>
+            <Btn variant="ghost" onClick={()=>openEdit(p)} style={{flex:1,fontSize:12}}>Editar</Btn>
+            <Btn variant={p.active?'secondary':'primary'} onClick={()=>toggleActive(p.id,!p.active)} style={{flex:1,fontSize:12}}>
+              {p.active?'Desactivar':'Activar'}
+            </Btn>
+            <Btn variant="danger" onClick={()=>setDelConfirm(p.id)} style={{fontSize:12}}>🗑</Btn>
+          </div>
+        </div>
+      ))}
+    </div>
+
+    {toast&&<Toast msg={toast.msg} type={toast.type} onDone={()=>setToast(null)}/>}
+
+    {modal&&<Modal title={modal?.id?'Editar profesional':'Nuevo profesional'} onClose={()=>setModal(null)}>
+      <div className="field">
+        <label className="field-label">Nombre completo *</label>
+        <input className="field-input" name="full_name" value={form.full_name} onChange={upd} placeholder="Ana García López" autoFocus />
+      </div>
+      <div className="field">
+        <label className="field-label">Especialidad</label>
+        <select className="field-input" name="specialty" value={form.specialty} onChange={upd}>
+          <option value="">Sin especificar</option>
+          {SPECIALTIES.map(s=><option key={s} value={s}>{s}</option>)}
+        </select>
+      </div>
+      <div className="field">
+        <label className="field-label">Bio / descripción</label>
+        <textarea className="field-input" name="bio" value={form.bio} onChange={upd} rows={3} placeholder="Breve descripción del profesional…" style={{resize:'vertical'}}/>
+      </div>
+      <div className="field" style={{display:'flex',alignItems:'center',gap:10}}>
+        <input type="checkbox" id="pro-active" checked={form.active} onChange={e=>setForm(f=>({...f,active:e.target.checked}))} style={{width:16,height:16,accentColor:'var(--green)'}}/>
+        <label htmlFor="pro-active" style={{fontSize:13,fontWeight:600,cursor:'pointer'}}>Activo (visible para reservas)</label>
+      </div>
+      <div style={{display:'flex',gap:10,marginTop:4}}>
+        <Btn variant="ghost" onClick={()=>setModal(null)} style={{flex:1}}>Cancelar</Btn>
+        <Btn onClick={save} disabled={!form.full_name.trim()||saving} style={{flex:1}}>{saving?'Guardando…':'Guardar'}</Btn>
+      </div>
+    </Modal>}
+
+    {delConfirm&&<Modal title="¿Desactivar profesional?" onClose={()=>setDelConfirm(null)}>
+      <p style={{fontSize:13,color:'var(--text-muted)',marginBottom:20}}>El profesional dejará de aparecer en el sistema de reservas. Sus citas existentes no se eliminarán.</p>
+      <div style={{display:'flex',gap:10}}>
+        <Btn variant="ghost" onClick={()=>setDelConfirm(null)} style={{flex:1}}>Cancelar</Btn>
+        <Btn variant="danger" onClick={()=>del(delConfirm)} style={{flex:1}}>Desactivar</Btn>
+      </div>
+    </Modal>}
+  </>
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
-const PAGE_TITLES={dashboard:'Dashboard',agenda:'Agenda',horarios:'Horarios',bloqueados:'Días bloqueados',espera:'Lista de espera',yoga:'Yoga',belleza:'Belleza',pacientes:'Pacientes',servicios:'Servicios'}
+const PAGE_TITLES={dashboard:'Dashboard',agenda:'Agenda',horarios:'Horarios',bloqueados:'Días bloqueados',espera:'Lista de espera',yoga:'Yoga',belleza:'Belleza',pacientes:'Pacientes',servicios:'Servicios',profesionales:'Profesionales'}
 
 export default function App(){
   const[user,setUser]=useState(null)
@@ -1188,9 +1311,10 @@ export default function App(){
       case 'espera':     return<Espera/>
       case 'yoga':       return<SlotsManager section="yoga"/>
       case 'belleza':    return<SlotsManager section="belleza"/>
-      case 'pacientes':  return<Pacientes/>
-      case 'servicios':  return<Servicios/>
-      default:           return<Dashboard onNav={setPage}/>
+      case 'pacientes':     return<Pacientes/>
+      case 'profesionales': return<Profesionales/>
+      case 'servicios':     return<Servicios/>
+      default:              return<Dashboard onNav={setPage}/>
     }
   }
 
