@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react'
 
 const sb = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -437,7 +437,7 @@ function Agenda(){
   }
 
   const cancelAppt=async(id)=>{
-    await sb.from('appointments').update({status:'cancelled'}).eq('id',id)
+    await sb.from('appointments').update({status:'cancelled',cancelled_by:'admin'}).eq('id',id)
     setModal(null); setToast({msg:'Cita cancelada',type:'ok'}); load()
   }
 
@@ -522,8 +522,8 @@ function Agenda(){
         {days.map((d,i)=><div key={i}className={`ag-header ${toK(d)===today?'today':''}`}style={{gridColumn:i+2,gridRow:1}}>
           <div>{DAYS_ES[d.getDay()]}</div><div style={{fontSize:16,fontWeight:900}}>{d.getDate()}</div>
         </div>)}
-        {hours.map((h,hi)=><>
-          <div key={`t-${h}`}className="ag-time"style={{gridColumn:1,gridRow:hi+2}}>{pad(h)}:00</div>
+        {hours.map((h,hi)=><React.Fragment key={`row-${h}`}>
+          <div className="ag-time"style={{gridColumn:1,gridRow:hi+2}}>{pad(h)}:00</div>
           {days.map((d,di)=>{
             const da=hi===0?dayAppts(d):[]
             return<div key={`c-${h}-${di}`}className="ag-col"style={{gridColumn:di+2,gridRow:hi+2}}>
@@ -540,7 +540,7 @@ function Agenda(){
               })}
             </div>
           })}
-        </>)}
+        </React.Fragment>)}
       </div>
     </div>}
 
@@ -1318,7 +1318,7 @@ export default function App(){
   const[sidebarOpen,setSidebarOpen]=useState(false)
   const[notifCount,setNotifCount]=useState(0)
 
-  useEffect(()=>{
+  useLayoutEffect(()=>{
     const el=document.createElement('style'); el.textContent=CSS; document.head.appendChild(el)
     return()=>document.head.removeChild(el)
   },[])
