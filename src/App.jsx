@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 
 const sb = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -7,8 +7,8 @@ const sb = createClient(
   { auth: { storageKey: 'anantara-admin' } }
 )
 
-// ─── CSS ─────────────────────────────────────────────────────────────────────
-const CSS = `
+// ─── CSS lives in index.css ───────────────────────────────────────────────────
+const _CSS_REMOVED = `
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0 }
   :root {
     --green-dark:#1d5c2e; --green:#2d7a3f; --green-light:#3a9150;
@@ -1317,11 +1317,6 @@ export default function App(){
   const[page,setPage]=useState('dashboard')
   const[sidebarOpen,setSidebarOpen]=useState(false)
   const[notifCount,setNotifCount]=useState(0)
-
-  useLayoutEffect(()=>{
-    const el=document.createElement('style'); el.textContent=CSS; document.head.appendChild(el)
-    return()=>document.head.removeChild(el)
-  },[])
 
   useEffect(()=>{
     sb.auth.getSession().then(({data})=>{
