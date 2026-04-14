@@ -1085,42 +1085,50 @@ function Servicios(){
   const[items,setItems]=useState([])
   const[loading,setLoading]=useState(true)
   const[modal,setModal]=useState(null)
-  const[form,setForm]=useState({name:'',duration:60,price:'',category:'osteopatia',active:true,description:''})
+  const[form,setForm]=useState({name:'',duration_minutes:60,price:'',section:'osteopathy',is_active:true,description:''})
   const[delConfirm,setDelConfirm]=useState(null)
   const[saving,setSaving]=useState(false)
   const[toast,setToast]=useState(null)
-  const CATS=[['osteopatia','Osteopatía'],['yoga','Yoga'],['belleza','Belleza'],['otro','Otro']]
+  const CATS=[['osteopathy','Osteopatía'],['yoga','Yoga'],['beauty','Belleza']]
+  const CAT_CLS={osteopathy:'osteopatia',yoga:'yoga',beauty:'belleza'}
 
   const load=useCallback(async()=>{
     setLoading(true)
-    const{data}=await sb.from('services').select('*').order('display_order,name')
+    const{data,error}=await sb.from('services').select('*').order('name')
+    if(error){setToast({msg:'Error al cargar: '+error.message,type:'error'});setLoading(false);return}
     setItems(data||[]);setLoading(false)
   },[])
   useEffect(()=>{load()},[load])
 
-  const openNew=()=>{setForm({name:'',duration:60,price:'',category:'osteopatia',active:true,description:''});setModal('new')}
-  const openEdit=svc=>{setForm({name:svc.name,duration:svc.duration||60,price:svc.price??'',category:svc.category||'osteopatia',active:svc.active,description:svc.description||''});setModal(svc)}
+  const openNew=()=>{setForm({name:'',duration_minutes:60,price:'',section:'osteopathy',is_active:true,description:''});setModal('new')}
+  const openEdit=svc=>{setForm({name:svc.name||'',duration_minutes:svc.duration_minutes||60,price:svc.price??'',section:svc.section||'osteopathy',is_active:svc.is_active!==false,description:svc.description||''});setModal(svc)}
 
   const save=async()=>{
     if(!form.name.trim())return
     setSaving(true)
-    const payload={name:form.name.trim(),duration:Number(form.duration),price:form.price!==''?Number(form.price):null,category:form.category,active:form.active,description:form.description||null}
+    const payload={name:form.name.trim(),duration_minutes:Number(form.duration_minutes),price:form.price!==''?Number(form.price):null,section:form.section,is_active:form.is_active,description:form.description||null}
+    let error
     if(modal?.id){
-      await sb.from('services').update(payload).eq('id',modal.id)
+      ({error}=await sb.from('services').update(payload).eq('id',modal.id))
     }else{
-      const mx=items.reduce((m,s)=>Math.max(m,s.display_order||0),0)
-      await sb.from('services').insert({...payload,display_order:mx+1})
+      ({error}=await sb.from('services').insert(payload))
     }
-    setSaving(false);setModal(null);setToast({msg:modal?.id?'Servicio actualizado':'Servicio creado',type:'ok'});load()
+    setSaving(false)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setModal(null);setToast({msg:modal?.id?'Servicio actualizado':'Servicio creado',type:'ok'});load()
   }
 
   const del=async id=>{
-    await sb.from('services').delete().eq('id',id)
-    setDelConfirm(null);setToast({msg:'Servicio eliminado',type:'ok'});load()
+    const{error}=await sb.from('services').delete().eq('id',id)
+    setDelConfirm(null)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setToast({msg:'Servicio eliminado',type:'ok'});load()
   }
 
   const toggleActive=async svc=>{
-    await sb.from('services').update({active:!svc.active}).eq('id',svc.id);load()
+    const{error}=await sb.from('services').update({is_active:!svc.is_active}).eq('id',svc.id)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    load()
   }
 
   if(loading)return<Sp/>
@@ -1134,19 +1142,19 @@ function Servicios(){
     <div className="card"style={{overflow:'hidden'}}>
       {items.length===0?<Em icon="🛠"title="Sin servicios"sub="Crea el primer servicio del catálogo"/>
       :items.map(svc=><div key={svc.id}className="svc-row">
-        <span className={`svc-cat svc-cat-${svc.category||'otro'}`}>{CATS.find(([k])=>k===svc.category)?.[1]||svc.category}</span>
+        <span className={`svc-cat svc-cat-${CAT_CLS[svc.section]||'otro'}`}>{CATS.find(([k])=>k===svc.section)?.[1]||svc.section}</span>
         <div style={{flex:1,minWidth:0}}>
-          <div style={{fontSize:13,fontWeight:700,color:svc.active?'var(--text)':'var(--text-muted)',display:'flex',alignItems:'center',gap:8}}>
+          <div style={{fontSize:13,fontWeight:700,color:svc.is_active?'var(--text)':'var(--text-muted)',display:'flex',alignItems:'center',gap:8}}>
             {svc.name}
-            {!svc.active&&<Bg variant="gray">Inactivo</Bg>}
+            {!svc.is_active&&<Bg variant="gray">Inactivo</Bg>}
           </div>
           <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>
-            {svc.duration} min{svc.price!=null?` · ${svc.price}€`:''}
+            {svc.duration_minutes} min{svc.price!=null?` · ${svc.price}€`:''}
             {svc.description?` · ${svc.description}`:''}
           </div>
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
-          <Toggle on={svc.active}onChange={()=>toggleActive(svc)}/>
+          <Toggle on={svc.is_active}onChange={()=>toggleActive(svc)}/>
           <Btn variant="ghost"style={{padding:'4px 10px',fontSize:11}}onClick={()=>openEdit(svc)}>✏️ Editar</Btn>
           <Btn variant="danger"style={{padding:'4px 10px',fontSize:11}}onClick={()=>setDelConfirm(svc.id)}>🗑</Btn>
         </div>
@@ -1155,11 +1163,11 @@ function Servicios(){
 
     {modal&&<Modal title={modal?.id?'Editar servicio':'Nuevo servicio'}onClose={()=>setModal(null)}>
       <Inp label="Nombre del servicio *"value={form.name}onChange={e=>setForm(f=>({...f,name:e.target.value}))}required placeholder="Ej: Consulta osteopatía"/>
-      <Sel label="Categoría"value={form.category}onChange={e=>setForm(f=>({...f,category:e.target.value}))}options={CATS}/>
+      <Sel label="Sección"value={form.section}onChange={e=>setForm(f=>({...f,section:e.target.value}))}options={CATS}/>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
         <div className="field">
           <label className="field-label">Duración (minutos)</label>
-          <select className="field-input"value={form.duration}onChange={e=>setForm(f=>({...f,duration:e.target.value}))}>
+          <select className="field-input"value={form.duration_minutes}onChange={e=>setForm(f=>({...f,duration_minutes:e.target.value}))}>
             {[15,20,30,45,60,75,90,120].map(d=><option key={d}value={d}>{d} min</option>)}
           </select>
         </div>
@@ -1167,7 +1175,7 @@ function Servicios(){
       </div>
       <Inp label="Descripción (opcional)"value={form.description}onChange={e=>setForm(f=>({...f,description:e.target.value}))}placeholder="Breve descripción del servicio"/>
       <label style={{display:'flex',alignItems:'center',gap:10,fontSize:13,marginBottom:16,cursor:'pointer'}}>
-        <Toggle on={form.active}onChange={v=>setForm(f=>({...f,active:v}))}/>
+        <Toggle on={form.is_active}onChange={v=>setForm(f=>({...f,is_active:v}))}/>
         Servicio activo (visible para reservas)
       </label>
       <div style={{display:'flex',gap:10}}>
