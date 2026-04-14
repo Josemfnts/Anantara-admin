@@ -1264,13 +1264,13 @@ function Profesionales(){
         <div key={p.id} className="card" style={{padding:18,display:'flex',flexDirection:'column',gap:12}}>
           <div style={{display:'flex',alignItems:'center',gap:12}}>
             <div style={{width:48,height:48,borderRadius:'50%',background:'linear-gradient(135deg,var(--green-dark),var(--green-light))',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,fontWeight:900,flexShrink:0}}>
-              {p.full_name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase()}
+              {(p.full_name||'?').split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase()}
             </div>
             <div style={{flex:1,minWidth:0}}>
-              <div style={{fontWeight:800,fontSize:15,color:'var(--text)'}}>{p.full_name}</div>
+              <div style={{fontWeight:800,fontSize:15,color:'var(--text)'}}>{p.full_name||'Sin nombre'}</div>
               <div style={{fontSize:12,color:'var(--text-muted)'}}>{p.specialty||'Sin especialidad'}</div>
             </div>
-            <span className={`badge ${p.active?'badge-green':'badge-gray'}`}>{p.active?'Activo':'Inactivo'}</span>
+            <span className={`badge ${p.active!==false?'badge-green':'badge-gray'}`}>{p.active!==false?'Activo':'Inactivo'}</span>
           </div>
           {p.bio&&<p style={{fontSize:12,color:'var(--text-muted)',lineHeight:1.6,margin:0}}>{p.bio}</p>}
           <div style={{display:'flex',gap:8,borderTop:'1px solid var(--border)',paddingTop:12}}>
