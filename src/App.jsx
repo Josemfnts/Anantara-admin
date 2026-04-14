@@ -232,9 +232,9 @@ const NAV_GROUPS = [
   ]},
   {label:'Clases',items:[
     {id:'yoga',icon:'🧘',label:'Yoga'},
-    {id:'belleza',icon:'✨',label:'Belleza'},
   ]},
   {label:'Centro',items:[
+    {id:'belleza',icon:'✨',label:'Belleza'},
     {id:'pacientes',icon:'👥',label:'Pacientes'},
     {id:'profesionales',icon:'👩‍⚕️',label:'Profesionales'},
     {id:'servicios',icon:'🛠',label:'Servicios'},
@@ -878,7 +878,7 @@ function SlotsManager({section}){
 
   const load=useCallback(async()=>{
     setLoading(true)
-    const{data:svcs}=await sb.from('services').select('id,name').ilike('name',isYoga?'%yoga%':'%belleza%').eq('active',true)
+    const{data:svcs}=await sb.from('services').select('id,name').eq('section','yoga').eq('is_active',true)
     setServices(svcs||[])
     const svcIds=(svcs||[]).map(s=>s.id)
     if(svcIds.length===0){setSlots([]);setLoading(false);return}
@@ -1078,6 +1078,103 @@ function Pacientes(){
       </>}
     </div>
   </div>
+}
+
+// ─── Belleza Admin ────────────────────────────────────────────────────────────
+function BellezaAdmin(){
+  const[appts,setAppts]=useState([])
+  const[loading,setLoading]=useState(true)
+  const[toast,setToast]=useState(null)
+  const[tab,setTab]=useState('pending')
+  const[modal,setModal]=useState(null) // appointment detail
+  const TABS=[['pending','Pendientes'],['confirmed','Confirmadas'],['past','Pasadas'],['cancelled','Canceladas']]
+
+  const load=useCallback(async()=>{
+    setLoading(true)
+    const now=new Date().toISOString()
+    // Get beauty professionals
+    const{data:pros}=await sb.from('professionals').select('id').eq('section','beauty')
+    const proIds=(pros||[]).map(p=>p.id)
+    if(proIds.length===0){setAppts([]);setLoading(false);return}
+
+    let q=sb.from('appointments')
+      .select('id,start_time,end_time,status,notes,patients(id,full_name,phone),professionals(id,name),services(name,duration_minutes)')
+      .in('professional_id',proIds)
+      .order('start_time',{ascending:tab!=='past'})
+
+    if(tab==='pending')   q=q.eq('status','pending').gte('start_time',now)
+    if(tab==='confirmed') q=q.eq('status','confirmed').gte('start_time',now)
+    if(tab==='past')      q=q.lt('start_time',now).neq('status','cancelled')
+    if(tab==='cancelled') q=q.eq('status','cancelled')
+
+    const{data,error}=await q.limit(40)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});setLoading(false);return}
+    setAppts(data||[]);setLoading(false)
+  },[tab])
+  useEffect(()=>{load()},[load])
+
+  const updateStatus=async(id,status)=>{
+    const{error}=await sb.from('appointments').update({status}).eq('id',id)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setModal(null)
+    setToast({msg:status==='confirmed'?'Cita confirmada':'Cita cancelada',type:'ok'})
+    load()
+  }
+
+  const pendingCount=tab==='pending'?appts.length:0
+
+  return<>
+    {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
+    <div className="section-header">
+      <span className="section-title">Citas de Belleza</span>
+      <div className="tab-pills"style={{margin:0}}>
+        {TABS.map(([id,l])=><button key={id}className={`tab-pill ${tab===id?'active':''}`}onClick={()=>setTab(id)}>{l}</button>)}
+      </div>
+    </div>
+
+    {tab==='pending'&&pendingCount>0&&<div className="alert-banner"style={{cursor:'default'}}>
+      <span style={{fontSize:20}}>⏳</span>
+      <span className="alert-banner-text">{pendingCount} cita{pendingCount!==1?'s':''} pendiente{pendingCount!==1?'s':''} de confirmación</span>
+    </div>}
+
+    {loading&&<Sp/>}
+    {!loading&&appts.length===0&&<Em icon="✨"title="Sin citas"sub={`No hay citas ${TABS.find(([id])=>id===tab)?.[1]?.toLowerCase()}`}/>}
+
+    {!loading&&<div className="card"style={{overflow:'hidden'}}>
+      {appts.map(a=>(
+        <div key={a.id}className="dash-row"style={{cursor:'pointer'}}onClick={()=>setModal(a)}>
+          <div style={{minWidth:48,textAlign:'right'}}>
+            <div style={{fontSize:13,fontWeight:800,color:'var(--purple)'}}>{fTime(a.start_time)}</div>
+            <div style={{fontSize:10,color:'var(--text-muted)'}}>{fD(a.start_time)}</div>
+          </div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:13,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.patients?.full_name||'—'}</div>
+            <div style={{fontSize:11,color:'var(--text-muted)'}}>{a.notes||a.services?.name||'Belleza'}{a.professionals?.name?` · ${a.professionals.name}`:''}</div>
+          </div>
+          <Bg variant={STATUS_CLS[a.status]?.replace('badge-','')||'gray'}>{STATUS_TXT[a.status]||a.status}</Bg>
+        </div>
+      ))}
+    </div>}
+
+    {modal&&<Modal title="Detalle de cita"onClose={()=>setModal(null)}>
+      <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:20}}>
+        <div style={{display:'flex',justifyContent:'space-between'}}>
+          <span style={{fontWeight:700}}>{modal.patients?.full_name||'—'}</span>
+          <Bg variant={STATUS_CLS[modal.status]?.replace('badge-','')||'gray'}>{STATUS_TXT[modal.status]||modal.status}</Bg>
+        </div>
+        <div style={{fontSize:13,color:'var(--text-muted)'}}>📞 {modal.patients?.phone||'Sin teléfono'}</div>
+        <div style={{fontSize:13,color:'var(--text-muted)'}}>🗓 {fDT(modal.start_time)}</div>
+        <div style={{fontSize:13,color:'var(--text-muted)'}}>✨ {modal.notes||modal.services?.name||'Belleza'}</div>
+        {modal.professionals?.name&&<div style={{fontSize:13,color:'var(--text-muted)'}}>👩‍⚕️ {modal.professionals.name}</div>}
+      </div>
+      {modal.status==='pending'&&<div style={{display:'flex',gap:10}}>
+        <Btn variant="danger"onClick={()=>updateStatus(modal.id,'cancelled')}style={{flex:1}}>Cancelar cita</Btn>
+        <Btn variant="primary"onClick={()=>updateStatus(modal.id,'confirmed')}style={{flex:1}}>Confirmar</Btn>
+      </div>}
+      {modal.status==='confirmed'&&<Btn variant="danger"onClick={()=>updateStatus(modal.id,'cancelled')}style={{width:'100%'}}>Cancelar cita</Btn>}
+      {(modal.status==='cancelled'||modal.status==='completed')&&<Btn variant="ghost"onClick={()=>setModal(null)}style={{width:'100%'}}>Cerrar</Btn>}
+    </Modal>}
+  </>
 }
 
 // ─── Servicios ────────────────────────────────────────────────────────────────
@@ -1374,7 +1471,7 @@ export default function App(){
       case 'bloqueados': return<Bloqueados/>
       case 'espera':     return<Espera/>
       case 'yoga':       return<SlotsManager section="yoga"/>
-      case 'belleza':    return<SlotsManager section="belleza"/>
+      case 'belleza':    return<BellezaAdmin/>
       case 'pacientes':     return<Pacientes/>
       case 'profesionales': return<Profesionales/>
       case 'servicios':     return<Servicios/>
