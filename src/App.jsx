@@ -288,7 +288,7 @@ function Dashboard({onNav}){
     setLoading(true)
     const today=toK(new Date()), weekEnd=toK(new Date(Date.now()+6*86400000))
     const[apToday,apWeek,pats,upSlots,waitList]=await Promise.all([
-      sb.from('appointments').select('id,start_time,status,patients(full_name),services(name),professionals(full_name)',{count:'exact'})
+      sb.from('appointments').select('id,start_time,status,patients(full_name),services(name),professionals(name)',{count:'exact'})
         .gte('start_time',today+'T00:00:00').lte('start_time',today+'T23:59:59').neq('status','cancelled').order('start_time').limit(10),
       sb.from('appointments').select('id',{count:'exact'})
         .gte('start_time',today+'T00:00:00').lte('start_time',weekEnd+'T23:59:59').neq('status','cancelled'),
@@ -338,7 +338,7 @@ function Dashboard({onNav}){
             <span style={{fontSize:12,fontWeight:700,color:'var(--green)',minWidth:44}}>{fTime(a.start_time)}</span>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:13,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.patients?.full_name||'—'}</div>
-              <div style={{fontSize:11,color:'var(--text-muted)'}}>{a.services?.name} {a.professionals?.full_name?`· ${a.professionals.full_name}`:''}</div>
+              <div style={{fontSize:11,color:'var(--text-muted)'}}>{a.services?.name} {a.professionals?.name?`· ${a.professionals.full_name}`:''}</div>
             </div>
             <Bg variant={STATUS_CLS[a.status]?.replace('badge-','')||'gray'}>{STATUS_TXT[a.status]||a.status}</Bg>
           </div>)}
@@ -395,9 +395,9 @@ function Agenda(){
     setLoading(true)
     const from=toK(days[0])+'T00:00:00', to=toK(days[6])+'T23:59:59'
     const[appts,profsR]=await Promise.all([
-      sb.from('appointments').select('id,start_time,end_time,status,professional_id,notes,patients(id,full_name),services(name,duration),professionals(full_name)')
+      sb.from('appointments').select('id,start_time,end_time,status,professional_id,notes,patients(id,full_name),services(name,duration),professionals(name)')
         .gte('start_time',from).lte('start_time',to).neq('status','cancelled'),
-      sb.from('professionals').select('id,full_name').eq('active',true).order('full_name'),
+      sb.from('professionals').select('id,name').eq('is_active',true).order('name'),
     ])
     setAppts(appts.data||[])
     setProfs(profsR.data||[])
@@ -499,7 +499,7 @@ function Agenda(){
         <select className="field-input"style={{width:'auto',padding:'6px 10px',fontSize:13}}
           value={filterProf} onChange={e=>setFilterProf(e.target.value)}>
           <option value="all">Todos</option>
-          {profs.map(p=><option key={p.id}value={p.id}>{p.full_name}</option>)}
+          {profs.map(p=><option key={p.id}value={p.id}>{p.name}</option>)}
         </select>
       </div>
       <div style={{display:'flex',alignItems:'center',gap:6}}>
@@ -535,7 +535,7 @@ function Agenda(){
                 return<div key={a.id}className="appt-block"onClick={()=>setModal(a)}
                   style={{top:timeToYLocal(t),height:Math.max(durToH(dur)-2,18),background:c.bg,borderLeft:`3px solid ${c.border}`,color:c.text}}>
                   <div style={{fontWeight:700,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{t} {a.patients?.full_name||''}</div>
-                  <div style={{fontSize:9,opacity:.8,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{a.services?.name}{filterProf==='all'&&a.professionals?.full_name?` · ${a.professionals.full_name}`:''}</div>
+                  <div style={{fontSize:9,opacity:.8,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{a.services?.name}{filterProf==='all'&&a.professionals?.name?` · ${a.professionals.full_name}`:''}</div>
                 </div>
               })}
             </div>
@@ -555,7 +555,7 @@ function Agenda(){
             onClick={()=>{setSelPat(p);setPatSearch('');setPatResults([])}}><strong>{p.full_name}</strong> <span style={{color:'var(--text-muted)'}}>{p.phone}</span></div>)}
         </div>}
       </div>
-      <Sel label="Profesional"value={form.prof_id}onChange={e=>setForm(f=>({...f,prof_id:e.target.value}))}options={[['','Seleccionar…'],...profs.map(p=>[p.id,p.full_name])]}/>
+      <Sel label="Profesional"value={form.prof_id}onChange={e=>setForm(f=>({...f,prof_id:e.target.value}))}options={[['','Seleccionar…'],...profs.map(p=>[p.id,p.name])]}/>
       <Sel label="Servicio"value={form.svc_id}onChange={e=>setForm(f=>({...f,svc_id:e.target.value}))}options={[['','Seleccionar…'],...services.map(s=>[s.id,`${s.name} (${s.duration}min)`])]}/>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
         <Inp label="Fecha"type="date"value={form.date}onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>
@@ -581,7 +581,7 @@ function Agenda(){
       <div className="field">
         <label className="field-label">Profesional</label>
         <select className="field-input"value={editProfId}onChange={e=>setEditProfId(e.target.value)}>
-          {profs.map(p=><option key={p.id}value={p.id}>{p.full_name}</option>)}
+          {profs.map(p=><option key={p.id}value={p.id}>{p.name}</option>)}
         </select>
       </div>
 
@@ -618,7 +618,7 @@ function Horarios(){
   const DAY_NAMES=['','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
 
   useEffect(()=>{
-    sb.from('professionals').select('id,full_name,slot_duration').eq('active',true).order('full_name')
+    sb.from('professionals').select('id,name,slot_duration').eq('is_active',true).order('name')
       .then(({data})=>{setProfs(data||[]);if(data?.length)setSelProf(data[0])})
   },[])
 
@@ -654,7 +654,7 @@ function Horarios(){
       <Btn onClick={save}disabled={saving}>{saving?'Guardando…':'Guardar cambios'}</Btn>
     </div>
 
-    {profs.length>1&&<div className="tab-pills">{profs.map(p=><button key={p.id}className={`tab-pill ${selProf?.id===p.id?'active':''}`}onClick={()=>setSelProf(p)}>{p.full_name}</button>)}</div>}
+    {profs.length>1&&<div className="tab-pills">{profs.map(p=><button key={p.id}className={`tab-pill ${selProf?.id===p.id?'active':''}`}onClick={()=>setSelProf(p)}>{p.name}</button>)}</div>}
 
     {/* Slot duration */}
     <div className="card"style={{padding:'16px 20px',marginBottom:16,display:'flex',alignItems:'center',gap:16}}>
@@ -695,7 +695,7 @@ function Bloqueados(){
   const[toast,setToast]=useState(null)
   const todayK=toK(new Date())
 
-  useEffect(()=>{sb.from('professionals').select('id,full_name').eq('active',true).order('full_name')
+  useEffect(()=>{sb.from('professionals').select('id,name').eq('is_active',true).order('name')
     .then(({data})=>{setProfs(data||[]);if(data?.length)setSelProf(data[0])})},[])
 
   useEffect(()=>{
@@ -728,7 +728,7 @@ function Bloqueados(){
     <div className="section-header"><span className="section-title">Días bloqueados</span></div>
 
     <div style={{display:'flex',alignItems:'center',gap:16,marginBottom:16,flexWrap:'wrap'}}>
-      {profs.length>1&&<div className="tab-pills"style={{margin:0}}>{profs.map(p=><button key={p.id}className={`tab-pill ${selProf?.id===p.id?'active':''}`}onClick={()=>setSelProf(p)}>{p.full_name}</button>)}</div>}
+      {profs.length>1&&<div className="tab-pills"style={{margin:0}}>{profs.map(p=><button key={p.id}className={`tab-pill ${selProf?.id===p.id?'active':''}`}onClick={()=>setSelProf(p)}>{p.name}</button>)}</div>}
       <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,fontWeight:600,cursor:'pointer'}}>
         <Toggle on={blockAll}onChange={setBlockAll}/>
         Aplicar a todos los profesionales
@@ -774,7 +774,7 @@ function Espera(){
   const load=useCallback(async()=>{
     setLoading(true)
     const{data}=await sb.from('waiting_list')
-      .select('id,patient_id,professional_id,service_id,created_at,notes,patients(full_name,phone),services(name),professionals(full_name)')
+      .select('id,patient_id,professional_id,service_id,created_at,notes,patients(full_name,phone),services(name),professionals(name)')
       .order('created_at')
     setList(data||[]);setLoading(false)
   },[])
@@ -828,7 +828,7 @@ function Espera(){
         <div className="pac-avatar">{item.patients?.full_name?.slice(0,2).toUpperCase()||'?'}</div>
         <div style={{flex:1,minWidth:0}}>
           <div style={{fontSize:13,fontWeight:700}}>{item.patients?.full_name||'—'}</div>
-          <div style={{fontSize:11,color:'var(--text-muted)'}}>{item.patients?.phone||'Sin tel.'}{item.services?.name?` · ${item.services.name}`:''}{item.professionals?.full_name?` · ${item.professionals.full_name}`:''}</div>
+          <div style={{fontSize:11,color:'var(--text-muted)'}}>{item.patients?.phone||'Sin tel.'}{item.services?.name?` · ${item.services.name}`:''}{item.professionals?.name?` · ${item.professionals.full_name}`:''}</div>
           {item.notes&&<div style={{fontSize:11,color:'var(--text2)',marginTop:2}}>{item.notes}</div>}
         </div>
         <div style={{textAlign:'right',flexShrink:0}}>
@@ -843,7 +843,7 @@ function Espera(){
 
     {assignItem&&<Modal title={`Asignar hueco — ${assignItem.patients?.full_name}`}onClose={()=>setAssignItem(null)}>
       <div style={{fontSize:13,color:'var(--text-muted)',marginBottom:14}}>
-        {assignItem.services?.name}{assignItem.professionals?.full_name?` · ${assignItem.professionals.full_name}`:''}
+        {assignItem.services?.name}{assignItem.professionals?.name?` · ${assignItem.professionals.full_name}`:''}
       </div>
       <Inp label="Fecha"type="date"value={assignDate}min={toK(new Date())}onChange={e=>setAssignDate(e.target.value)}/>
       {slotsLoad&&<div style={{textAlign:'center',padding:16,color:'var(--text-muted)',fontSize:13}}>Cargando huecos…</div>}
@@ -1014,10 +1014,10 @@ function Pacientes(){
   const fetchHistory=async patId=>{
     setHistLoad(true)
     const[appts,bookings]=await Promise.all([
-      sb.from('appointments').select('id,start_time,status,professionals(full_name),services(name)').eq('patient_id',patId).order('start_time',{ascending:false}).limit(20),
+      sb.from('appointments').select('id,start_time,status,professionals(name),services(name)').eq('patient_id',patId).order('start_time',{ascending:false}).limit(20),
       sb.from('bookings').select('id,status,created_at,availability_slots(start_time,services(name))').eq('patient_id',patId).order('created_at',{ascending:false}).limit(10),
     ])
-    const a=(appts.data||[]).map(x=>({id:x.id,type:'osteo',typeLabel:'Osteopatía',name:x.services?.name||'Osteopatía',pro:x.professionals?.full_name,date:x.start_time,status:x.status}))
+    const a=(appts.data||[]).map(x=>({id:x.id,type:'osteo',typeLabel:'Osteopatía',name:x.services?.name||'Osteopatía',pro:x.professionals?.name,date:x.start_time,status:x.status}))
     const b=(bookings.data||[]).map(x=>{const name=x.availability_slots?.services?.name||'Clase';return{id:x.id,type:name.toLowerCase().includes('yoga')?'yoga':'belleza',typeLabel:name.toLowerCase().includes('yoga')?'Yoga':'Belleza',name,date:x.availability_slots?.start_time||x.created_at,status:x.status}})
     setHistory([...a,...b].sort((x,y)=>new Date(y.date)-new Date(x.date)));setHistLoad(false)
   }
@@ -1191,7 +1191,7 @@ function Profesionales(){
   const[items,   setItems]   =useState([])
   const[loading, setLoading] =useState(true)
   const[modal,   setModal]   =useState(null)   // null | 'new' | {id,...}
-  const[form,    setForm]    =useState({full_name:'',specialty:'',bio:'',active:true})
+  const[form,    setForm]    =useState({name:'',specialty:'',bio:'',section:'osteopathy',is_active:true})
   const[delConfirm,setDelConfirm]=useState(null)
   const[saving,  setSaving]  =useState(false)
   const[toast,   setToast]   =useState(null)
@@ -1200,19 +1200,19 @@ function Profesionales(){
 
   const load=useCallback(async()=>{
     setLoading(true);setLoadErr('')
-    const{data,error}=await sb.from('professionals').select('*').order('full_name')
+    const{data,error}=await sb.from('professionals').select('*').order('name')
     if(error){setLoadErr(error.message);setItems([]);setLoading(false);return}
     setItems(data||[]);setLoading(false)
   },[])
   useEffect(()=>{load()},[load])
 
-  const openNew=()=>{setForm({full_name:'',specialty:'',bio:'',active:true});setModal('new')}
-  const openEdit=p=>{setForm({full_name:p.full_name||'',specialty:p.specialty||'',bio:p.bio||'',active:p.active!==false});setModal(p)}
+  const openNew=()=>{setForm({name:'',specialty:'',bio:'',section:'osteopathy',is_active:true});setModal('new')}
+  const openEdit=p=>{setForm({name:p.name||'',specialty:p.specialty||'',bio:p.bio||'',section:p.section||'osteopathy',is_active:p.is_active!==false});setModal(p)}
 
   const save=async()=>{
-    if(!form.full_name.trim())return
+    if(!form.name.trim())return
     setSaving(true)
-    const payload={full_name:form.full_name.trim(),specialty:form.specialty.trim()||null,bio:form.bio.trim()||null,active:form.active}
+    const payload={name:form.name.trim(),specialty:form.specialty.trim()||null,bio:form.bio.trim()||null,section:form.section,is_active:form.is_active}
     let error
     if(modal?.id){
       ({error}=await sb.from('professionals').update(payload).eq('id',modal.id))
@@ -1232,9 +1232,9 @@ function Profesionales(){
   }
 
   const toggleActive=async(id,val)=>{
-    const{error}=await sb.from('professionals').update({active:val}).eq('id',id)
+    const{error}=await sb.from('professionals').update({is_active:val}).eq('id',id)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    setItems(prev=>prev.map(p=>p.id===id?{...p,active:val}:p))
+    setItems(prev=>prev.map(p=>p.id===id?{...p,is_active:val}:p))
   }
 
   const upd=e=>setForm(f=>({...f,[e.target.name]:e.target.value}))
@@ -1264,19 +1264,19 @@ function Profesionales(){
         <div key={p.id} className="card" style={{padding:18,display:'flex',flexDirection:'column',gap:12}}>
           <div style={{display:'flex',alignItems:'center',gap:12}}>
             <div style={{width:48,height:48,borderRadius:'50%',background:'linear-gradient(135deg,var(--green-dark),var(--green-light))',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,fontWeight:900,flexShrink:0}}>
-              {(p.full_name||'?').split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase()}
+              {(p.name||'?').split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase()}
             </div>
             <div style={{flex:1,minWidth:0}}>
-              <div style={{fontWeight:800,fontSize:15,color:'var(--text)'}}>{p.full_name||'Sin nombre'}</div>
+              <div style={{fontWeight:800,fontSize:15,color:'var(--text)'}}>{p.name||'Sin nombre'}</div>
               <div style={{fontSize:12,color:'var(--text-muted)'}}>{p.specialty||'Sin especialidad'}</div>
             </div>
-            <span className={`badge ${p.active!==false?'badge-green':'badge-gray'}`}>{p.active!==false?'Activo':'Inactivo'}</span>
+            <span className={`badge ${p.is_active!==false?'badge-green':'badge-gray'}`}>{p.is_active!==false?'Activo':'Inactivo'}</span>
           </div>
           {p.bio&&<p style={{fontSize:12,color:'var(--text-muted)',lineHeight:1.6,margin:0}}>{p.bio}</p>}
           <div style={{display:'flex',gap:8,borderTop:'1px solid var(--border)',paddingTop:12}}>
             <Btn variant="ghost" onClick={()=>openEdit(p)} style={{flex:1,fontSize:12}}>Editar</Btn>
-            <Btn variant={p.active?'secondary':'primary'} onClick={()=>toggleActive(p.id,!p.active)} style={{flex:1,fontSize:12}}>
-              {p.active?'Desactivar':'Activar'}
+            <Btn variant={p.is_active?'secondary':'primary'} onClick={()=>toggleActive(p.id,!p.is_active)} style={{flex:1,fontSize:12}}>
+              {p.is_active?'Desactivar':'Activar'}
             </Btn>
             <Btn variant="danger" onClick={()=>setDelConfirm(p.id)} style={{fontSize:12}}>🗑</Btn>
           </div>
@@ -1289,7 +1289,15 @@ function Profesionales(){
     {modal&&<Modal title={modal?.id?'Editar profesional':'Nuevo profesional'} onClose={()=>setModal(null)}>
       <div className="field">
         <label className="field-label">Nombre completo *</label>
-        <input className="field-input" name="full_name" value={form.full_name} onChange={upd} placeholder="Ana García López" autoFocus />
+        <input className="field-input" name="name" value={form.name} onChange={upd} placeholder="Ana García López" autoFocus />
+      </div>
+      <div className="field">
+        <label className="field-label">Sección</label>
+        <select className="field-input" name="section" value={form.section} onChange={upd}>
+          <option value="osteopathy">Osteopatía</option>
+          <option value="yoga">Yoga</option>
+          <option value="beauty">Belleza</option>
+        </select>
       </div>
       <div className="field">
         <label className="field-label">Especialidad</label>
@@ -1303,12 +1311,12 @@ function Profesionales(){
         <textarea className="field-input" name="bio" value={form.bio} onChange={upd} rows={3} placeholder="Breve descripción del profesional…" style={{resize:'vertical'}}/>
       </div>
       <div className="field" style={{display:'flex',alignItems:'center',gap:10}}>
-        <input type="checkbox" id="pro-active" checked={form.active} onChange={e=>setForm(f=>({...f,active:e.target.checked}))} style={{width:16,height:16,accentColor:'var(--green)'}}/>
+        <input type="checkbox" id="pro-active" checked={form.is_active} onChange={e=>setForm(f=>({...f,is_active:e.target.checked}))} style={{width:16,height:16,accentColor:'var(--green)'}}/>
         <label htmlFor="pro-active" style={{fontSize:13,fontWeight:600,cursor:'pointer'}}>Activo (visible para reservas)</label>
       </div>
       <div style={{display:'flex',gap:10,marginTop:4}}>
         <Btn variant="ghost" onClick={()=>setModal(null)} style={{flex:1}}>Cancelar</Btn>
-        <Btn onClick={save} disabled={!form.full_name.trim()||saving} style={{flex:1}}>{saving?'Guardando…':'Guardar'}</Btn>
+        <Btn onClick={save} disabled={!form.name.trim()||saving} style={{flex:1}}>{saving?'Guardando…':'Guardar'}</Btn>
       </div>
     </Modal>}
 
