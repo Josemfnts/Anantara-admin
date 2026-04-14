@@ -1207,7 +1207,7 @@ function Profesionales(){
   useEffect(()=>{load()},[load])
 
   const openNew=()=>{setForm({full_name:'',specialty:'',bio:'',active:true});setModal('new')}
-  const openEdit=p=>{setForm({full_name:p.full_name,specialty:p.specialty||'',bio:p.bio||'',active:p.active});setModal(p)}
+  const openEdit=p=>{setForm({full_name:p.full_name||'',specialty:p.specialty||'',bio:p.bio||'',active:p.active!==false});setModal(p)}
 
   const save=async()=>{
     if(!form.full_name.trim())return
@@ -1225,10 +1225,10 @@ function Profesionales(){
   }
 
   const del=async id=>{
-    const{error}=await sb.from('professionals').update({active:false}).eq('id',id)
+    const{error}=await sb.from('professionals').delete().eq('id',id)
     setDelConfirm(null)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    setToast({msg:'Profesional desactivado',type:'ok'});load()
+    setToast({msg:'Profesional eliminado',type:'ok'});load()
   }
 
   const toggleActive=async(id,val)=>{
@@ -1312,11 +1312,11 @@ function Profesionales(){
       </div>
     </Modal>}
 
-    {delConfirm&&<Modal title="¿Desactivar profesional?" onClose={()=>setDelConfirm(null)}>
-      <p style={{fontSize:13,color:'var(--text-muted)',marginBottom:20}}>El profesional dejará de aparecer en el sistema de reservas. Sus citas existentes no se eliminarán.</p>
+    {delConfirm&&<Modal title="¿Eliminar profesional?" onClose={()=>setDelConfirm(null)}>
+      <p style={{fontSize:13,color:'var(--text-muted)',marginBottom:20}}>Se eliminará permanentemente. Las citas existentes no se borrarán pero quedarán sin profesional asignado.</p>
       <div style={{display:'flex',gap:10}}>
         <Btn variant="ghost" onClick={()=>setDelConfirm(null)} style={{flex:1}}>Cancelar</Btn>
-        <Btn variant="danger" onClick={()=>del(delConfirm)} style={{flex:1}}>Desactivar</Btn>
+        <Btn variant="danger" onClick={()=>del(delConfirm)} style={{flex:1}}>Eliminar</Btn>
       </div>
     </Modal>}
   </>
