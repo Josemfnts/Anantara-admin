@@ -1196,9 +1196,12 @@ function Profesionales(){
   const[saving,  setSaving]  =useState(false)
   const[toast,   setToast]   =useState(null)
 
+  const[loadErr,setLoadErr]=useState('')
+
   const load=useCallback(async()=>{
-    setLoading(true)
-    const{data}=await sb.from('professionals').select('*').order('full_name')
+    setLoading(true);setLoadErr('')
+    const{data,error}=await sb.from('professionals').select('*').order('full_name')
+    if(error){setLoadErr(error.message);setItems([]);setLoading(false);return}
     setItems(data||[]);setLoading(false)
   },[])
   useEffect(()=>{load()},[load])
@@ -1210,21 +1213,27 @@ function Profesionales(){
     if(!form.full_name.trim())return
     setSaving(true)
     const payload={full_name:form.full_name.trim(),specialty:form.specialty.trim()||null,bio:form.bio.trim()||null,active:form.active}
+    let error
     if(modal?.id){
-      await sb.from('professionals').update(payload).eq('id',modal.id)
+      ({error}=await sb.from('professionals').update(payload).eq('id',modal.id))
     }else{
-      await sb.from('professionals').insert(payload)
+      ({error}=await sb.from('professionals').insert(payload))
     }
-    setSaving(false);setModal(null);setToast({msg:modal?.id?'Profesional actualizado':'Profesional creado',type:'ok'});load()
+    setSaving(false)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setModal(null);setToast({msg:modal?.id?'Profesional actualizado':'Profesional creado',type:'ok'});load()
   }
 
   const del=async id=>{
-    await sb.from('professionals').update({active:false}).eq('id',id)
-    setDelConfirm(null);setToast({msg:'Profesional desactivado',type:'ok'});load()
+    const{error}=await sb.from('professionals').update({active:false}).eq('id',id)
+    setDelConfirm(null)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setToast({msg:'Profesional desactivado',type:'ok'});load()
   }
 
   const toggleActive=async(id,val)=>{
-    await sb.from('professionals').update({active:val}).eq('id',id)
+    const{error}=await sb.from('professionals').update({active:val}).eq('id',id)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setItems(prev=>prev.map(p=>p.id===id?{...p,active:val}:p))
   }
 
@@ -1239,7 +1248,12 @@ function Profesionales(){
 
     {loading&&<div style={{padding:40,textAlign:'center',color:'var(--text-muted)'}}>Cargando…</div>}
 
-    {!loading&&items.length===0&&<div style={{padding:40,textAlign:'center',color:'var(--text-muted)'}}>
+    {loadErr&&<div style={{background:'#fee2e2',border:'1px solid #fecaca',color:'#dc2626',padding:'12px 16px',borderRadius:10,marginBottom:16,fontSize:13}}>
+      <strong>Error al cargar:</strong> {loadErr}<br/>
+      <span style={{fontSize:12}}>Verifica las políticas RLS en Supabase o ejecuta el SQL de configuración.</span>
+    </div>}
+
+    {!loading&&!loadErr&&items.length===0&&<div style={{padding:40,textAlign:'center',color:'var(--text-muted)'}}>
       <div style={{fontSize:36,marginBottom:8}}>👩‍⚕️</div>
       <div style={{fontWeight:700,marginBottom:4}}>Sin profesionales</div>
       <div style={{fontSize:13}}>Añade el primer profesional para empezar a gestionar citas.</div>
