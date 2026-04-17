@@ -235,7 +235,7 @@ function Agenda(){
     setLoading(true)
     const from=toK(days[0])+'T00:00:00', to=toK(days[6])+'T23:59:59'
     const[appts,profsR]=await Promise.all([
-      sb.from('appointments').select('id,start_time,end_time,status,professional_id,notes,patients(id,full_name),services(name,duration_minutes),professionals(name)')
+      sb.from('appointments').select('id,start_time,status,professional_id,notes,patients(id,full_name),services(name,duration_minutes),professionals(name)')
         .gte('start_time',from).lte('start_time',to).neq('status','cancelled'),
       sb.from('professionals').select('id,name').eq('is_active',true).order('name'),
     ])
@@ -290,11 +290,11 @@ function Agenda(){
     // Overlap check
     const{data:overlap}=await sb.from('appointments').select('id')
       .eq('professional_id',form.prof_id).neq('status','cancelled')
-      .lt('start_time',endDT.toISOString()).gt('end_time',startDT.toISOString())
+      .gte('start_time',startDT.toISOString()).lt('start_time',endDT.toISOString())
     if(overlap?.length){setToast({msg:'El profesional ya tiene una cita en ese horario.',type:'error'});return}
     const{error}=await sb.from('appointments').insert({
       patient_id:selPat.id,professional_id:form.prof_id,service_id:form.svc_id,
-      start_time:startDT.toISOString(),end_time:endDT.toISOString(),notes:form.notes||null,status:'confirmed',
+      start_time:startDT.toISOString(),notes:form.notes||null,status:'confirmed',
     })
     if(error){setToast({msg:error.message,type:'error'});return}
     setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:''})
@@ -655,7 +655,7 @@ function Espera(){
     const endDT=new Date(startDT.getTime()+dur*60000)
     const{error}=await sb.from('appointments').insert({
       patient_id:assignItem.patient_id,professional_id:assignItem.professional_id,
-      service_id:assignItem.service_id,start_time:startDT.toISOString(),end_time:endDT.toISOString(),status:'confirmed',
+      service_id:assignItem.service_id,start_time:startDT.toISOString(),status:'confirmed',
     })
     if(error){setToast({msg:error.message,type:'error'});setConfirming(false);return}
     await sb.from('waiting_list').delete().eq('id',assignItem.id)
@@ -945,7 +945,7 @@ function BellezaAdmin(){
     if(proIds.length===0){setAppts([]);setLoading(false);return}
 
     let q=sb.from('appointments')
-      .select('id,start_time,end_time,status,notes,patients(id,full_name,phone),professionals(id,name),services(name,duration_minutes)')
+      .select('id,start_time,status,notes,patients(id,full_name,phone),professionals(id,name),services(name,duration_minutes)')
       .in('professional_id',proIds)
       .order('start_time',{ascending:tab!=='past'})
 
