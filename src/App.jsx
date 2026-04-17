@@ -404,7 +404,7 @@ function Agenda(){
       <Sel label="Servicio"value={form.svc_id}onChange={e=>setForm(f=>({...f,svc_id:e.target.value}))}options={[['','Seleccionar…'],...services.map(s=>[s.id,`${s.name} (${s.duration_minutes}min)`])]}/>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
         <Inp label="Fecha"type="date"value={form.date}onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>
-        <Inp label="Hora"type="time"value={form.time}onChange={e=>setForm(f=>({...f,time:e.target.value}))}/>
+        <Inp label="Hora"type="time"step="900"value={form.time}onChange={e=>setForm(f=>({...f,time:e.target.value}))}/>
       </div>
       <div className="field"><label className="field-label">Notas (opcional)</label><textarea className="notes-area"value={form.notes}onChange={e=>setForm(f=>({...f,notes:e.target.value}))}placeholder="Observaciones…"/></div>
       <div style={{display:'flex',gap:10,marginTop:4}}>
@@ -520,9 +520,9 @@ function Horarios(){
         <span style={{fontSize:13,fontWeight:700,color:row.active?'var(--text)':'var(--text-muted)'}}>{DAY_NAMES[row.day_of_week]}</span>
         <Toggle on={row.active}onChange={v=>upd(i,'active',v)}/>
         {row.active?<div className="hours-times">
-          <input type="time"className="field-input"style={{width:100,padding:'6px 8px'}}value={row.start_time}onChange={e=>upd(i,'start_time',e.target.value)}/>
+          <input type="time"step="900"className="field-input"style={{width:100,padding:'6px 8px'}}value={row.start_time}onChange={e=>upd(i,'start_time',e.target.value)}/>
           <span>–</span>
-          <input type="time"className="field-input"style={{width:100,padding:'6px 8px'}}value={row.end_time}onChange={e=>upd(i,'end_time',e.target.value)}/>
+          <input type="time"step="900"className="field-input"style={{width:100,padding:'6px 8px'}}value={row.end_time}onChange={e=>upd(i,'end_time',e.target.value)}/>
         </div>:<span style={{fontSize:12,color:'var(--text-muted)'}}>Día libre</span>}
       </div>)}
     </div>
@@ -803,8 +803,8 @@ function SlotsManager({section}){
     {modal&&<Modal title={modal?.id?'Editar clase':'Nueva clase'}onClose={()=>setModal(null)}>
       <Sel label="Servicio"value={form.service_id}onChange={e=>setForm(f=>({...f,service_id:e.target.value}))}options={[['','Seleccionar…'],...services.map(s=>[s.id,s.name])]}/>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-        <Inp label="Inicio"type="datetime-local"value={form.start}onChange={e=>setForm(f=>({...f,start:e.target.value}))}/>
-        <Inp label="Fin (opcional)"type="datetime-local"value={form.end}onChange={e=>setForm(f=>({...f,end:e.target.value}))}/>
+        <Inp label="Inicio"type="datetime-local"step="900"value={form.start}onChange={e=>setForm(f=>({...f,start:e.target.value}))}/>
+        <Inp label="Fin (opcional)"type="datetime-local"step="900"value={form.end}onChange={e=>setForm(f=>({...f,end:e.target.value}))}/>
       </div>
       <Inp label="Plazas máximas"type="number"min={1}value={form.capacity}onChange={e=>setForm(f=>({...f,capacity:e.target.value}))}/>
       <div style={{display:'flex',gap:10,marginTop:4}}>
