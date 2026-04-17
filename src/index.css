@@ -47,6 +47,23 @@
   --shadow-lg: 0 8px 32px rgba(44,74,53,.12), 0 2px 8px rgba(44,74,53,.06);
   --shadow-xl: 0 16px 48px rgba(44,74,53,.16), 0 4px 12px rgba(44,74,53,.08);
   --sidebar-w: 220px;
+
+  /* Backward-compat aliases for inline JSX styles */
+  --border: var(--stone);
+  --text: var(--ink);
+  --text-muted: var(--muted);
+  --text2: var(--body);
+  --bg: var(--cream);
+  --white: #ffffff;
+  --green-dark: var(--sage-deep);
+  --green: var(--sage);
+  --green-light: var(--sage-mid);
+  --green-subtle: var(--sage-subtle);
+  --purple: #7a52b0;
+  --purple-light: #ede8f7;
+  --radius: var(--r-sm);
+  --radius-lg: var(--r-lg);
+  --shadow: var(--shadow-sm);
 }
 
 /* ── Base ── */
@@ -166,8 +183,11 @@ button, input, select, textarea { font-family: inherit }
 .alert-banner-text { font-size: var(--text-sm); font-weight: 500; color: #7a5a10; flex: 1 }
 
 /* ── Dashboard ── */
-.dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px }
+.dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start }
 @media(max-width: 800px) { .dash-grid { grid-template-columns: 1fr } }
+/* Make both dash cards equal height */
+.dash-grid > div { display: flex; flex-direction: column }
+.dash-grid > div .card { flex: 1 }
 .dash-row { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--stone); transition: background .1s }
 .dash-row:last-child { border-bottom: none }
 .dash-row:hover { background: var(--sage-mist) }
@@ -225,6 +245,9 @@ button, input, select, textarea { font-family: inherit }
 .wait-card { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--stone) }
 .wait-card:last-child { border-bottom: none }
 
+/* ── Professional cards — push button row to bottom regardless of content height ── */
+.card[style*="flex-direction"] > div:last-child { margin-top: auto }
+
 /* ── Toggle ── */
 .toggle { width: 38px; height: 22px; border-radius: var(--r-full); border: none; cursor: pointer; position: relative; flex-shrink: 0; transition: background .2s }
 .toggle-knob { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; background: #fff; border-radius: 50%; transition: transform .2s; box-shadow: 0 1px 3px rgba(44,74,53,.2) }
@@ -248,7 +271,7 @@ button, input, select, textarea { font-family: inherit }
 /* ── Services table ── */
 .svc-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--stone) }
 .svc-row:last-child { border-bottom: none }
-.svc-cat { font-size: var(--text-xs); font-weight: 600; padding: 2px 8px; border-radius: var(--r-full); white-space: nowrap }
+.svc-cat { font-size: var(--text-xs); font-weight: 600; padding: 2px 8px; border-radius: var(--r-full); white-space: nowrap; min-width: 80px; text-align: center; flex-shrink: 0 }
 .svc-cat-osteopatia { background: var(--sage-subtle); color: var(--sage-deep) }
 .svc-cat-yoga       { background: #e8f4f8; color: #1a3d5c }
 .svc-cat-belleza    { background: #ede8f7; color: #4a2c7a }
