@@ -129,10 +129,10 @@ function Dashboard({onNav}){
     setLoading(true)
     const today=toK(new Date()), weekEnd=toK(new Date(Date.now()+6*86400000))
     const[apToday,apWeek,pats,upSlots,waitList]=await Promise.all([
-      sb.from('appointments').select('id,start_time,status,patients(full_name),services(name),professionals(name)',{count:'exact'})
-        .gte('start_time',today+'T00:00:00').lte('start_time',today+'T23:59:59').neq('status','cancelled').order('start_time').limit(10),
+      sb.from('appointments').select('id,starts_at,status,patients(full_name),services(name),professionals(name)',{count:'exact'})
+        .gte('starts_at',today+'T00:00:00').lte('starts_at',today+'T23:59:59').neq('status','cancelled').order('starts_at').limit(10),
       sb.from('appointments').select('id',{count:'exact'})
-        .gte('start_time',today+'T00:00:00').lte('start_time',weekEnd+'T23:59:59').neq('status','cancelled'),
+        .gte('starts_at',today+'T00:00:00').lte('starts_at',weekEnd+'T23:59:59').neq('status','cancelled'),
       sb.from('patients').select('id',{count:'exact'}),
       sb.from('availability_slots').select('id,start_time,capacity,services(name),bookings(id)')
         .gte('start_time',today+'T00:00:00').order('start_time').limit(6),
@@ -176,7 +176,7 @@ function Dashboard({onNav}){
         <div className="card"style={{overflow:'hidden'}}>
           {todayA.length===0?<Em icon="📅"title="Sin citas hoy"sub="No hay citas programadas"/>
           :todayA.map(a=><div key={a.id}className="dash-row">
-            <span style={{fontSize:12,fontWeight:700,color:'var(--green)',minWidth:44}}>{fTime(a.start_time)}</span>
+            <span style={{fontSize:12,fontWeight:700,color:'var(--green)',minWidth:44}}>{fTime(a.starts_at)}</span>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:13,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.patients?.full_name||'—'}</div>
               <div style={{fontSize:11,color:'var(--text-muted)'}}>{a.services?.name} {a.professionals?.name?`· ${a.professionals.name}`:''}</div>
@@ -235,8 +235,8 @@ function Agenda(){
     setLoading(true)
     const from=toK(days[0])+'T00:00:00', to=toK(days[6])+'T23:59:59'
     const[appts,profsR]=await Promise.all([
-      sb.from('appointments').select('id,start_time,status,professional_id,notes,patients(id,full_name),services(name,duration_minutes),professionals(name)')
-        .gte('start_time',from).lte('start_time',to).neq('status','cancelled'),
+      sb.from('appointments').select('id,starts_at,ends_at,status,professional_id,notes,patients(id,full_name),services(name,duration_minutes),professionals(name)')
+        .gte('starts_at',from).lte('starts_at',to).neq('status','cancelled'),
       sb.from('professionals').select('id,name').eq('is_active',true).order('name'),
     ])
     setAppts(appts.data||[])
@@ -290,11 +290,11 @@ function Agenda(){
     // Overlap check
     const{data:overlap}=await sb.from('appointments').select('id')
       .eq('professional_id',form.prof_id).neq('status','cancelled')
-      .gte('start_time',startDT.toISOString()).lt('start_time',endDT.toISOString())
+      .gte('starts_at',startDT.toISOString()).lt('starts_at',endDT.toISOString())
     if(overlap?.length){setToast({msg:'El profesional ya tiene una cita en ese horario.',type:'error'});return}
     const{error}=await sb.from('appointments').insert({
       patient_id:selPat.id,professional_id:form.prof_id,service_id:form.svc_id,
-      start_time:startDT.toISOString(),notes:form.notes||null,status:'confirmed',
+      starts_at:startDT.toISOString(),ends_at:endDT.toISOString(),notes:form.notes||null,status:'confirmed',
     })
     if(error){setToast({msg:error.message,type:'error'});return}
     setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:''})
@@ -315,7 +315,7 @@ function Agenda(){
   const dayAppts=date=>{
     const dk=toK(date)
     return appointments.filter(a=>{
-      if(!a.start_time?.startsWith(dk)) return false
+      if(!a.starts_at?.startsWith(dk)) return false
       if(filterProf!=='all' && a.professional_id!==filterProf) return false
       return true
     })
@@ -373,8 +373,8 @@ function Agenda(){
             const da=hi===0?dayAppts(d):[]
             return<div key={`c-${h}-${di}`}className="ag-col"style={{gridColumn:di+2,gridRow:hi+2}}>
               {da.map(a=>{
-                const t=a.start_time?.slice(11,16)||'08:00'
-                const et=a.end_time?.slice(11,16)
+                const t=a.starts_at?.slice(11,16)||'08:00'
+                const et=a.ends_at?.slice(11,16)
                 const dur=et?(new Date('2000-01-01T'+et)-new Date('2000-01-01T'+t))/60000:60
                 const c=apptColor(a.status)
                 return<div key={a.id}className="appt-block"onClick={()=>setModal(a)}
@@ -419,7 +419,7 @@ function Agenda(){
         <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:2}}>PACIENTE</div><div style={{fontSize:14,fontWeight:700}}>{modal.patients?.full_name||'—'}</div></div>
         <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:2}}>ESTADO</div><Bg variant={STATUS_CLS[modal.status]?.replace('badge-','')||'gray'}>{STATUS_TXT[modal.status]||modal.status}</Bg></div>
         <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:2}}>SERVICIO</div><div style={{fontSize:13}}>{modal.services?.name||'—'}</div></div>
-        <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:2}}>FECHA Y HORA</div><div style={{fontSize:13}}>{fDT(modal.start_time)}</div></div>
+        <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:2}}>FECHA Y HORA</div><div style={{fontSize:13}}>{fDT(modal.starts_at)}</div></div>
       </div>
 
       {/* Reasignar profesional */}
@@ -636,10 +636,10 @@ function Espera(){
           setAvailSlots(data.map(s=>typeof s==='string'?{time:s}:{time:s.time||s.start_time?.slice(11,16)}))
         }else{
           // Fallback
-          sb.from('appointments').select('start_time').eq('professional_id',profId)
-            .gte('start_time',assignDate+'T00:00:00').lte('start_time',assignDate+'T23:59:59')
+          sb.from('appointments').select('starts_at').eq('professional_id',profId)
+            .gte('starts_at',assignDate+'T00:00:00').lte('starts_at',assignDate+'T23:59:59')
             .neq('status','cancelled').then(({data:ex})=>{
-              const taken=new Set((ex||[]).map(a=>a.start_time.slice(11,16)))
+              const taken=new Set((ex||[]).map(a=>a.starts_at.slice(11,16)))
               setAvailSlots([9,10,11,12,13,16,17,18].filter(h=>!taken.has(`${pad(h)}:00`)).map(h=>({time:`${pad(h)}:00`})))
             })
         }
@@ -655,7 +655,7 @@ function Espera(){
     const endDT=new Date(startDT.getTime()+dur*60000)
     const{error}=await sb.from('appointments').insert({
       patient_id:assignItem.patient_id,professional_id:assignItem.professional_id,
-      service_id:assignItem.service_id,start_time:startDT.toISOString(),status:'confirmed',
+      service_id:assignItem.service_id,starts_at:startDT.toISOString(),ends_at:endDT.toISOString(),status:'confirmed',
     })
     if(error){setToast({msg:error.message,type:'error'});setConfirming(false);return}
     await sb.from('waiting_list').delete().eq('id',assignItem.id)
@@ -861,10 +861,10 @@ function Pacientes(){
   const fetchHistory=async patId=>{
     setHistLoad(true)
     const[appts,bookings]=await Promise.all([
-      sb.from('appointments').select('id,start_time,status,professionals(name),services(name)').eq('patient_id',patId).order('start_time',{ascending:false}).limit(20),
+      sb.from('appointments').select('id,starts_at,status,professionals(name),services(name)').eq('patient_id',patId).order('starts_at',{ascending:false}).limit(20),
       sb.from('bookings').select('id,status,created_at,availability_slots(start_time,services(name))').eq('patient_id',patId).order('created_at',{ascending:false}).limit(10),
     ])
-    const a=(appts.data||[]).map(x=>({id:x.id,type:'osteo',typeLabel:'Osteopatía',name:x.services?.name||'Osteopatía',pro:x.professionals?.name,date:x.start_time,status:x.status}))
+    const a=(appts.data||[]).map(x=>({id:x.id,type:'osteo',typeLabel:'Osteopatía',name:x.services?.name||'Osteopatía',pro:x.professionals?.name,date:x.starts_at,status:x.status}))
     const b=(bookings.data||[]).map(x=>{const name=x.availability_slots?.services?.name||'Clase';return{id:x.id,type:name.toLowerCase().includes('yoga')?'yoga':'belleza',typeLabel:name.toLowerCase().includes('yoga')?'Yoga':'Belleza',name,date:x.availability_slots?.start_time||x.created_at,status:x.status}})
     setHistory([...a,...b].sort((x,y)=>new Date(y.date)-new Date(x.date)));setHistLoad(false)
   }
@@ -945,13 +945,13 @@ function BellezaAdmin(){
     if(proIds.length===0){setAppts([]);setLoading(false);return}
 
     let q=sb.from('appointments')
-      .select('id,start_time,status,notes,patients(id,full_name,phone),professionals(id,name),services(name,duration_minutes)')
+      .select('id,starts_at,status,notes,patients(id,full_name,phone),professionals(id,name),services(name,duration_minutes)')
       .in('professional_id',proIds)
-      .order('start_time',{ascending:tab!=='past'})
+      .order('starts_at',{ascending:tab!=='past'})
 
-    if(tab==='pending')   q=q.eq('status','pending').gte('start_time',now)
-    if(tab==='confirmed') q=q.eq('status','confirmed').gte('start_time',now)
-    if(tab==='past')      q=q.lt('start_time',now).neq('status','cancelled')
+    if(tab==='pending')   q=q.eq('status','pending').gte('starts_at',now)
+    if(tab==='confirmed') q=q.eq('status','confirmed').gte('starts_at',now)
+    if(tab==='past')      q=q.lt('starts_at',now).neq('status','cancelled')
     if(tab==='cancelled') q=q.eq('status','cancelled')
 
     const{data,error}=await q.limit(40)
@@ -991,8 +991,8 @@ function BellezaAdmin(){
       {appts.map(a=>(
         <div key={a.id}className="dash-row"style={{cursor:'pointer'}}onClick={()=>setModal(a)}>
           <div style={{minWidth:48,textAlign:'right'}}>
-            <div style={{fontSize:13,fontWeight:800,color:'var(--purple)'}}>{fTime(a.start_time)}</div>
-            <div style={{fontSize:10,color:'var(--text-muted)'}}>{fD(a.start_time)}</div>
+            <div style={{fontSize:13,fontWeight:800,color:'var(--purple)'}}>{fTime(a.starts_at)}</div>
+            <div style={{fontSize:10,color:'var(--text-muted)'}}>{fD(a.starts_at)}</div>
           </div>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:13,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.patients?.full_name||'—'}</div>
@@ -1010,7 +1010,7 @@ function BellezaAdmin(){
           <Bg variant={STATUS_CLS[modal.status]?.replace('badge-','')||'gray'}>{STATUS_TXT[modal.status]||modal.status}</Bg>
         </div>
         <div style={{fontSize:13,color:'var(--text-muted)'}}>📞 {modal.patients?.phone||'Sin teléfono'}</div>
-        <div style={{fontSize:13,color:'var(--text-muted)'}}>🗓 {fDT(modal.start_time)}</div>
+        <div style={{fontSize:13,color:'var(--text-muted)'}}>🗓 {fDT(modal.starts_at)}</div>
         <div style={{fontSize:13,color:'var(--text-muted)'}}>✨ {modal.notes||modal.services?.name||'Belleza'}</div>
         {modal.professionals?.name&&<div style={{fontSize:13,color:'var(--text-muted)'}}>👩‍⚕️ {modal.professionals.name}</div>}
       </div>
