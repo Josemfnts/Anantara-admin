@@ -475,7 +475,7 @@ function Horarios(){
   const DAY_NAMES=['','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
 
   useEffect(()=>{
-    sb.from('professionals').select('id,name,slot_duration').eq('is_active',true).order('name')
+    sb.from('professionals').select('id,name,slot_duration').eq('is_active',true).eq('section','osteopathy').order('name')
       .then(({data})=>{setProfs(data||[]);if(data?.length)setSelProf(data[0])})
   },[])
 
@@ -563,27 +563,37 @@ function Bloqueados(){
   const[toast,setToast]=useState(null)
   const todayK=toK(new Date())
 
-  useEffect(()=>{sb.from('professionals').select('id,name').eq('is_active',true).order('name')
+  useEffect(()=>{sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name')
     .then(({data})=>{setProfs(data||[]);if(data?.length)setSelProf(data[0])})},[])
 
   useEffect(()=>{
     if(!selProf)return
     const from=`${calYear}-${pad(calMonth+1)}-01`, to=`${calYear}-${pad(calMonth+1)}-31`
     sb.from('blocked_days').select('blocked_date').eq('professional_id',selProf.id).gte('blocked_date',from).lte('blocked_date',to)
-      .then(({data})=>setBlocked((data||[]).map(r=>r.blocked_date)))
+      .then(({data,error})=>{
+        if(error){setToast({msg:'Error al cargar días: '+error.message,type:'error'});return}
+        setBlocked((data||[]).map(r=>r.blocked_date))
+      })
   },[selProf,calYear,calMonth])
 
   const toggle=async dateK=>{
     if(!selProf)return
     const targetProfs=blockAll?profs:[selProf]
     if(blocked.includes(dateK)){
-      for(const p of targetProfs) await sb.from('blocked_days').delete().eq('professional_id',p.id).eq('blocked_date',dateK)
+      const errs=[]
+      for(const p of targetProfs){
+        const{error}=await sb.from('blocked_days').delete().eq('professional_id',p.id).eq('blocked_date',dateK)
+        if(error) errs.push(error.message)
+      }
+      if(errs.length){setToast({msg:'Error: '+errs[0],type:'error'});return}
       setBlocked(b=>b.filter(d=>d!==dateK)); setToast({msg:'Día desbloqueado',type:'ok'})
     }else{
+      const errs=[]
       for(const p of targetProfs){
         const{error}=await sb.from('blocked_days').insert({professional_id:p.id,blocked_date:dateK})
-        if(error&&error.code!=='23505')console.error(error) // ignore duplicate key
+        if(error&&error.code!=='23505') errs.push(error.message)
       }
+      if(errs.length){setToast({msg:'Error: '+errs[0],type:'error'});return}
       setBlocked(b=>[...b,dateK]); setToast({msg:blockAll?`Día bloqueado para todos (${targetProfs.length})`:'Día bloqueado',type:'ok'})
     }
   }
