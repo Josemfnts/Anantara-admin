@@ -14,6 +14,7 @@ const DAYS_ES = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb']
 
 function pad(n) { return String(n).padStart(2,'0') }
 function toK(d) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}` }
+function localDT(d) { return `${toK(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` }
 function fD(iso)  { if(!iso)return'—'; const d=new Date(iso); return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}` }
 function fDT(iso) { if(!iso)return'—'; const d=new Date(iso); return `${d.getDate()} ${MONTHS[d.getMonth()]} · ${pad(d.getHours())}:${pad(d.getMinutes())}` }
 function fTime(iso){ if(!iso)return'—'; const d=new Date(iso); return `${pad(d.getHours())}:${pad(d.getMinutes())}` }
@@ -290,11 +291,11 @@ function Agenda(){
     // Overlap check
     const{data:overlap}=await sb.from('appointments').select('id')
       .eq('professional_id',form.prof_id).neq('status','cancelled')
-      .gte('starts_at',startDT.toISOString()).lt('starts_at',endDT.toISOString())
+      .gte('starts_at',localDT(startDT)).lt('starts_at',localDT(endDT))
     if(overlap?.length){setToast({msg:'El profesional ya tiene una cita en ese horario.',type:'error'});return}
     const{error}=await sb.from('appointments').insert({
       patient_id:selPat.id,professional_id:form.prof_id,service_id:form.svc_id,
-      starts_at:startDT.toISOString(),ends_at:endDT.toISOString(),notes:form.notes||null,status:'confirmed',
+      starts_at:localDT(startDT),ends_at:localDT(endDT),notes:form.notes||null,status:'confirmed',
     })
     if(error){setToast({msg:error.message,type:'error'});return}
     setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:''})
@@ -655,7 +656,7 @@ function Espera(){
     const endDT=new Date(startDT.getTime()+dur*60000)
     const{error}=await sb.from('appointments').insert({
       patient_id:assignItem.patient_id,professional_id:assignItem.professional_id,
-      service_id:assignItem.service_id,starts_at:startDT.toISOString(),ends_at:endDT.toISOString(),status:'confirmed',
+      service_id:assignItem.service_id,starts_at:localDT(startDT),ends_at:localDT(endDT),status:'confirmed',
     })
     if(error){setToast({msg:error.message,type:'error'});setConfirming(false);return}
     await sb.from('waiting_list').delete().eq('id',assignItem.id)
@@ -729,7 +730,7 @@ function SlotsManager({section}){
     setServices(svcs||[])
     const svcIds=(svcs||[]).map(s=>s.id)
     if(svcIds.length===0){setSlots([]);setLoading(false);return}
-    const now=new Date().toISOString()
+    const now=localDT(new Date())
     let q=sb.from('availability_slots')
       .select('id,start_time,end_time,capacity,published,services(id,name),bookings(id,status,patients(full_name,phone))')
       .in('service_id',svcIds).order('start_time',{ascending:tab==='upcoming'})
@@ -940,7 +941,7 @@ function BellezaAdmin(){
 
   const load=useCallback(async()=>{
     setLoading(true)
-    const now=new Date().toISOString()
+    const now=localDT(new Date())
     // Get beauty professionals
     const{data:pros}=await sb.from('professionals').select('id').eq('section','beauty')
     const proIds=(pros||[]).map(p=>p.id)
