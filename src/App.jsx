@@ -336,8 +336,8 @@ function Agenda(){
     <div className="section-header">
       <div style={{display:'flex',flexDirection:'column',gap:8}}>
         <span className="section-title">{weekStr}</span>
-        <div className="tab-pills"style={{margin:0}}>
-          {profs.map(p=><button key={p.id}className={`tab-pill ${filterProf===p.id?'active':''}`}onClick={()=>setFilterProf(p.id)}>{p.name}</button>)}
+        <div style={{display:'flex',gap:8}}>
+          {profs.map(p=><button key={p.id}onClick={()=>setFilterProf(p.id)}style={{padding:'8px 22px',fontSize:14,fontWeight:600,borderRadius:10,border:'2px solid',cursor:'pointer',transition:'all .15s',background:filterProf===p.id?'var(--sage)':'transparent',borderColor:filterProf===p.id?'var(--sage)':'var(--stone)',color:filterProf===p.id?'#fff':'var(--muted)'}}>{p.name}</button>)}
         </div>
       </div>
       <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-start'}}>
