@@ -1007,6 +1007,8 @@ function BellezaAdmin(){
   const[toast,setToast]=useState(null)
   const[modal,setModal]=useState(null)
   const[sessionDate,setSessionDate]=useState('')
+  const[selected,setSelected]=useState(new Set())
+  const[saving,setSaving]=useState(false)
   const load=useCallback(async()=>{
     setLoading(true)
     const{data}=await sb.from('beauty_requests')
