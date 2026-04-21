@@ -279,7 +279,7 @@ function Agenda(){
   }
 
   const cancelAppt=async(id)=>{
-    const{error}=await sb.from('appointments').update({status:'cancelled',cancelled_by:'admin',cancelled_at:localDT(new Date())}).eq('id',id)
+    const{error}=await sb.from('appointments').update({status:'cancelled',cancelled_by:'secretary',cancelled_at:localDT(new Date())}).eq('id',id)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setModal(null); setToast({msg:'Cita cancelada',type:'ok'}); load()
   }
@@ -759,7 +759,7 @@ function SlotsManager({section}){
     // Mark cancelled (unpublish + note). In a real app you'd notify bookings.
     await sb.from('availability_slots').update({published:false}).eq('id',slot.id)
     // Cancel all active bookings for this slot
-    await sb.from('bookings').update({status:'cancelled',cancelled_by:'admin'}).eq('slot_id',slot.id).neq('status','cancelled')
+    await sb.from('bookings').update({status:'cancelled',cancelled_by:'secretary'}).eq('slot_id',slot.id).neq('status','cancelled')
     setCancelModal(null); setToast({msg:`Clase cancelada. ${slot.booked} reserva${slot.booked!==1?'s':''} cancelada${slot.booked!==1?'s':''}`,type:'ok'}); load()
   }
 
