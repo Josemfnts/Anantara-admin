@@ -217,6 +217,7 @@ function Agenda(){
   const[services,setServices]=useState([])
   const[loading,setLoading]=useState(true)
   const[modal,setModal]=useState(null)
+  const[cancelConfirm,setCancelConfirm]=useState(false)
   const[patSearch,setPatSearch]=useState('')
   const[patResults,setPatResults]=useState([])
   const[selPat,setSelPat]=useState(null)
@@ -417,7 +418,7 @@ function Agenda(){
     </Modal>}
 
     {/* Detail modal */}
-    {modal&&modal!=='create'&&<Modal title="Detalle de cita"onClose={()=>setModal(null)}>
+    {modal&&modal!=='create'&&<Modal title="Detalle de cita"onClose={()=>{setModal(null);setCancelConfirm(false)}}>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}}>
         <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:2}}>PACIENTE</div><div style={{fontSize:14,fontWeight:700}}>{modal.patients?.full_name||'—'}</div></div>
         <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:2}}>ESTADO</div><Bg variant={STATUS_CLS[modal.status]?.replace('badge-','')||'gray'}>{STATUS_TXT[modal.status]||modal.status}</Bg></div>
@@ -440,11 +441,20 @@ function Agenda(){
       </div>
 
       {/* Acciones de estado */}
-      <div className="appt-actions">
-        {modal.status==='pending'&&<Btn variant="secondary"onClick={()=>updateStatus('confirmed')}style={{flex:1}}>✓ Confirmar</Btn>}
-        {(modal.status==='confirmed'||modal.status==='pending')&&<Btn variant="gold"onClick={()=>updateStatus('completed')}style={{flex:1}}>✓ Completada</Btn>}
-        {modal.status!=='cancelled'&&<Btn variant="danger"onClick={()=>cancelAppt(modal.id)}style={{flex:1}}>Cancelar</Btn>}
-      </div>
+      {cancelConfirm
+        ?<div style={{background:'var(--cream)',border:'1px solid var(--terra)',borderRadius:8,padding:'12px 14px',marginTop:8}}>
+            <p style={{fontSize:13,color:'var(--ink)',marginBottom:12,fontWeight:600}}>¿Confirmar cancelación? Esta acción no se puede deshacer.</p>
+            <div style={{display:'flex',gap:8}}>
+              <Btn variant="ghost"onClick={()=>setCancelConfirm(false)}style={{flex:1}}>Volver</Btn>
+              <Btn variant="danger"onClick={()=>{setCancelConfirm(false);cancelAppt(modal.id)}}style={{flex:1}}>Sí, cancelar cita</Btn>
+            </div>
+          </div>
+        :<div className="appt-actions">
+          {modal.status==='pending'&&<Btn variant="secondary"onClick={()=>updateStatus('confirmed')}style={{flex:1}}>✓ Confirmar</Btn>}
+          {(modal.status==='confirmed'||modal.status==='pending')&&<Btn variant="gold"onClick={()=>updateStatus('completed')}style={{flex:1}}>✓ Completada</Btn>}
+          {modal.status!=='cancelled'&&<Btn variant="danger"onClick={()=>setCancelConfirm(true)}style={{flex:1}}>Cancelar</Btn>}
+        </div>
+      }
 
       <div style={{display:'flex',gap:10,marginTop:10}}>
         <Btn variant="ghost"onClick={()=>setModal(null)}style={{flex:1}}>Cerrar</Btn>
