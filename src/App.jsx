@@ -767,9 +767,13 @@ function SlotsManager({section}){
 
   const saveSlot=async()=>{
     if(!form.start||!form.capacity||!form.service_id)return
-    const payload={service_id:form.service_id,start_time:form.start,end_time:form.end||null,capacity:Number(form.capacity),published:false}
-    if(modal?.id) await sb.from('availability_slots').update(payload).eq('id',modal.id)
-    else await sb.from('availability_slots').insert(payload)
+    const startStr=form.start.length===16?form.start+':00':form.start
+    const endStr=form.end?(form.end.length===16?form.end+':00':form.end):null
+    const payload={service_id:form.service_id,start_time:startStr,end_time:endStr,capacity:Number(form.capacity),published:false}
+    let error
+    if(modal?.id)({error}=await sb.from('availability_slots').update(payload).eq('id',modal.id))
+    else({error}=await sb.from('availability_slots').insert(payload))
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setModal(null);setForm({start:'',end:'',capacity:8,service_id:''})
     setToast({msg:modal?.id?'Clase actualizada':'Clase creada',type:'ok'});load()
   }
