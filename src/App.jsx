@@ -249,7 +249,28 @@ function Agenda(){
   },[weekRef]) // eslint-disable-line
 
   useEffect(()=>{load()},[load])
-  useEffect(()=>{sb.from('services').select('id,name,duration_minutes').eq('is_active',true).order('name').then(({data})=>setServices(data||[]))},[])
+  useEffect(()=>{sb.from('services').select('id,name,duration_minutes').eq('is_active',true).eq('section','osteopathy').order('duration_minutes',{ascending:false}).then(({data})=>setServices(data||[]))},[])
+
+  // Auto-seleccionar primera fecha libre al cambiar profesional
+  useEffect(()=>{
+    if(!form.prof_id)return
+    const find=async()=>{
+      const today=new Date()
+      const fromD=toK(today), toD=toK(new Date(today.getTime()+60*86400000))
+      const[{data:wh},{data:bd}]=await Promise.all([
+        sb.from('working_hours').select('day_of_week').eq('professional_id',form.prof_id),
+        sb.from('blocked_days').select('date').eq('professional_id',form.prof_id).gte('date',fromD).lte('date',toD),
+      ])
+      const workDOW=new Set((wh||[]).map(r=>r.day_of_week))
+      const blocked=new Set((bd||[]).map(r=>r.date))
+      for(let i=1;i<=60;i++){
+        const d=new Date(today); d.setDate(today.getDate()+i)
+        const ds=toK(d)
+        if(workDOW.has(d.getDay())&&!blocked.has(ds)){setForm(f=>({...f,date:ds}));return}
+      }
+    }
+    find()
+  },[form.prof_id]) // eslint-disable-line
 
   useEffect(()=>{
     if(!patSearch.trim()){setPatResults([]);return}
@@ -347,7 +368,7 @@ function Agenda(){
         <Btn variant="ghost"style={{padding:'6px 12px'}}onClick={()=>setWeekRef(new Date(weekRef.getTime()-7*86400000))}>← Anterior</Btn>
         <Btn variant="ghost"style={{padding:'6px 10px'}}onClick={()=>setWeekRef(new Date())}>Hoy</Btn>
         <Btn variant="ghost"style={{padding:'6px 12px'}}onClick={()=>setWeekRef(new Date(weekRef.getTime()+7*86400000))}>Siguiente →</Btn>
-        <Btn style={{padding:'6px 14px'}}onClick={()=>setModal('create')}>+ Cita</Btn>
+        <Btn style={{padding:'6px 14px'}}onClick={()=>{const defSvc=services.find(s=>s.duration_minutes===60)||services[0];const defProf=filterProf!=='all'?filterProf:(profs[0]?.id||'');setForm({prof_id:defProf,svc_id:defSvc?.id||'',date:'',time:'',notes:''});setModal('create')}}>+ Cita</Btn>
       </div>
     </div>
 
@@ -768,6 +789,10 @@ function SlotsManager({section}){
     ])
     setServices(svcs||[])
     setProfessionals(profs||[])
+    setForm(f=>({...f,
+      professional_id:f.professional_id||(profs||[])[0]?.id||'',
+      service_id:f.service_id||(svcs||[])[0]?.id||'',
+    }))
     const svcIds=(svcs||[]).map(s=>s.id)
     if(svcIds.length===0){setSlots([]);setLoading(false);return}
     const now=localDT(new Date())
@@ -818,7 +843,7 @@ function SlotsManager({section}){
       <span className="section-title">Clases de {title}</span>
       <div style={{display:'flex',gap:8}}>
         <div className="tab-pills"style={{margin:0}}>{[['upcoming','Próximas'],['past','Pasadas']].map(([id,l])=><button key={id}className={`tab-pill ${tab===id?'active':''}`}onClick={()=>setTab(id)}>{l}</button>)}</div>
-        <Btn onClick={()=>{setModal('new');setForm({start:'',end:'',max_bookings:8,service_id:'',professional_id:''})}}>+ Nueva</Btn>
+        <Btn onClick={()=>{setModal('new');setForm({start:'',end:'',max_bookings:8,service_id:services[0]?.id||'',professional_id:professionals[0]?.id||''})}}>+ Nueva</Btn>
       </div>
     </div>
     <div className="card"style={{overflow:'hidden'}}>
