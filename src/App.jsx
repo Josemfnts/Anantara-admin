@@ -1000,97 +1000,121 @@ function Pacientes(){
 
 // ─── Belleza Admin ────────────────────────────────────────────────────────────
 function BellezaAdmin(){
-  const[appts,setAppts]=useState([])
+  const[tab,setTab]=useState('espera')
+  const[requests,setRequests]=useState([])
+  const[sessions,setSessions]=useState([])
   const[loading,setLoading]=useState(true)
   const[toast,setToast]=useState(null)
-  const[tab,setTab]=useState('pending')
-  const[modal,setModal]=useState(null) // appointment detail
-  const TABS=[['pending','Pendientes'],['confirmed','Confirmadas'],['past','Pasadas'],['cancelled','Canceladas']]
-
+  const[modal,setModal]=useState(null)
+  const[sessionDate,setSessionDate]=useState('')
   const load=useCallback(async()=>{
     setLoading(true)
-    const now=localDT(new Date())
-    // Get beauty professionals
-    const{data:pros}=await sb.from('professionals').select('id').eq('section','beauty')
-    const proIds=(pros||[]).map(p=>p.id)
-    if(proIds.length===0){setAppts([]);setLoading(false);return}
-
-    let q=sb.from('appointments')
-      .select('id,starts_at,status,notes,patients(id,full_name,phone),professionals(id,name),services(name,duration_minutes)')
-      .in('professional_id',proIds)
-      .order('starts_at',{ascending:tab!=='past'})
-
-    if(tab==='pending')   q=q.eq('status','pending').gte('starts_at',now)
-    if(tab==='confirmed') q=q.eq('status','confirmed').gte('starts_at',now)
-    if(tab==='past')      q=q.lt('starts_at',now).neq('status','cancelled')
-    if(tab==='cancelled') q=q.eq('status','cancelled')
-
-    const{data,error}=await q.limit(40)
-    if(error){setToast({msg:'Error: '+error.message,type:'error'});setLoading(false);return}
-    setAppts(data||[]);setLoading(false)
+    const{data}=await sb.from('beauty_requests')
+      .select('id,status,session_date,created_at,patients(id,full_name,phone),services(id,name)')
+      .in('status',tab==='espera'?['waiting']:['confirmed'])
+      .order('created_at')
+    if(tab==='espera'){
+      setRequests(data||[])
+    } else {
+      const groups={}
+      for(const r of (data||[])){
+        const key=`${r.session_date}__${r.services?.id}`
+        if(!groups[key]) groups[key]={date:r.session_date,service:r.services,patients:[]}
+        groups[key].patients.push(r.patients)
+      }
+      setSessions(Object.values(groups).sort((a,b)=>a.date<b.date?-1:1))
+    }
+    setLoading(false)
   },[tab])
   useEffect(()=>{load()},[load])
 
-  const updateStatus=async(id,status)=>{
-    const{error}=await sb.from('appointments').update({status}).eq('id',id)
+  const byService={}
+  for(const r of requests){
+    const sid=r.services?.id
+    if(!byService[sid]) byService[sid]={service:r.services,patients:[]}
+    byService[sid].patients.push({...r.patients,reqId:r.id})
+  }
+  const groups=Object.values(byService)
+
+  const openModal=g=>{setModal(g);setSessionDate('');setSelected(new Set(g.patients.map(p=>p.reqId)))}
+
+  const createSession=async()=>{
+    if(!sessionDate||selected.size===0)return
+    setSaving(true)
+    const{error}=await sb.from('beauty_requests').update({status:'confirmed',session_date:sessionDate}).in('id',[...selected])
+    setSaving(false)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setModal(null)
-    setToast({msg:status==='confirmed'?'Cita confirmada':'Cita cancelada',type:'ok'})
+    setToast({msg:`Sesión creada · ${selected.size} paciente${selected.size!==1?'s':''} confirmado${selected.size!==1?'s':''}`,type:'ok'})
     load()
   }
 
-  const pendingCount=tab==='pending'?appts.length:0
+  const cancelRequest=async id=>{
+    await sb.from('beauty_requests').update({status:'cancelled'}).eq('id',id)
+    setToast({msg:'Solicitud cancelada',type:'ok'}); load()
+  }
 
   return<>
     {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
     <div className="section-header">
-      <span className="section-title">Citas de Belleza</span>
+      <span className="section-title">Belleza</span>
       <div className="tab-pills"style={{margin:0}}>
-        {TABS.map(([id,l])=><button key={id}className={`tab-pill ${tab===id?'active':''}`}onClick={()=>setTab(id)}>{l}</button>)}
+        {[['espera','Lista de espera'],['sesiones','Sesiones']].map(([id,l])=>
+          <button key={id}className={`tab-pill ${tab===id?'active':''}`}onClick={()=>setTab(id)}>{l}</button>
+        )}
       </div>
     </div>
 
-    {tab==='pending'&&pendingCount>0&&<div className="alert-banner"style={{cursor:'default'}}>
-      <span style={{fontSize:20}}>⏳</span>
-      <span className="alert-banner-text">{pendingCount} cita{pendingCount!==1?'s':''} pendiente{pendingCount!==1?'s':''} de confirmación</span>
-    </div>}
-
     {loading&&<Sp/>}
-    {!loading&&appts.length===0&&<Em icon="✨"title="Sin citas"sub={`No hay citas ${TABS.find(([id])=>id===tab)?.[1]?.toLowerCase()}`}/>}
 
-    {!loading&&<div className="card"style={{overflow:'hidden'}}>
-      {appts.map(a=>(
-        <div key={a.id}className="dash-row"style={{cursor:'pointer'}}onClick={()=>setModal(a)}>
-          <div style={{minWidth:48,textAlign:'right'}}>
-            <div style={{fontSize:13,fontWeight:800,color:'var(--purple)'}}>{fTime(a.starts_at)}</div>
-            <div style={{fontSize:10,color:'var(--text-muted)'}}>{fD(a.starts_at)}</div>
+    {!loading&&tab==='espera'&&(groups.length===0
+      ?<Em icon="✨"title="Sin solicitudes"sub="Nadie está esperando ningún servicio"/>
+      :groups.map(g=><div key={g.service?.id}className="card"style={{padding:'16px 20px',marginBottom:12}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+            <div>
+              <div style={{fontWeight:700,fontSize:15}}>{g.service?.name}</div>
+              <div style={{fontSize:12,color:'var(--text-muted)',marginTop:2}}>{g.patients.length} persona{g.patients.length!==1?'s':''} esperando</div>
+            </div>
+            <Btn onClick={()=>openModal(g)}>Crear sesión</Btn>
           </div>
-          <div style={{flex:1,minWidth:0}}>
-            <div style={{fontSize:13,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.patients?.full_name||'—'}</div>
-            <div style={{fontSize:11,color:'var(--text-muted)'}}>{a.notes||a.services?.name||'Belleza'}{a.professionals?.name?` · ${a.professionals.name}`:''}</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {g.patients.map(p=><div key={p.reqId}style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',background:'var(--cream)',borderRadius:8}}>
+              <div><div style={{fontSize:13,fontWeight:600}}>{p.full_name}</div><div style={{fontSize:11,color:'var(--text-muted)'}}>{p.phone}</div></div>
+              <Btn variant="ghost"style={{padding:'4px 10px',fontSize:11}}onClick={()=>cancelRequest(p.reqId)}>Cancelar</Btn>
+            </div>)}
           </div>
-          <Bg variant={STATUS_CLS[a.status]?.replace('badge-','')||'gray'}>{STATUS_TXT[a.status]||a.status}</Bg>
         </div>
-      ))}
-    </div>}
+      )
+    )}
 
-    {modal&&<Modal title="Detalle de cita"onClose={()=>setModal(null)}>
-      <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:20}}>
-        <div style={{display:'flex',justifyContent:'space-between'}}>
-          <span style={{fontWeight:700}}>{modal.patients?.full_name||'—'}</span>
-          <Bg variant={STATUS_CLS[modal.status]?.replace('badge-','')||'gray'}>{STATUS_TXT[modal.status]||modal.status}</Bg>
+    {!loading&&tab==='sesiones'&&(sessions.length===0
+      ?<Em icon="📅"title="Sin sesiones"sub="Aún no hay sesiones creadas"/>
+      :sessions.map((s,i)=><div key={i}className="card"style={{padding:'16px 20px',marginBottom:12}}>
+          <div style={{fontWeight:700,fontSize:15,marginBottom:2}}>{s.service?.name}</div>
+          <div style={{fontSize:13,color:'var(--text-muted)',marginBottom:12}}>📅 {fD(s.date)}</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {s.patients.map((p,j)=><div key={j}style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',background:'var(--cream)',borderRadius:8}}>
+              <div className="pac-avatar"style={{width:32,height:32,fontSize:12}}>{p?.full_name?.slice(0,2).toUpperCase()||'?'}</div>
+              <div><div style={{fontSize:13,fontWeight:600}}>{p?.full_name||'—'}</div><div style={{fontSize:11,color:'var(--text-muted)'}}>{p?.phone}</div></div>
+            </div>)}
+          </div>
         </div>
-        <div style={{fontSize:13,color:'var(--text-muted)'}}>📞 {modal.patients?.phone||'Sin teléfono'}</div>
-        <div style={{fontSize:13,color:'var(--text-muted)'}}>🗓 {fDT(modal.starts_at)}</div>
-        <div style={{fontSize:13,color:'var(--text-muted)'}}>✨ {modal.notes||modal.services?.name||'Belleza'}</div>
-        {modal.professionals?.name&&<div style={{fontSize:13,color:'var(--text-muted)'}}>👩‍⚕️ {modal.professionals.name}</div>}
+      )
+    )}
+
+    {modal&&<Modal title={`Crear sesión — ${modal.service?.name}`}onClose={()=>setModal(null)}>
+      <Inp label="Fecha de la sesión"type="date"value={sessionDate}onChange={e=>setSessionDate(e.target.value)}/>
+      <div style={{marginTop:12,marginBottom:8,fontWeight:700,fontSize:13}}>Pacientes a incluir</div>
+      <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:16}}>
+        {modal.patients.map(p=><label key={p.reqId}style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',background:'var(--cream)',borderRadius:8,cursor:'pointer'}}>
+          <input type="checkbox"checked={selected.has(p.reqId)}onChange={e=>{setSelected(prev=>{const s=new Set(prev);e.target.checked?s.add(p.reqId):s.delete(p.reqId);return s})}}/>
+          <div><div style={{fontSize:13,fontWeight:600}}>{p.full_name}</div><div style={{fontSize:11,color:'var(--text-muted)'}}>{p.phone}</div></div>
+        </label>)}
       </div>
-      {modal.status==='pending'&&<div style={{display:'flex',gap:10}}>
-        <Btn variant="danger"onClick={()=>updateStatus(modal.id,'cancelled')}style={{flex:1}}>Cancelar cita</Btn>
-        <Btn variant="primary"onClick={()=>updateStatus(modal.id,'confirmed')}style={{flex:1}}>Confirmar</Btn>
-      </div>}
-      {modal.status==='confirmed'&&<Btn variant="danger"onClick={()=>updateStatus(modal.id,'cancelled')}style={{width:'100%'}}>Cancelar cita</Btn>}
-      {(modal.status==='cancelled'||modal.status==='completed')&&<Btn variant="ghost"onClick={()=>setModal(null)}style={{width:'100%'}}>Cerrar</Btn>}
+      <div style={{display:'flex',gap:10}}>
+        <Btn variant="ghost"onClick={()=>setModal(null)}style={{flex:1}}>Cancelar</Btn>
+        <Btn onClick={createSession}disabled={!sessionDate||selected.size===0||saving}style={{flex:1}}>{saving?'Guardando…':'Crear sesión'}</Btn>
+      </div>
     </Modal>}
   </>
 }
