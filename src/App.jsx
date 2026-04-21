@@ -1009,10 +1009,12 @@ function BellezaAdmin(){
   const[sessionDate,setSessionDate]=useState('')
   const[selected,setSelected]=useState(new Set())
   const[saving,setSaving]=useState(false)
+  const[sending,setSending]=useState(null)
+
   const load=useCallback(async()=>{
     setLoading(true)
     const{data}=await sb.from('beauty_requests')
-      .select('id,status,session_date,created_at,patients(id,full_name,phone),services(id,name)')
+      .select('id,status,session_date,session_time,created_at,patients(id,full_name,phone),services(id,name)')
       .in('status',tab==='espera'?['waiting']:['confirmed'])
       .order('created_at')
     if(tab==='espera'){
@@ -1022,7 +1024,7 @@ function BellezaAdmin(){
       for(const r of (data||[])){
         const key=`${r.session_date}__${r.services?.id}`
         if(!groups[key]) groups[key]={date:r.session_date,service:r.services,patients:[]}
-        groups[key].patients.push(r.patients)
+        groups[key].patients.push({...r.patients,reqId:r.id,session_time:r.session_time||''})
       }
       setSessions(Object.values(groups).sort((a,b)=>a.date<b.date?-1:1))
     }
@@ -1054,6 +1056,33 @@ function BellezaAdmin(){
   const cancelRequest=async id=>{
     await sb.from('beauty_requests').update({status:'cancelled'}).eq('id',id)
     setToast({msg:'Solicitud cancelada',type:'ok'}); load()
+  }
+
+  const cancelSession=async s=>{
+    const ids=s.patients.map(p=>p.reqId)
+    const{error}=await sb.from('beauty_requests').update({status:'waiting',session_date:null,session_time:null}).in('id',ids)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setToast({msg:'Sesión cancelada',type:'ok'}); load()
+  }
+
+  const saveTime=async(reqId,time)=>{
+    await sb.from('beauty_requests').update({session_time:time||null}).eq('id',reqId)
+  }
+
+  const sendWhatsApp=async s=>{
+    const msgs=s.patients.filter(p=>p.session_time).map(p=>({
+      phone:p.phone,
+      text:`Hola ${p.full_name} 👋\n\nTe confirmamos tu cita de *${s.service?.name}* el *${fD(s.date)}* a las *${p.session_time?.slice(0,5)}*.\n\n¡Te esperamos en Anantara! 🌿`
+    }))
+    if(msgs.length===0){setToast({msg:'Asigna horas antes de enviar',type:'error'});return}
+    setSending(s.date+'__'+s.service?.id)
+    try{
+      const res=await fetch('http://localhost:3001/send-beauty',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:msgs})})
+      if(!res.ok)throw new Error(await res.text())
+      setToast({msg:`${msgs.length} mensaje${msgs.length!==1?'s':''} enviado${msgs.length!==1?'s':''}`,type:'ok'})
+    }catch(e){
+      setToast({msg:'Error al enviar: '+e.message,type:'error'})
+    }finally{setSending(null)}
   }
 
   return<>
@@ -1091,17 +1120,32 @@ function BellezaAdmin(){
 
     {!loading&&tab==='sesiones'&&(sessions.length===0
       ?<Em icon="📅"title="Sin sesiones"sub="Aún no hay sesiones creadas"/>
-      :sessions.map((s,i)=><div key={i}className="card"style={{padding:'16px 20px',marginBottom:12}}>
-          <div style={{fontWeight:700,fontSize:15,marginBottom:2}}>{s.service?.name}</div>
+      :sessions.map((s,i)=>{
+        const key=s.date+'__'+s.service?.id
+        const isSending=sending===key
+        return<div key={i}className="card"style={{padding:'16px 20px',marginBottom:12}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:2}}>
+            <div style={{fontWeight:700,fontSize:15}}>{s.service?.name}</div>
+            <Btn variant="ghost"style={{padding:'4px 10px',fontSize:11,color:'var(--red)'}}onClick={()=>cancelSession(s)}>Cancelar sesión</Btn>
+          </div>
           <div style={{fontSize:13,color:'var(--text-muted)',marginBottom:12}}>📅 {fD(s.date)}</div>
-          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:14}}>
             {s.patients.map((p,j)=><div key={j}style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',background:'var(--cream)',borderRadius:8}}>
               <div className="pac-avatar"style={{width:32,height:32,fontSize:12}}>{p?.full_name?.slice(0,2).toUpperCase()||'?'}</div>
-              <div><div style={{fontSize:13,fontWeight:600}}>{p?.full_name||'—'}</div><div style={{fontSize:11,color:'var(--text-muted)'}}>{p?.phone}</div></div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:600}}>{p?.full_name||'—'}</div>
+                <div style={{fontSize:11,color:'var(--text-muted)'}}>{p?.phone}</div>
+              </div>
+              <input type="time"defaultValue={p.session_time?.slice(0,5)||''}
+                style={{border:'1px solid var(--border)',borderRadius:6,padding:'4px 8px',fontSize:12,color:'var(--text)',background:'white',width:90}}
+                onBlur={e=>saveTime(p.reqId,e.target.value)}/>
             </div>)}
           </div>
+          <Btn onClick={()=>sendWhatsApp(s)}disabled={isSending}style={{width:'100%'}}>
+            {isSending?'Enviando…':'📲 Enviar citas por WhatsApp'}
+          </Btn>
         </div>
-      )
+      })
     )}
 
     {modal&&<Modal title={`Crear sesión — ${modal.service?.name}`}onClose={()=>setModal(null)}>
