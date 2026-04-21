@@ -742,7 +742,7 @@ function SlotsManager({section}){
   const[bookings,setBookings]=useState([])
   const[showBook,setShowBook]=useState(null)
   const[cancelModal,setCancelModal]=useState(null)
-  const[form,setForm]=useState({start:'',end:'',capacity:8,service_id:''})
+  const[form,setForm]=useState({start:'',end:'',max_bookings:8,service_id:''})
   const[services,setServices]=useState([])
   const[toast,setToast]=useState(null)
   const[tab,setTab]=useState('upcoming')
@@ -755,9 +755,9 @@ function SlotsManager({section}){
     if(svcIds.length===0){setSlots([]);setLoading(false);return}
     const now=localDT(new Date())
     let q=sb.from('availability_slots')
-      .select('id,start_time,end_time,capacity,published,services(id,name),bookings(id,status,patients(full_name,phone))')
-      .in('service_id',svcIds).order('start_time',{ascending:tab==='upcoming'})
-    if(tab==='upcoming') q=q.gte('start_time',now); else q=q.lt('start_time',now)
+      .select('id,starts_at,ends_at,max_bookings,is_published,services(id,name),bookings(id,status,patients(full_name,phone))')
+      .in('service_id',svcIds).order('starts_at',{ascending:tab==='upcoming'})
+    if(tab==='upcoming') q=q.gte('starts_at',now); else q=q.lt('starts_at',now)
     const{data}=await q.limit(30)
     setSlots((data||[]).map(s=>({...s,booked:(s.bookings||[]).filter(b=>b.status!=='cancelled').length})))
     setLoading(false)
@@ -766,33 +766,32 @@ function SlotsManager({section}){
   useEffect(()=>{load()},[load])
 
   const saveSlot=async()=>{
-    if(!form.start||!form.capacity||!form.service_id)return
+    if(!form.start||!form.max_bookings||!form.service_id)return
     const startStr=form.start.length===16?form.start+':00':form.start
     const endStr=form.end?(form.end.length===16?form.end+':00':form.end):null
-    const payload={service_id:form.service_id,start_time:startStr,end_time:endStr,capacity:Number(form.capacity),published:false}
+    const payload={service_id:form.service_id,starts_at:startStr,ends_at:endStr,max_bookings:Number(form.max_bookings),is_published:false}
     let error
     if(modal?.id)({error}=await sb.from('availability_slots').update(payload).eq('id',modal.id))
     else({error}=await sb.from('availability_slots').insert(payload))
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    setModal(null);setForm({start:'',end:'',capacity:8,service_id:''})
+    setModal(null);setForm({start:'',end:'',max_bookings:8,service_id:''})
     setToast({msg:modal?.id?'Clase actualizada':'Clase creada',type:'ok'});load()
   }
 
   const deleteSlot=async id=>{await sb.from('availability_slots').delete().eq('id',id);setToast({msg:'Clase eliminada',type:'ok'});load()}
 
   const cancelClass=async slot=>{
-    // Mark cancelled (unpublish + note). In a real app you'd notify bookings.
-    await sb.from('availability_slots').update({published:false}).eq('id',slot.id)
+    await sb.from('availability_slots').update({is_published:false}).eq('id',slot.id)
     // Cancel all active bookings for this slot
     await sb.from('bookings').update({status:'cancelled',cancelled_by:'secretary'}).eq('slot_id',slot.id).neq('status','cancelled')
     setCancelModal(null); setToast({msg:`Clase cancelada. ${slot.booked} reserva${slot.booked!==1?'s':''} cancelada${slot.booked!==1?'s':''}`,type:'ok'}); load()
   }
 
   const togglePublish=async slot=>{
-    await sb.from('availability_slots').update({published:!slot.published}).eq('id',slot.id)
-    setToast({msg:slot.published?'Clase ocultada':'Clase publicada',type:'ok'}); load()
+    await sb.from('availability_slots').update({is_published:!slot.is_published}).eq('id',slot.id)
+    setToast({msg:slot.is_published?'Clase ocultada':'Clase publicada',type:'ok'}); load()
   }
-  const openEdit=slot=>{setForm({start:slot.start_time?.slice(0,16)||'',end:slot.end_time?.slice(0,16)||'',capacity:slot.capacity,service_id:slot.services?.id||''});setModal(slot)}
+  const openEdit=slot=>{setForm({start:slot.starts_at?.slice(0,16)||'',end:slot.ends_at?.slice(0,16)||'',max_bookings:slot.max_bookings,service_id:slot.services?.id||''});setModal(slot)}
   const openBookings=slot=>{setShowBook(slot);setBookings(slot.bookings||[])}
 
   if(loading)return<Sp/>
@@ -802,24 +801,24 @@ function SlotsManager({section}){
       <span className="section-title">Clases de {title}</span>
       <div style={{display:'flex',gap:8}}>
         <div className="tab-pills"style={{margin:0}}>{[['upcoming','Próximas'],['past','Pasadas']].map(([id,l])=><button key={id}className={`tab-pill ${tab===id?'active':''}`}onClick={()=>setTab(id)}>{l}</button>)}</div>
-        <Btn onClick={()=>{setModal('new');setForm({start:'',end:'',capacity:8,service_id:''})}}>+ Nueva</Btn>
+        <Btn onClick={()=>{setModal('new');setForm({start:'',end:'',max_bookings:8,service_id:''})}}>+ Nueva</Btn>
       </div>
     </div>
     <div className="card"style={{overflow:'hidden'}}>
       {slots.length===0?<Em icon={isYoga?'🧘':'✨'}title="Sin clases"sub={`No hay clases ${tab==='upcoming'?'próximas':'pasadas'}`}/>
-      :slots.map(slot=>{const pct=slot.capacity>0?Math.round(slot.booked/slot.capacity*100):0;return(
+      :slots.map(slot=>{const pct=slot.max_bookings>0?Math.round(slot.booked/slot.max_bookings*100):0;return(
         <div key={slot.id}className="slot-card">
           <div className="slot-info">
             <div className="slot-title">{slot.services?.name||title}</div>
-            <div className="slot-meta">{fDT(slot.start_time)} · {slot.booked}/{slot.capacity} reservas</div>
+            <div className="slot-meta">{fDT(slot.starts_at)} · {slot.booked}/{slot.max_bookings} reservas</div>
             <div className="slot-bar"><div className="slot-bar-fill"style={{width:`${pct}%`}}/></div>
           </div>
           <div style={{display:'flex',flexDirection:'column',gap:4,alignItems:'flex-end'}}>
-            <Bg variant={slot.published?'green':'gray'}>{slot.published?'Publicada':'Borrador'}</Bg>
+            <Bg variant={slot.is_published?'green':'gray'}>{slot.is_published?'Publicada':'Borrador'}</Bg>
             <div style={{display:'flex',gap:4,marginTop:4}}>
               <Btn variant="ghost"style={{padding:'4px 8px',fontSize:11}}onClick={()=>openBookings(slot)}>👥 {slot.booked}</Btn>
               <Btn variant="ghost"style={{padding:'4px 8px',fontSize:11}}onClick={()=>openEdit(slot)}>✏️</Btn>
-              <Btn variant={slot.published?'secondary':'primary'}style={{padding:'4px 8px',fontSize:11}}onClick={()=>togglePublish(slot)}>{slot.published?'Ocultar':'Publicar'}</Btn>
+              <Btn variant={slot.is_published?'secondary':'primary'}style={{padding:'4px 8px',fontSize:11}}onClick={()=>togglePublish(slot)}>{slot.is_published?'Ocultar':'Publicar'}</Btn>
               {slot.booked>0&&<Btn variant="danger"style={{padding:'4px 8px',fontSize:11}}onClick={()=>setCancelModal(slot)}>Cancelar clase</Btn>}
               <Btn variant="danger"style={{padding:'4px 8px',fontSize:11}}onClick={()=>deleteSlot(slot.id)}>🗑</Btn>
             </div>
@@ -835,15 +834,15 @@ function SlotsManager({section}){
         <Sel label="Hora inicio"value={form.start?.slice(11,16)||''}onChange={e=>setForm(f=>({...f,start:(f.start?.slice(0,10)||'')+'T'+e.target.value}))}options={[['','--:--'],...QHOURS]}/>
         <Sel label="Hora fin"value={form.end?.slice(11,16)||''}onChange={e=>setForm(f=>({...f,end:(f.start?.slice(0,10)||'')+'T'+e.target.value}))}options={[['','--:--'],...QHOURS]}/>
       </div>)})()}
-      <Inp label="Plazas máximas"type="number"min={1}value={form.capacity}onChange={e=>setForm(f=>({...f,capacity:e.target.value}))}/>
+      <Inp label="Plazas máximas"type="number"min={1}value={form.max_bookings}onChange={e=>setForm(f=>({...f,max_bookings:e.target.value}))}/>
       <div style={{display:'flex',gap:10,marginTop:4}}>
         <Btn variant="ghost"onClick={()=>setModal(null)}style={{flex:1}}>Cancelar</Btn>
-        <Btn onClick={saveSlot}disabled={!form.start||!form.service_id}style={{flex:1}}>Guardar</Btn>
+        <Btn onClick={saveSlot}disabled={!form.start||!form.end||!form.service_id}style={{flex:1}}>Guardar</Btn>
       </div>
     </Modal>}
 
     {showBook&&<Modal title={`Reservas — ${showBook.services?.name}`}onClose={()=>setShowBook(null)}>
-      <div style={{marginBottom:14,fontSize:13,color:'var(--text-muted)'}}>{fDT(showBook.start_time)} · {showBook.booked}/{showBook.capacity} plazas</div>
+      <div style={{marginBottom:14,fontSize:13,color:'var(--text-muted)'}}>{fDT(showBook.starts_at)} · {showBook.booked}/{showBook.max_bookings} plazas</div>
       {bookings.filter(b=>b.status!=='cancelled').length===0?<Em icon="👥"title="Sin reservas"/>
       :bookings.filter(b=>b.status!=='cancelled').map(b=><div key={b.id}style={{display:'flex',alignItems:'center',gap:10,padding:'10px 0',borderBottom:'1px solid var(--border)'}}>
         <div className="pac-avatar">{b.patients?.full_name?.slice(0,2).toUpperCase()||'?'}</div>
@@ -854,7 +853,7 @@ function SlotsManager({section}){
 
     {cancelModal&&<Modal title="¿Cancelar esta clase?"onClose={()=>setCancelModal(null)}>
       <p style={{fontSize:13,color:'var(--text-muted)',marginBottom:16,lineHeight:1.6}}>
-        Se cancelará la clase <strong>{cancelModal.services?.name}</strong> del <strong>{fDT(cancelModal.start_time)}</strong>.<br/>
+        Se cancelará la clase <strong>{cancelModal.services?.name}</strong> del <strong>{fDT(cancelModal.starts_at)}</strong>.<br/>
         Las <strong>{cancelModal.booked} reserva{cancelModal.booked!==1?'s':''}</strong> activas también se cancelarán. Esta acción no se puede deshacer.
       </p>
       <div style={{display:'flex',gap:10}}>
