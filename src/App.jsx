@@ -830,11 +830,10 @@ function SlotsManager({section}){
 
     {modal&&<Modal title={modal?.id?'Editar clase':'Nueva clase'}onClose={()=>setModal(null)}>
       <Sel label="Servicio"value={form.service_id}onChange={e=>setForm(f=>({...f,service_id:e.target.value}))}options={[['','Seleccionar…'],...services.map(s=>[s.id,s.name])]}/>
-      {(()=>{const QHOURS=Array.from({length:(21-7)*4+4},(_,i)=>{const h=7+Math.floor(i/4),m=(i%4)*15;const v=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;return[v,v]}).filter(([v])=>v<='21:45');return(<div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10}}>
-        <Inp label="Fecha inicio"type="date"value={form.start?.slice(0,10)||''}onChange={e=>setForm(f=>({...f,start:(e.target.value||'')+'T'+(f.start?.slice(11,16)||'09:00')}))}/>
-        <Sel label="Hora inicio"value={form.start?.slice(11,16)||''}onChange={e=>setForm(f=>({...f,start:(f.start?.slice(0,10)||new Date().toISOString().slice(0,10))+'T'+e.target.value}))}options={[['','--:--'],...QHOURS]}/>
-        <Inp label="Fecha fin"type="date"value={form.end?.slice(0,10)||''}onChange={e=>setForm(f=>({...f,end:e.target.value?(e.target.value+'T'+(f.end?.slice(11,16)||'10:00')):''}))}/>
-        <Sel label="Hora fin"value={form.end?.slice(11,16)||''}onChange={e=>setForm(f=>({...f,end:(f.end?.slice(0,10)||f.start?.slice(0,10)||new Date().toISOString().slice(0,10))+'T'+e.target.value}))}options={[['','--:--'],...QHOURS]}/>
+      {(()=>{const QHOURS=Array.from({length:(21-7)*4+4},(_,i)=>{const h=7+Math.floor(i/4),m=(i%4)*15;const v=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;return[v,v]}).filter(([v])=>v<='21:45');const date=form.start?.slice(0,10)||'';return(<div style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr',gap:10}}>
+        <Inp label="Fecha"type="date"value={date}onChange={e=>{const d=e.target.value||'';setForm(f=>({...f,start:d?d+'T'+(f.start?.slice(11,16)||'09:00'):'',end:d?d+'T'+(f.end?.slice(11,16)||'10:00'):''}))}}/>
+        <Sel label="Hora inicio"value={form.start?.slice(11,16)||''}onChange={e=>setForm(f=>({...f,start:(f.start?.slice(0,10)||'')+'T'+e.target.value}))}options={[['','--:--'],...QHOURS]}/>
+        <Sel label="Hora fin"value={form.end?.slice(11,16)||''}onChange={e=>setForm(f=>({...f,end:(f.start?.slice(0,10)||'')+'T'+e.target.value}))}options={[['','--:--'],...QHOURS]}/>
       </div>)})()}
       <Inp label="Plazas máximas"type="number"min={1}value={form.capacity}onChange={e=>setForm(f=>({...f,capacity:e.target.value}))}/>
       <div style={{display:'flex',gap:10,marginTop:4}}>
