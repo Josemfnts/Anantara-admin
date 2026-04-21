@@ -293,6 +293,9 @@ function Agenda(){
     const dur=svc?.duration_minutes||60
     const startDT=new Date(`${form.date}T${form.time}:00`)
     const endDT=new Date(startDT.getTime()+dur*60000)
+    // Blocked day check
+    const{data:blk}=await sb.from('blocked_days').select('id').eq('professional_id',form.prof_id).eq('date',form.date).maybeSingle()
+    if(blk){setToast({msg:'Ese día está bloqueado para este profesional.',type:'error'});return}
     // Overlap check
     const{data:overlap}=await sb.from('appointments').select('id')
       .eq('professional_id',form.prof_id).neq('status','cancelled')
