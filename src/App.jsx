@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 
 const sb = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -80,6 +80,9 @@ const NAV_GROUPS = [
     {id:'pacientes',icon:'👥',label:'Pacientes'},
     {id:'profesionales',icon:'👩‍⚕️',label:'Profesionales'},
     {id:'servicios',icon:'🛠',label:'Servicios'},
+  ]},
+  {label:'Administración',items:[
+    {id:'facturacion',icon:'🧾',label:'Facturación'},
   ]},
 ]
 function Sidebar({page,onNav,open,onClose,onLogout}){
@@ -221,9 +224,10 @@ function Agenda(){
   const[patSearch,setPatSearch]=useState('')
   const[patResults,setPatResults]=useState([])
   const[selPat,setSelPat]=useState(null)
-  const[form,setForm]=useState({prof_id:'',svc_id:'',date:'',time:'',notes:''})
+  const[form,setForm]=useState({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:''})
   const[editNotes,setEditNotes]=useState('')
   const[editProfId,setEditProfId]=useState('')
+  const[editPayment,setEditPayment]=useState('')
   const[saving,setSaving]=useState(false)
   const[toast,setToast]=useState(null)
   // Filters
@@ -237,7 +241,7 @@ function Agenda(){
     setLoading(true)
     const from=toK(days[0])+'T00:00:00', to=toK(days[6])+'T23:59:59'
     const[appts,profsR]=await Promise.all([
-      sb.from('appointments').select('id,starts_at,ends_at,status,professional_id,notes,patients(id,full_name),services(name,duration_minutes),professionals(name)')
+      sb.from('appointments').select('id,starts_at,ends_at,status,professional_id,notes,payment_method,patients(id,full_name),services(name,duration_minutes),professionals(name)')
         .gte('starts_at',from).lte('starts_at',to).neq('status','cancelled'),
       sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name'),
     ])
@@ -286,6 +290,7 @@ function Agenda(){
     if(modal&&modal!=='create'){
       setEditNotes(modal.notes||'')
       setEditProfId(modal.professional_id||'')
+      setEditPayment(modal.payment_method||'')
     }
   },[modal])
 
@@ -298,7 +303,7 @@ function Agenda(){
 
   const saveApptChanges=async()=>{
     setSaving(true)
-    await sb.from('appointments').update({notes:editNotes||null,professional_id:editProfId||modal.professional_id}).eq('id',modal.id)
+    await sb.from('appointments').update({notes:editNotes||null,professional_id:editProfId||modal.professional_id,payment_method:editPayment||null}).eq('id',modal.id)
     setSaving(false); setToast({msg:'Cita actualizada',type:'ok'}); setModal(null); load()
   }
 
@@ -324,10 +329,11 @@ function Agenda(){
     if(overlap?.length){setToast({msg:'El profesional ya tiene una cita en ese horario.',type:'error'});return}
     const{error}=await sb.from('appointments').insert({
       patient_id:selPat.id,professional_id:form.prof_id,service_id:form.svc_id,
-      starts_at:localDT(startDT),ends_at:localDT(endDT),notes:form.notes||null,status:'confirmed',
+      starts_at:localDT(startDT),ends_at:localDT(endDT),notes:form.notes||null,
+      payment_method:form.payment_method||null,status:'confirmed',
     })
     if(error){setToast({msg:error.message,type:'error'});return}
-    setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:''})
+    setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:''})
     setToast({msg:'Cita creada',type:'ok'});load()
   }
 
@@ -433,6 +439,7 @@ function Agenda(){
         <Inp label="Fecha"type="date"value={form.date}onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>
         <Sel label="Hora"value={form.time}onChange={e=>setForm(f=>({...f,time:e.target.value}))}options={[['','--:--'],...Array.from({length:(21-7)*4+4},(_,i)=>{const h=7+Math.floor(i/4),m=(i%4)*15;const v=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;return[v,v]}).filter(([v])=>v<='21:45')]}/>
       </div>
+      <Sel label="Forma de pago (opcional)"value={form.payment_method}onChange={e=>setForm(f=>({...f,payment_method:e.target.value}))}options={[['','No especificada'],['efectivo','Efectivo'],['tarjeta','Tarjeta'],['bizum','Bizum'],['transferencia','Transferencia']]}/>
       <div className="field"><label className="field-label">Notas (opcional)</label><textarea className="notes-area"value={form.notes}onChange={e=>setForm(f=>({...f,notes:e.target.value}))}placeholder="Observaciones…"/></div>
       <div style={{display:'flex',gap:10,marginTop:4}}>
         <Btn variant="ghost"onClick={()=>setModal(null)}style={{flex:1}}>Cancelar</Btn>
@@ -454,6 +461,18 @@ function Agenda(){
         <label className="field-label">Profesional</label>
         <select className="field-input"value={editProfId}onChange={e=>setEditProfId(e.target.value)}>
           {profs.map(p=><option key={p.id}value={p.id}>{p.name}</option>)}
+        </select>
+      </div>
+
+      {/* Forma de pago */}
+      <div className="field">
+        <label className="field-label">Forma de pago</label>
+        <select className="field-input"value={editPayment}onChange={e=>setEditPayment(e.target.value)}>
+          <option value="">No especificada</option>
+          <option value="efectivo">Efectivo</option>
+          <option value="tarjeta">Tarjeta</option>
+          <option value="bizum">Bizum</option>
+          <option value="transferencia">Transferencia</option>
         </select>
       </div>
 
@@ -1423,8 +1442,329 @@ function Profesionales(){
   </>
 }
 
+// ─── Facturación ──────────────────────────────────────────────────────────────
+function Facturacion(){
+  const PAY={efectivo:'Efectivo',tarjeta:'Tarjeta',bizum:'Bizum',transferencia:'Transferencia'}
+
+  function mP(){
+    const d=new Date(),y=d.getFullYear(),m=d.getMonth()
+    return{type:'month',from:`${y}-${pad(m+1)}-01`,to:`${y}-${pad(m+1)}-${pad(new Date(y,m+1,0).getDate())}`}
+  }
+  function qP(){
+    const d=new Date(),y=d.getFullYear(),q=Math.floor(d.getMonth()/3),sm=q*3,em=sm+2
+    return{type:'quarter',from:`${y}-${pad(sm+1)}-01`,to:`${y}-${pad(em+1)}-${pad(new Date(y,em+1,0).getDate())}`}
+  }
+  function distribute(list,p){
+    const n=list.length; if(!n)return new Set()
+    const keep=Math.round(n*p/100)
+    if(keep>=n)return new Set(list.map(a=>a.id))
+    if(keep<=0)return new Set()
+    const excl=n-keep,byDow={}
+    for(const a of list){
+      const dow=new Date(a.starts_at.slice(0,10)+'T12:00:00').getDay()
+      if(!byDow[dow])byDow[dow]=[]
+      byDow[dow].push(a)
+    }
+    const dows=Object.keys(byDow).map(Number)
+    const exPerDow={};let assigned=0
+    for(let i=0;i<dows.length;i++){
+      const dow=dows[i],cnt=byDow[dow].length
+      if(i===dows.length-1){exPerDow[dow]=Math.max(0,Math.min(excl-assigned,cnt))}
+      else{const e=Math.min(Math.round(cnt/n*excl),cnt);exPerDow[dow]=e;assigned+=e}
+    }
+    const exIds=new Set()
+    for(const dow of dows){
+      const lst=byDow[dow],ex=exPerDow[dow]||0; if(!ex)continue
+      const step=lst.length/ex
+      for(let j=0;j<ex;j++) exIds.add(lst[Math.min(Math.floor(j*step+step/2),lst.length-1)].id)
+    }
+    return new Set(list.filter(a=>!exIds.has(a.id)).map(a=>a.id))
+  }
+
+  const[period,setPeriod]=useState(mP)
+  const[cFrom,setCFrom]=useState('')
+  const[cTo,setCTo]=useState('')
+  const[appts,setAppts]=useState([])
+  const[selected,setSelected]=useState(new Set())
+  const[pct,setPct]=useState(100)
+  const pctRef=useRef(100)
+  const[loading,setLoading]=useState(false)
+  const[exporting,setExporting]=useState(false)
+  const[toast,setToast]=useState(null)
+
+  const load=useCallback(async()=>{
+    const from=period.type==='custom'?cFrom:period.from
+    const to=period.type==='custom'?cTo:period.to
+    if(!from||!to)return
+    setLoading(true)
+    const{data,error}=await sb.from('appointments')
+      .select('id,starts_at,status,payment_method,notes,patients(id,full_name),services(name,price,duration_minutes)')
+      .gte('starts_at',from+'T00:00:00').lte('starts_at',to+'T23:59:59')
+      .neq('status','cancelled').order('starts_at')
+    setLoading(false)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    const list=data||[]
+    setAppts(list)
+    setSelected(distribute(list,pctRef.current))
+  },[period,cFrom,cTo])
+  useEffect(()=>{load()},[load])
+
+  const selArr=appts.filter(a=>selected.has(a.id))
+  const totalAmt=selArr.reduce((s,a)=>s+(a.services?.price||0),0)
+  const handlePct=v=>{pctRef.current=v;setPct(v);setSelected(distribute(appts,v))}
+  const toggle=id=>setSelected(prev=>{const s=new Set(prev);s.has(id)?s.delete(id):s.add(id);return s})
+
+  const eff={from:period.type==='custom'?cFrom:period.from,to:period.type==='custom'?cTo:period.to}
+
+  function periodLabel(){
+    if(!eff.from)return'—'
+    if(period.type==='month'){const d=new Date(eff.from+'T12:00:00');const mn=MONTHS[d.getMonth()];return`${mn.charAt(0).toUpperCase()+mn.slice(1)} ${d.getFullYear()}`}
+    if(period.type==='quarter'){const d=new Date(eff.from+'T12:00:00'),q=Math.floor(d.getMonth()/3)+1;return`${q}T ${d.getFullYear()}`}
+    return`${eff.from} — ${eff.to}`
+  }
+  function fileLabel(){
+    if(!eff.from)return'Facturacion'
+    if(period.type==='month'){const d=new Date(eff.from+'T12:00:00'),mn=MONTHS[d.getMonth()];return`Facturacion_${mn.charAt(0).toUpperCase()+mn.slice(1)}_${d.getFullYear()}`}
+    if(period.type==='quarter'){const d=new Date(eff.from+'T12:00:00'),q=Math.floor(d.getMonth()/3)+1;return`Facturacion_${q}T_${d.getFullYear()}`}
+    return`Facturacion_${eff.from}_${eff.to}`
+  }
+
+  const exportExcel=async()=>{
+    if(!selArr.length){setToast({msg:'No hay citas seleccionadas',type:'error'});return}
+    setExporting(true)
+    try{
+      const ExcelJS=(await import('exceljs')).default
+      const wb=new ExcelJS.Workbook()
+      wb.creator='Anantara';wb.created=new Date()
+      const hFont={name:'Arial',bold:true,size:11,color:{argb:'FFFFFFFF'}}
+      const hFill={type:'pattern',pattern:'solid',fgColor:{argb:'FF1F3864'}}
+      const dFont={name:'Arial',size:10}
+      const gFill={type:'pattern',pattern:'solid',fgColor:{argb:'FFF2F2F2'}}
+      const yFill={type:'pattern',pattern:'solid',fgColor:{argb:'FFFFFCC0'}}
+      const bd={style:'thin',color:{argb:'FFCCCCCC'}}
+      const ab={top:bd,left:bd,bottom:bd,right:bd}
+      const yr=new Date((eff.from||'2025-01-01')+'T12:00:00').getFullYear()
+
+      // ── Hoja 1: Facturas ──
+      const ws1=wb.addWorksheet('Facturas')
+      ws1.views=[{state:'frozen',ySplit:1}]
+      ws1.addRow(['Nº Factura','Fecha','Paciente','DNI/NIE','Concepto','Duración (min)','Precio (€)','Forma de pago','Estado','Notas'])
+      ws1.getRow(1).eachCell(c=>{c.font=hFont;c.fill=hFill;c.alignment={vertical:'middle',horizontal:'center'};c.border=ab})
+      ws1.getRow(1).height=20
+      selArr.forEach((a,i)=>{
+        const r=ws1.addRow([
+          `${yr}-${String(i+1).padStart(3,'0')}`,
+          a.starts_at.slice(0,10).split('-').reverse().join('/'),
+          a.patients?.full_name||'—','',
+          a.services?.name||'Sesión',
+          a.services?.duration_minutes||60,
+          a.services?.price||0,
+          PAY[a.payment_method]||a.payment_method||'',
+          STATUS_TXT[a.status]||a.status||'',
+          a.notes||'',
+        ])
+        r.eachCell(c=>{c.font=dFont;c.border=ab})
+        if(i%2)r.eachCell(c=>{c.fill=gFill})
+        r.getCell(7).numFmt='#,##0.00 €'
+      })
+      const tRow=ws1.addRow(['','','','','','Total',{formula:`SUM(G2:G${selArr.length+1})`},'','',''])
+      tRow.eachCell(c=>{c.font={name:'Arial',bold:true,size:10};c.fill=yFill;c.border=ab})
+      tRow.getCell(7).numFmt='#,##0.00 €'
+      ws1.columns=[{width:14},{width:12},{width:28},{width:14},{width:30},{width:14},{width:14},{width:15},{width:12},{width:25}]
+
+      // ── Hoja 2: Resumen ──
+      const ws2=wb.addWorksheet('Resumen')
+      const addH2=t=>{const r=ws2.addRow([t]);r.eachCell(c=>{c.font=hFont;c.fill=hFill})}
+      const add2=(l,v,nf=null)=>{const r=ws2.addRow([l,v]);r.eachCell(c=>{c.font=dFont});if(nf)r.getCell(2).numFmt=nf}
+      addH2('PERÍODO')
+      add2('Período exportado',periodLabel())
+      add2('Fecha de generación',new Date().toLocaleDateString('es'))
+      add2('% facturado sobre el total',`${appts.length?Math.round(selArr.length/appts.length*100):0}%`)
+      ws2.addRow([])
+      addH2('TOTALES')
+      add2('Total ingresos facturados (€)',totalAmt,'#,##0.00 €')
+      add2('Nº sesiones facturadas',selArr.length)
+      add2('Nº sesiones totales en el período',appts.length)
+      add2('Nº pacientes distintos',new Set(selArr.map(a=>a.patients?.id)).size)
+      add2('Ticket medio (€)',selArr.length?totalAmt/selArr.length:0,'#,##0.00 €')
+      ws2.addRow([])
+      addH2('DESGLOSE POR FORMA DE PAGO')
+      ws2.addRow(['Forma de pago','Nº sesiones','Importe (€)','% del total']).eachCell(c=>{c.font={name:'Arial',bold:true,size:10}})
+      const byPay={}
+      for(const a of selArr){const p=PAY[a.payment_method]||a.payment_method||'No especificado';if(!byPay[p])byPay[p]={n:0,amt:0};byPay[p].n++;byPay[p].amt+=(a.services?.price||0)}
+      for(const[p,{n,amt}]of Object.entries(byPay)){
+        const r=ws2.addRow([p,n,amt,totalAmt?`${Math.round(amt/totalAmt*100)}%`:'—'])
+        r.eachCell(c=>{c.font=dFont});r.getCell(3).numFmt='#,##0.00 €'
+      }
+      ws2.addRow([])
+      addH2('DESGLOSE MENSUAL')
+      ws2.addRow(['Mes','Nº sesiones','Importe (€)']).eachCell(c=>{c.font={name:'Arial',bold:true,size:10}})
+      const byMon={}
+      for(const a of selArr){const k=a.starts_at.slice(0,7);if(!byMon[k])byMon[k]={n:0,amt:0};byMon[k].n++;byMon[k].amt+=(a.services?.price||0)}
+      for(const[k,{n,amt}]of Object.entries(byMon).sort()){
+        const[y,m]=k.split('-')
+        const lbl=`${MONTHS[Number(m)-1].charAt(0).toUpperCase()+MONTHS[Number(m)-1].slice(1)} ${y}`
+        const r=ws2.addRow([lbl,n,amt]);r.eachCell(c=>{c.font=dFont});r.getCell(3).numFmt='#,##0.00 €'
+      }
+      ws2.columns=[{width:35},{width:15},{width:16},{width:14}]
+
+      // ── Hoja 3: Para gestoría ──
+      const ws3=wb.addWorksheet('Para gestoría')
+      const fd=new Date((eff.from||'2025-01-01')+'T12:00:00')
+      const q3=Math.floor(fd.getMonth()/3)+1
+      const qNames=['Enero, Febrero, Marzo','Abril, Mayo, Junio','Julio, Agosto, Septiembre','Octubre, Noviembre, Diciembre']
+      ws3.addRow([`MODELO 130 · ${q3}T ${fd.getFullYear()} — ${qNames[q3-1]}`])
+        .eachCell(c=>{c.font={name:'Arial',bold:true,size:12,color:{argb:'FFFFFFFF'}};c.fill=hFill})
+      ws3.addRow([])
+      const pagadas=selArr.filter(a=>a.status==='confirmed'||a.status==='completed')
+      const totPag=pagadas.reduce((s,a)=>s+(a.services?.price||0),0)
+      const add3=(l,v,bold=false,nf=null,yfill=false)=>{
+        const r=ws3.addRow([l,v]);r.eachCell(c=>{c.font={name:'Arial',bold:!!bold,size:10}})
+        if(nf)r.getCell(2).numFmt=nf
+        if(yfill)r.getCell(2).fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFFFFFCC'}}
+      }
+      add3('Total ingresos trimestre (citas Confirmadas/Completadas):',totPag,true,'#,##0.00 €')
+      ws3.addRow([])
+      ws3.addRow(['DESGLOSE MENSUAL']).eachCell(c=>{c.font={name:'Arial',bold:true,size:10};c.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFE0E8F0'}}})
+      ws3.addRow(['Mes','Nº sesiones','Ingresos (€)']).eachCell(c=>{c.font={name:'Arial',bold:true,size:10}})
+      const byMonG={}
+      for(const a of pagadas){const k=a.starts_at.slice(0,7);if(!byMonG[k])byMonG[k]={n:0,amt:0};byMonG[k].n++;byMonG[k].amt+=(a.services?.price||0)}
+      for(const[k,{n,amt}]of Object.entries(byMonG).sort()){
+        const[y,m]=k.split('-')
+        const r=ws3.addRow([`${MONTHS[Number(m)-1].charAt(0).toUpperCase()+MONTHS[Number(m)-1].slice(1)} ${y}`,n,amt])
+        r.eachCell(c=>{c.font=dFont});r.getCell(3).numFmt='#,##0.00 €'
+      }
+      ws3.addRow([])
+      ws3.addRow(['NOTA FISCAL']).eachCell(c=>{c.font={name:'Arial',bold:true,size:10}})
+      ws3.addRow(['Actividad exenta de IVA según art. 20.1.3º LIVA (osteopatía/fisioterapia). Sin retención IRPF (clientes particulares).'])
+        .eachCell(c=>{c.font={name:'Arial',italic:true,size:9,color:{argb:'FF555555'}}})
+      ws3.addRow([])
+      ws3.addRow(['PARA LA GESTORÍA (completar):']).eachCell(c=>{c.font={name:'Arial',bold:true,size:10}})
+      for(const l of['Gastos deducibles del trimestre (€):','Cuota Seguridad Social (€):','Rendimiento neto estimado (€):']) add3(l,'',false,'#,##0.00 €',true)
+      ws3.columns=[{width:55},{width:18}]
+
+      const buf=await wb.xlsx.writeBuffer()
+      const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'})
+      const url=URL.createObjectURL(blob)
+      const el=document.createElement('a');el.href=url;el.download=`${fileLabel()}.xlsx`;el.click()
+      URL.revokeObjectURL(url)
+      setToast({msg:'Excel generado · '+fileLabel()+'.xlsx',type:'ok'})
+    }catch(e){
+      console.error('[facturacion]',e)
+      setToast({msg:'Error al generar Excel: '+e.message,type:'error'})
+    }finally{setExporting(false)}
+  }
+
+  return<>
+    {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
+    <div className="section-header">
+      <span className="section-title">Facturación</span>
+      <Btn onClick={exportExcel}disabled={exporting||!selArr.length}>
+        {exporting?'Generando…':'📥 Exportar Excel'}
+      </Btn>
+    </div>
+
+    {/* Período */}
+    <div className="card"style={{padding:'16px 20px',marginBottom:12}}>
+      <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+        <div className="tab-pills"style={{margin:0}}>
+          {[['month','Mes actual'],['quarter','Trimestre'],['custom','Rango personalizado']].map(([id,l])=>
+            <button key={id}className={`tab-pill ${period.type===id?'active':''}`}
+              onClick={()=>id==='month'?setPeriod(mP()):id==='quarter'?setPeriod(qP()):setPeriod(p=>({...p,type:'custom'}))}>{l}</button>
+          )}
+        </div>
+        {period.type==='custom'&&<>
+          <input type="date"value={cFrom}onChange={e=>setCFrom(e.target.value)}className="field-input"style={{width:140}}/>
+          <span style={{color:'var(--text-muted)'}}>—</span>
+          <input type="date"value={cTo}onChange={e=>setCTo(e.target.value)}className="field-input"style={{width:140}}/>
+          <Btn onClick={load}style={{padding:'6px 14px'}}>Aplicar</Btn>
+        </>}
+      </div>
+    </div>
+
+    {/* Slider + resumen */}
+    <div className="card"style={{padding:'16px 20px',marginBottom:12}}>
+      <div style={{marginBottom:12}}>
+        <div style={{display:'flex',justifyContent:'space-between',marginBottom:6}}>
+          <label style={{fontSize:13,fontWeight:700}}>¿Qué % de citas quieres facturar?</label>
+          <span style={{fontSize:15,fontWeight:800,color:'var(--green)'}}>{pct}%</span>
+        </div>
+        <input type="range"min={10}max={100}step={5}value={pct}
+          onChange={e=>handlePct(Number(e.target.value))}
+          style={{width:'100%',accentColor:'var(--green)'}}/>
+        <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--text-muted)',marginTop:2}}>
+          <span>10%</span><span>100%</span>
+        </div>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10}}>
+        {[
+          ['Citas totales',appts.length,''],
+          ['Seleccionadas',selArr.length,'var(--green)'],
+          ['No facturadas',appts.length-selArr.length,'var(--text-muted)'],
+          ['Importe total',`${totalAmt.toFixed(2)} €`,'var(--green)'],
+        ].map(([l,v,c])=><div key={l}style={{textAlign:'center',padding:'8px 4px',background:'var(--cream)',borderRadius:8}}>
+          <div style={{fontSize:18,fontWeight:800,color:c||'var(--text)'}}>{v}</div>
+          <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>{l}</div>
+        </div>)}
+      </div>
+    </div>
+
+    {/* Botones */}
+    <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap'}}>
+      <Btn variant="ghost"onClick={()=>setSelected(new Set(appts.map(a=>a.id)))}>Seleccionar todas</Btn>
+      <Btn variant="ghost"onClick={()=>setSelected(new Set())}>Deseleccionar todas</Btn>
+      <Btn variant="ghost"onClick={()=>setSelected(distribute(appts,pct))}>↺ Redistribuir</Btn>
+    </div>
+
+    {/* Tabla */}
+    {loading?<Sp/>:appts.length===0
+      ?<Em icon="🧾"title="Sin citas en este período"sub="Selecciona otro rango de fechas"/>
+      :<div className="card"style={{overflow:'auto',padding:0}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+          <thead>
+            <tr style={{background:'var(--green)',color:'white'}}>
+              <th style={{padding:'10px 12px',textAlign:'center',width:40}}>
+                <input type="checkbox"
+                  checked={appts.length>0&&selected.size===appts.length}
+                  onChange={e=>setSelected(e.target.checked?new Set(appts.map(a=>a.id)):new Set())}/>
+              </th>
+              {['Fecha','Hora','Paciente','Concepto','Importe (€)','Forma de pago'].map(h=>
+                <th key={h}style={{padding:'10px 12px',textAlign:'left',fontWeight:700,whiteSpace:'nowrap'}}>{h}</th>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {appts.map((a,i)=>{
+              const inc=selected.has(a.id)
+              return<tr key={a.id}
+                style={{background:inc?(i%2?'white':'var(--cream)'):'#efefef',opacity:inc?1:0.5,cursor:'pointer'}}
+                onClick={()=>toggle(a.id)}>
+                <td style={{padding:'8px 12px',textAlign:'center'}}onClick={e=>{e.stopPropagation();toggle(a.id)}}>
+                  <input type="checkbox"checked={inc}onChange={()=>toggle(a.id)}/>
+                </td>
+                <td style={{padding:'8px 12px',whiteSpace:'nowrap',textDecoration:inc?'none':'line-through'}}>
+                  {a.starts_at.slice(0,10).split('-').reverse().join('/')}
+                </td>
+                <td style={{padding:'8px 12px',whiteSpace:'nowrap'}}>{a.starts_at.slice(11,16)}</td>
+                <td style={{padding:'8px 12px',fontWeight:600}}>{a.patients?.full_name||'—'}</td>
+                <td style={{padding:'8px 12px'}}>{a.services?.name||'—'}</td>
+                <td style={{padding:'8px 12px',whiteSpace:'nowrap',fontWeight:700,color:'var(--green)'}}>
+                  {a.services?.price!=null?`${a.services.price} €`:'—'}
+                </td>
+                <td style={{padding:'8px 12px',color:a.payment_method?'var(--text)':'var(--text-muted)',fontStyle:a.payment_method?'normal':'italic'}}>
+                  {PAY[a.payment_method]||a.payment_method||'—'}
+                </td>
+              </tr>
+            })}
+          </tbody>
+        </table>
+      </div>
+    }
+  </>
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
-const PAGE_TITLES={dashboard:'Dashboard',agenda:'Agenda',horarios:'Horarios',bloqueados:'Días bloqueados',espera:'Lista de espera',yoga:'Yoga',belleza:'Belleza',pacientes:'Pacientes',servicios:'Servicios',profesionales:'Profesionales'}
+const PAGE_TITLES={dashboard:'Dashboard',agenda:'Agenda',horarios:'Horarios',bloqueados:'Días bloqueados',espera:'Lista de espera',yoga:'Yoga',belleza:'Belleza',pacientes:'Pacientes',servicios:'Servicios',profesionales:'Profesionales',facturacion:'Facturación'}
 
 export default function App(){
   const[user,setUser]=useState(null)
@@ -1463,6 +1803,7 @@ export default function App(){
       case 'pacientes':     return<Pacientes/>
       case 'profesionales': return<Profesionales/>
       case 'servicios':     return<Servicios/>
+      case 'facturacion':   return<Facturacion/>
       default:              return<Dashboard onNav={setPage}/>
     }
   }
