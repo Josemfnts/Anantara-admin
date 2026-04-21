@@ -569,10 +569,10 @@ function Bloqueados(){
   useEffect(()=>{
     if(!selProf)return
     const from=`${calYear}-${pad(calMonth+1)}-01`, to=`${calYear}-${pad(calMonth+1)}-31`
-    sb.from('blocked_days').select('blocked_date').eq('professional_id',selProf.id).gte('blocked_date',from).lte('blocked_date',to)
+    sb.from('blocked_days').select('date').eq('professional_id',selProf.id).gte('date',from).lte('date',to)
       .then(({data,error})=>{
         if(error){setToast({msg:'Error al cargar días: '+error.message,type:'error'});return}
-        setBlocked((data||[]).map(r=>r.blocked_date))
+        setBlocked((data||[]).map(r=>r.date))
       })
   },[selProf,calYear,calMonth])
 
@@ -582,7 +582,7 @@ function Bloqueados(){
     if(blocked.includes(dateK)){
       const errs=[]
       for(const p of targetProfs){
-        const{error}=await sb.from('blocked_days').delete().eq('professional_id',p.id).eq('blocked_date',dateK)
+        const{error}=await sb.from('blocked_days').delete().eq('professional_id',p.id).eq('date',dateK)
         if(error) errs.push(error.message)
       }
       if(errs.length){setToast({msg:'Error: '+errs[0],type:'error'});return}
@@ -590,7 +590,7 @@ function Bloqueados(){
     }else{
       const errs=[]
       for(const p of targetProfs){
-        const{error}=await sb.from('blocked_days').insert({professional_id:p.id,blocked_date:dateK})
+        const{error}=await sb.from('blocked_days').insert({professional_id:p.id,date:dateK})
         if(error&&error.code!=='23505') errs.push(error.message)
       }
       if(errs.length){setToast({msg:'Error: '+errs[0],type:'error'});return}
