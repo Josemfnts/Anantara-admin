@@ -239,10 +239,12 @@ function Agenda(){
     const[appts,profsR]=await Promise.all([
       sb.from('appointments').select('id,starts_at,ends_at,status,professional_id,notes,patients(id,full_name),services(name,duration_minutes),professionals(name)')
         .gte('starts_at',from).lte('starts_at',to).neq('status','cancelled'),
-      sb.from('professionals').select('id,name').eq('is_active',true).order('name'),
+      sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name'),
     ])
     setAppts(appts.data||[])
-    setProfs(profsR.data||[])
+    const ps=profsR.data||[]
+    setProfs(ps)
+    setFilterProf(prev=>prev==='all'&&ps.length>0?ps[0].id:prev)
     setLoading(false)
   },[weekRef]) // eslint-disable-line
 
@@ -332,8 +334,13 @@ function Agenda(){
   return<>
     {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
     <div className="section-header">
-      <span className="section-title">{weekStr}</span>
-      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+        <span className="section-title">{weekStr}</span>
+        <div className="tab-pills"style={{margin:0}}>
+          {profs.map(p=><button key={p.id}className={`tab-pill ${filterProf===p.id?'active':''}`}onClick={()=>setFilterProf(p.id)}>{p.name}</button>)}
+        </div>
+      </div>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-start'}}>
         <Btn variant="ghost"style={{padding:'6px 12px'}}onClick={()=>setWeekRef(new Date(weekRef.getTime()-7*86400000))}>← Anterior</Btn>
         <Btn variant="ghost"style={{padding:'6px 10px'}}onClick={()=>setWeekRef(new Date())}>Hoy</Btn>
         <Btn variant="ghost"style={{padding:'6px 12px'}}onClick={()=>setWeekRef(new Date(weekRef.getTime()+7*86400000))}>Siguiente →</Btn>
@@ -341,16 +348,8 @@ function Agenda(){
       </div>
     </div>
 
-    {/* Filters bar */}
+    {/* Hour range filter */}
     <div style={{display:'flex',gap:12,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
-      <div style={{display:'flex',alignItems:'center',gap:6}}>
-        <span style={{fontSize:12,fontWeight:700,color:'var(--text-muted)'}}>Profesional</span>
-        <select className="field-input"style={{width:'auto',padding:'6px 10px',fontSize:13}}
-          value={filterProf} onChange={e=>setFilterProf(e.target.value)}>
-          <option value="all">Todos</option>
-          {profs.map(p=><option key={p.id}value={p.id}>{p.name}</option>)}
-        </select>
-      </div>
       <div style={{display:'flex',alignItems:'center',gap:6}}>
         <span style={{fontSize:12,fontWeight:700,color:'var(--text-muted)'}}>Desde</span>
         <select className="field-input"style={{width:'auto',padding:'6px 10px',fontSize:13}}
