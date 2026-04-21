@@ -483,12 +483,13 @@ function Horarios(){
   useEffect(()=>{
     if(!selProf)return
     setSlotDur(selProf.slot_duration||60)
-    sb.from('working_hours').select('*').eq('professional_id',selProf.id)
+    sb.from('working_hours').select('day_of_week,start_time,end_time').eq('professional_id',selProf.id)
       .then(({data})=>{
         setRows(WORK_DAYS.map(d=>{
           const ex=data?.find(r=>r.day_of_week===d)
-          return ex?{day_of_week:d,active:ex.active,start_time:ex.start_time?.slice(0,5)||'09:00',end_time:ex.end_time?.slice(0,5)||'18:00'}
-                   :{day_of_week:d,active:true,start_time:'09:00',end_time:'18:00'}
+          // Si hay fila → activo; si no hay → inactivo por defecto
+          return ex?{day_of_week:d,active:true,start_time:ex.start_time?.slice(0,5)||'09:00',end_time:ex.end_time?.slice(0,5)||'18:00'}
+                   :{day_of_week:d,active:false,start_time:'09:00',end_time:'18:00'}
         }))
       })
   },[selProf])
@@ -496,7 +497,17 @@ function Horarios(){
   const save=async()=>{
     setSaving(true)
     for(const row of rows){
-      await sb.from('working_hours').upsert({professional_id:selProf.id,day_of_week:row.day_of_week,active:row.active,start_time:row.start_time,end_time:row.end_time},{onConflict:'professional_id,day_of_week'})
+      if(row.active){
+        // Día activo → upsert la fila (sin columna active)
+        await sb.from('working_hours').upsert(
+          {professional_id:selProf.id,day_of_week:row.day_of_week,start_time:row.start_time,end_time:row.end_time},
+          {onConflict:'professional_id,day_of_week'}
+        )
+      } else {
+        // Día inactivo → eliminar la fila si existe
+        await sb.from('working_hours').delete()
+          .eq('professional_id',selProf.id).eq('day_of_week',row.day_of_week)
+      }
     }
     // Save slot duration to professionals table
     try{await sb.from('professionals').update({slot_duration:slotDur}).eq('id',selProf.id)}catch{}
