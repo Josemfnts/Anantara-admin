@@ -568,7 +568,7 @@ function Bloqueados(){
 
   useEffect(()=>{
     if(!selProf)return
-    const from=`${calYear}-${pad(calMonth+1)}-01`, to=`${calYear}-${pad(calMonth+1)}-31`
+    const from=`${calYear}-${pad(calMonth+1)}-01`, to=`${calYear}-${pad(calMonth+1)}-${pad(new Date(calYear,calMonth+1,0).getDate())}`
     sb.from('blocked_days').select('date').eq('professional_id',selProf.id).gte('date',from).lte('date',to)
       .then(({data,error})=>{
         if(error){setToast({msg:'Error al cargar días: '+error.message,type:'error'});return}
