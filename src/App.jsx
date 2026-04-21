@@ -266,7 +266,8 @@ function Agenda(){
   },[modal])
 
   const updateStatus=async(status)=>{
-    await sb.from('appointments').update({status}).eq('id',modal.id)
+    const{error}=await sb.from('appointments').update({status}).eq('id',modal.id)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setToast({msg:STATUS_TXT[status]+' correctamente',type:'ok'})
     setModal(null); load()
   }
@@ -278,7 +279,8 @@ function Agenda(){
   }
 
   const cancelAppt=async(id)=>{
-    await sb.from('appointments').update({status:'cancelled',cancelled_by:'admin'}).eq('id',id)
+    const{error}=await sb.from('appointments').update({status:'cancelled',cancelled_by:'admin',cancelled_at:localDT(new Date())}).eq('id',id)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setModal(null); setToast({msg:'Cita cancelada',type:'ok'}); load()
   }
 
