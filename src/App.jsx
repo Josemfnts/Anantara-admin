@@ -233,8 +233,8 @@ function Agenda(){
   const[toast,setToast]=useState(null)
   // Filters
   const[filterProf,setFilterProf]=useState('all')  // 'all' | professional_id
-  const[hourFrom,setHourFrom]=useState(8)
-  const[hourTo,setHourTo]=useState(20)
+  const[hourFrom,setHourFrom]=useState(()=>Number(localStorage.getItem('ag_from')??8))
+  const[hourTo,setHourTo]=useState(()=>Number(localStorage.getItem('ag_to')??20))
 
   const days=getWeekDays(weekRef)
 
@@ -384,12 +384,12 @@ function Agenda(){
       <div style={{display:'flex',alignItems:'center',gap:6}}>
         <span style={{fontSize:12,fontWeight:700,color:'var(--text-muted)'}}>Desde</span>
         <select className="field-input"style={{width:'auto',padding:'6px 10px',fontSize:13}}
-          value={hourFrom} onChange={e=>setHourFrom(Number(e.target.value))}>
+          value={hourFrom} onChange={e=>{const v=Number(e.target.value);setHourFrom(v);localStorage.setItem('ag_from',v)}}>
           {HOUR_OPTIONS.filter(h=>h<hourTo).map(h=><option key={h}value={h}>{pad(h)}:00</option>)}
         </select>
         <span style={{fontSize:12,fontWeight:700,color:'var(--text-muted)'}}>Hasta</span>
         <select className="field-input"style={{width:'auto',padding:'6px 10px',fontSize:13}}
-          value={hourTo} onChange={e=>setHourTo(Number(e.target.value))}>
+          value={hourTo} onChange={e=>{const v=Number(e.target.value);setHourTo(v);localStorage.setItem('ag_to',v)}}>
           {HOUR_OPTIONS.filter(h=>h>hourFrom).map(h=><option key={h}value={h}>{pad(h)}:00</option>)}
         </select>
       </div>
