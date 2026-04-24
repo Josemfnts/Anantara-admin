@@ -15,9 +15,9 @@ const DAYS_ES = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb']
 function pad(n) { return String(n).padStart(2,'0') }
 function toK(d) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}` }
 function localDT(d) { return `${toK(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` }
-function fD(iso)  { if(!iso)return'—'; const d=new Date(iso); return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}` }
-function fDT(iso) { if(!iso)return'—'; const d=new Date(iso); return `${d.getDate()} ${MONTHS[d.getMonth()]} · ${pad(d.getHours())}:${pad(d.getMinutes())}` }
-function fTime(iso){ if(!iso)return'—'; const d=new Date(iso); return `${pad(d.getHours())}:${pad(d.getMinutes())}` }
+function fD(iso)  { if(!iso)return'—'; const d=new Date(iso.slice(0,19)); return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}` }
+function fDT(iso) { if(!iso)return'—'; const d=new Date(iso.slice(0,19)); return `${d.getDate()} ${MONTHS[d.getMonth()]} · ${pad(d.getHours())}:${pad(d.getMinutes())}` }
+function fTime(iso){ if(!iso)return'—'; const d=new Date(iso.slice(0,19)); return `${pad(d.getHours())}:${pad(d.getMinutes())}` }
 
 function getWeekDays(ref) {
   const d=new Date(ref), day=d.getDay()
