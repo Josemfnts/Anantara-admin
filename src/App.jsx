@@ -15,9 +15,10 @@ const DAYS_ES = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb']
 function pad(n) { return String(n).padStart(2,'0') }
 function toK(d) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}` }
 function localDT(d) { return `${toK(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` }
-function fD(iso)  { if(!iso)return'—'; const d=new Date(iso.slice(0,19)); return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}` }
-function fDT(iso) { if(!iso)return'—'; const d=new Date(iso.slice(0,19)); return `${d.getDate()} ${MONTHS[d.getMonth()]} · ${pad(d.getHours())}:${pad(d.getMinutes())}` }
-function fTime(iso){ if(!iso)return'—'; const d=new Date(iso.slice(0,19)); return `${pad(d.getHours())}:${pad(d.getMinutes())}` }
+function toIsoStr(iso){ if(!iso)return null; if(typeof iso==='string')return iso; return new Date(iso).toISOString() }
+function fD(iso)  { const s=toIsoStr(iso); if(!s)return'—'; const d=new Date(s.slice(0,19)); return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}` }
+function fDT(iso) { const s=toIsoStr(iso); if(!s)return'—'; const d=new Date(s.slice(0,19)); return `${d.getDate()} ${MONTHS[d.getMonth()]} · ${pad(d.getHours())}:${pad(d.getMinutes())}` }
+function fTime(iso){ const s=toIsoStr(iso); if(!s)return'—'; const d=new Date(s.slice(0,19)); return `${pad(d.getHours())}:${pad(d.getMinutes())}` }
 
 function getWeekDays(ref) {
   const d=new Date(ref), day=d.getDay()
@@ -138,8 +139,8 @@ function Dashboard({onNav}){
       sb.from('appointments').select('id',{count:'exact'})
         .gte('starts_at',today+'T00:00:00').lte('starts_at',weekEnd+'T23:59:59').neq('status','cancelled'),
       sb.from('patients').select('id',{count:'exact'}),
-      sb.from('availability_slots').select('id,start_time,capacity,services(name),bookings(id)')
-        .gte('start_time',today+'T00:00:00').order('start_time').limit(6),
+      sb.from('availability_slots').select('id,starts_at,max_bookings,services(name),bookings(id)')
+        .gte('starts_at',today+'T00:00:00').order('starts_at').limit(6),
       sb.from('waiting_list').select('id',{count:'exact'}),
     ])
     setStats({today:apToday.count||0,week:apWeek.count||0,patients:pats.count||0})
@@ -193,11 +194,11 @@ function Dashboard({onNav}){
         <div className="section-header"><span className="section-title">Próximas clases</span></div>
         <div className="card"style={{overflow:'hidden'}}>
           {slots.length===0?<Em icon="🧘"title="Sin clases próximas"/>
-          :slots.map(s=>{const pct=s.capacity>0?Math.round(s.booked/s.capacity*100):0;return(
+          :slots.map(s=>{const pct=s.max_bookings>0?Math.round(s.booked/s.max_bookings*100):0;return(
             <div key={s.id}className="slot-card">
               <div className="slot-info">
                 <div className="slot-title">{s.services?.name||'Clase'}</div>
-                <div className="slot-meta">{fDT(s.start_time)} · {s.booked}/{s.capacity} plazas</div>
+                <div className="slot-meta">{fDT(s.starts_at)} · {s.booked}/{s.max_bookings} plazas</div>
                 <div className="slot-bar"><div className="slot-bar-fill"style={{width:`${pct}%`}}/></div>
               </div>
               <Bg variant={pct>=100?'red':pct>=80?'gold':'green'}>{pct}%</Bg>
@@ -952,10 +953,10 @@ function Pacientes(){
     setHistLoad(true)
     const[appts,bookings]=await Promise.all([
       sb.from('appointments').select('id,starts_at,status,professionals(name),services(name)').eq('patient_id',patId).order('starts_at',{ascending:false}).limit(20),
-      sb.from('bookings').select('id,status,created_at,availability_slots(start_time,services(name))').eq('patient_id',patId).order('created_at',{ascending:false}).limit(10),
+      sb.from('bookings').select('id,status,created_at,availability_slots(starts_at,services(name))').eq('patient_id',patId).order('created_at',{ascending:false}).limit(10),
     ])
     const a=(appts.data||[]).map(x=>({id:x.id,type:'osteo',typeLabel:'Osteopatía',name:x.services?.name||'Osteopatía',pro:x.professionals?.name,date:x.starts_at,status:x.status}))
-    const b=(bookings.data||[]).map(x=>{const name=x.availability_slots?.services?.name||'Clase';return{id:x.id,type:name.toLowerCase().includes('yoga')?'yoga':'belleza',typeLabel:name.toLowerCase().includes('yoga')?'Yoga':'Belleza',name,date:x.availability_slots?.start_time||x.created_at,status:x.status}})
+    const b=(bookings.data||[]).map(x=>{const name=x.availability_slots?.services?.name||'Clase';return{id:x.id,type:name.toLowerCase().includes('yoga')?'yoga':'belleza',typeLabel:name.toLowerCase().includes('yoga')?'Yoga':'Belleza',name,date:x.availability_slots?.starts_at||x.created_at,status:x.status}})
     setHistory([...a,...b].sort((x,y)=>new Date(y.date)-new Date(x.date)));setHistLoad(false)
   }
 
