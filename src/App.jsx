@@ -217,10 +217,12 @@ function durToH(m){return(m/60)*SLOT_H}
 function Agenda(){
   const[weekRef,setWeekRef]=useState(new Date())
   const[appointments,setAppts]=useState([])
+  const[blocks,setBlocks]=useState([])
   const[profs,setProfs]=useState([])
   const[services,setServices]=useState([])
   const[loading,setLoading]=useState(true)
   const[modal,setModal]=useState(null)
+  const[blockModal,setBlockModal]=useState(null) // {mode:'create'|'view', professional_id, date, start, end, reason, id?}
   const[cancelConfirm,setCancelConfirm]=useState(false)
   const[patSearch,setPatSearch]=useState('')
   const[patResults,setPatResults]=useState([])
@@ -231,6 +233,8 @@ function Agenda(){
   const[editPayment,setEditPayment]=useState('')
   const[saving,setSaving]=useState(false)
   const[toast,setToast]=useState(null)
+  const[drag,setDrag]=useState(null) // {di, startMin, endMin, startY, moved}
+  const gridRef=useRef(null)
   // Filters
   const[filterProf,setFilterProf]=useState('all')  // 'all' | professional_id
   const[hourFrom,setHourFrom]=useState(()=>Number(localStorage.getItem('ag_from')??8))
@@ -241,12 +245,15 @@ function Agenda(){
   const load=useCallback(async()=>{
     setLoading(true)
     const from=toK(days[0])+'T00:00:00', to=toK(days[6])+'T23:59:59'
-    const[appts,profsR]=await Promise.all([
+    const[appts,profsR,blks]=await Promise.all([
       sb.from('appointments').select('id,starts_at,ends_at,status,professional_id,notes,payment_method,patients(id,full_name),services(name,duration_minutes),professionals(name)')
         .gte('starts_at',from).lte('starts_at',to).neq('status','cancelled'),
       sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name'),
+      sb.from('blocked_slots').select('id,professional_id,starts_at,ends_at,reason')
+        .gte('starts_at',from).lte('starts_at',to),
     ])
     setAppts(appts.data||[])
+    setBlocks(blks.data||[])
     const ps=profsR.data||[]
     setProfs(ps)
     setFilterProf(prev=>prev==='all'&&ps.length>0?ps[0].id:prev)
@@ -295,8 +302,16 @@ function Agenda(){
     }
   },[modal])
 
+  // Cualquier cambio de estado guarda también método de pago, notas y profesional asignado.
+  // Antes solo se actualizaba `status`, lo que perdía el método de pago si el usuario lo
+  // seleccionaba y pulsaba "Completada" sin pasar por "Guardar cambios".
   const updateStatus=async(status)=>{
-    const{error}=await sb.from('appointments').update({status}).eq('id',modal.id)
+    const{error}=await sb.from('appointments').update({
+      status,
+      payment_method:editPayment||null,
+      notes:editNotes||null,
+      professional_id:editProfId||modal.professional_id,
+    }).eq('id',modal.id)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setToast({msg:STATUS_TXT[status]+' correctamente',type:'ok'})
     setModal(null); load()
@@ -304,8 +319,10 @@ function Agenda(){
 
   const saveApptChanges=async()=>{
     setSaving(true)
-    await sb.from('appointments').update({notes:editNotes||null,professional_id:editProfId||modal.professional_id,payment_method:editPayment||null}).eq('id',modal.id)
-    setSaving(false); setToast({msg:'Cita actualizada',type:'ok'}); setModal(null); load()
+    const{error}=await sb.from('appointments').update({notes:editNotes||null,professional_id:editProfId||modal.professional_id,payment_method:editPayment||null}).eq('id',modal.id)
+    setSaving(false)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setToast({msg:'Cita actualizada',type:'ok'}); setModal(null); load()
   }
 
   const cancelAppt=async(id)=>{
@@ -336,6 +353,103 @@ function Agenda(){
     if(error){setToast({msg:error.message,type:'error'});return}
     setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:''})
     setToast({msg:'Cita creada',type:'ok'});load()
+  }
+
+  // ── Drag-to-block / click-to-create ─────────────────────────────────────────
+  // Convierte un clientY (px en pantalla) → minutos absolutos del día,
+  // usando el primer .ag-time como ancla del minuto (hourFrom*60).
+  const yToMinute=clientY=>{
+    const grid=gridRef.current
+    if(!grid)return null
+    const anchor=grid.querySelector('.ag-time')
+    if(!anchor)return null
+    const top=anchor.getBoundingClientRect().top
+    const totalMin=hourFrom*60+(clientY-top)
+    const clamped=Math.max(hourFrom*60,Math.min(hourTo*60,totalMin))
+    return Math.round(clamped/15)*15
+  }
+
+  const startDrag=(e,hi,di)=>{
+    if(filterProf==='all'){setToast({msg:'Selecciona un profesional para crear o bloquear',type:'error'});return}
+    if(e.button!==0)return
+    if(e.target.closest('.appt-block')||e.target.closest('.block-card'))return
+    e.preventDefault()
+    const rect=e.currentTarget.getBoundingClientRect()
+    const offsetY=Math.max(0,Math.min(rect.height,e.clientY-rect.top))
+    const startMin=Math.round(((hourFrom+hi)*60+offsetY)/15)*15
+    setDrag({di,startMin,endMin:startMin,startY:e.clientY,moved:false})
+  }
+
+  // Listeners globales mientras hay drag activo
+  useEffect(()=>{
+    if(!drag)return
+    const onMove=ev=>{
+      const min=yToMinute(ev.clientY)
+      if(min==null)return
+      setDrag(d=>{
+        if(!d)return null
+        const moved=d.moved||Math.abs(ev.clientY-d.startY)>5
+        return{...d,endMin:min,moved}
+      })
+    }
+    const onUp=()=>{
+      setDrag(d=>{
+        if(!d)return null
+        const start=Math.min(d.startMin,d.endMin)
+        const end=Math.max(d.startMin,d.endMin)
+        const date=toK(days[d.di])
+        const profId=filterProf!=='all'?filterProf:profs[0]?.id
+        const profName=profs.find(p=>p.id===profId)?.name||''
+        const fmt=m=>`${pad(Math.floor(m/60))}:${pad(m%60)}`
+        if(!d.moved||end-start<15){
+          // Click → crear cita pre-rellenada
+          const defSvc=services.find(s=>s.duration_minutes===60)||services[0]
+          setForm({prof_id:profId||'',svc_id:defSvc?.id||'',date,time:fmt(d.startMin),notes:'',payment_method:''})
+          setSelPat(null);setPatSearch('')
+          setModal('create')
+        }else{
+          // Drag → modal de bloqueo
+          setBlockModal({mode:'create',professional_id:profId,professional_name:profName,date,start:fmt(start),end:fmt(end),reason:''})
+        }
+        return null
+      })
+    }
+    document.addEventListener('mousemove',onMove)
+    document.addEventListener('mouseup',onUp)
+    return()=>{
+      document.removeEventListener('mousemove',onMove)
+      document.removeEventListener('mouseup',onUp)
+    }
+  },[drag,days,filterProf,profs,services,hourFrom,hourTo]) // eslint-disable-line
+
+  const saveBlock=async()=>{
+    if(!blockModal||blockModal.mode!=='create')return
+    const startStr=`${blockModal.date}T${blockModal.start}:00`
+    const endStr=`${blockModal.date}T${blockModal.end}:00`
+    if(endStr<=startStr){setToast({msg:'La hora final debe ser posterior',type:'error'});return}
+    const{error}=await sb.from('blocked_slots').insert({
+      professional_id:blockModal.professional_id,
+      starts_at:startStr,ends_at:endStr,
+      reason:blockModal.reason||null,
+    })
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setBlockModal(null);setToast({msg:'Horario bloqueado',type:'ok'});load()
+  }
+
+  const deleteBlock=async()=>{
+    if(!blockModal||!blockModal.id)return
+    const{error}=await sb.from('blocked_slots').delete().eq('id',blockModal.id)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setBlockModal(null);setToast({msg:'Bloqueo eliminado',type:'ok'});load()
+  }
+
+  const dayBlocks=date=>{
+    const dk=toK(date)
+    return blocks.filter(b=>{
+      if(!b.starts_at?.startsWith(dk))return false
+      if(filterProf!=='all'&&b.professional_id!==filterProf)return false
+      return true
+    })
   }
 
   const hours=Array.from({length:hourTo-hourFrom},(_,i)=>hourFrom+i)
@@ -396,7 +510,7 @@ function Agenda(){
     </div>
 
     {loading?<Sp/>:<div className="agenda-scroll">
-      <div className="agenda-grid"style={{gridTemplateColumns:`54px repeat(${days.length},1fr)`}}>
+      <div ref={gridRef} className="agenda-grid"style={{gridTemplateColumns:`54px repeat(${days.length},1fr)`,userSelect:drag?'none':'auto'}}>
         <div className="ag-header time-col"style={{gridColumn:1,gridRow:1}}/>
         {days.map((d,i)=><div key={i}className={`ag-header ${toK(d)===today?'today':''}`}style={{gridColumn:i+2,gridRow:1}}>
           <div>{DAYS_ES[d.getDay()]}</div><div style={{fontSize:16,fontWeight:900}}>{d.getDate()}</div>
@@ -405,18 +519,36 @@ function Agenda(){
           <div className="ag-time"style={{gridColumn:1,gridRow:hi+2}}>{pad(h)}:00</div>
           {days.map((d,di)=>{
             const da=hi===0?dayAppts(d):[]
-            return<div key={`c-${h}-${di}`}className="ag-col"style={{gridColumn:di+2,gridRow:hi+2}}>
+            const bl=hi===0?dayBlocks(d):[]
+            const showDrag=hi===0&&drag&&drag.di===di
+            return<div key={`c-${h}-${di}`}className="ag-col"style={{gridColumn:di+2,gridRow:hi+2,cursor:filterProf!=='all'?'crosshair':'default'}}
+              onMouseDown={e=>startDrag(e,hi,di)}>
+              {bl.map(b=>{
+                const[sh,sm]=b.starts_at.slice(11,16).split(':').map(Number)
+                const[eh,em]=b.ends_at.slice(11,16).split(':').map(Number)
+                const startMin=sh*60+sm,endMin=eh*60+em
+                return<div key={b.id}className="block-card"
+                  onClick={ev=>{ev.stopPropagation();setBlockModal({mode:'view',id:b.id,professional_id:b.professional_id,date:b.starts_at.slice(0,10),start:b.starts_at.slice(11,16),end:b.ends_at.slice(11,16),reason:b.reason||''})}}
+                  style={{position:'absolute',top:Math.max(0,startMin-hourFrom*60),height:Math.max(18,endMin-startMin-2),left:2,right:2,background:'repeating-linear-gradient(45deg,#e5e7eb,#e5e7eb 6px,#d1d5db 6px,#d1d5db 12px)',border:'1px solid #9ca3af',borderRadius:4,cursor:'pointer',zIndex:2,padding:'2px 6px',fontSize:10,color:'#4b5563',fontWeight:700,overflow:'hidden'}}>
+                  🚫 Bloqueado{b.reason?` · ${b.reason}`:''}
+                </div>
+              })}
               {da.map(a=>{
                 const t=a.starts_at?.slice(11,16)||'08:00'
                 const et=a.ends_at?.slice(11,16)
                 const dur=et?(new Date('2000-01-01T'+et)-new Date('2000-01-01T'+t))/60000:60
                 const c=apptColor(a.status)
-                return<div key={a.id}className="appt-block"onClick={()=>setModal(a)}
+                return<div key={a.id}className="appt-block"onClick={ev=>{ev.stopPropagation();setModal(a)}}
                   style={{top:timeToYLocal(t),height:Math.max(durToH(dur)-2,18),background:c.bg,borderLeft:`3px solid ${c.border}`,color:c.text}}>
                   <div style={{fontWeight:700,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{t} {a.patients?.full_name||''}</div>
                   <div style={{fontSize:9,opacity:.8,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{a.services?.name}{filterProf==='all'&&a.professionals?.name?` · ${a.professionals.name}`:''}</div>
                 </div>
               })}
+              {showDrag&&(()=>{
+                const s=Math.min(drag.startMin,drag.endMin),e=Math.max(drag.startMin,drag.endMin)
+                if(e-s<=0)return null
+                return<div style={{position:'absolute',top:s-hourFrom*60,height:e-s,left:2,right:2,background:'rgba(192,132,79,0.22)',border:'2px dashed var(--terra,#c0844f)',borderRadius:6,pointerEvents:'none',zIndex:5}}/>
+              })()}
             </div>
           })}
         </React.Fragment>)}
@@ -502,6 +634,33 @@ function Agenda(){
       <div style={{display:'flex',gap:10,marginTop:10}}>
         <Btn variant="ghost"onClick={()=>setModal(null)}style={{flex:1}}>Cerrar</Btn>
         <Btn onClick={saveApptChanges}disabled={saving}style={{flex:1}}>{saving?'Guardando…':'Guardar cambios'}</Btn>
+      </div>
+    </Modal>}
+
+    {/* Block modal (crear o ver) */}
+    {blockModal&&<Modal title={blockModal.mode==='create'?'Bloquear horario':'Horario bloqueado'}onClose={()=>setBlockModal(null)}>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}}>
+        <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:2}}>PROFESIONAL</div><div style={{fontSize:14,fontWeight:700}}>{blockModal.professional_name||profs.find(p=>p.id===blockModal.professional_id)?.name||'—'}</div></div>
+        <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:2}}>FECHA</div><div style={{fontSize:13}}>{fD(blockModal.date+'T12:00:00')}</div></div>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+        <Inp label="Desde"type="time"value={blockModal.start}step="900"
+          onChange={e=>setBlockModal(m=>({...m,start:e.target.value}))}
+          disabled={blockModal.mode==='view'}/>
+        <Inp label="Hasta"type="time"value={blockModal.end}step="900"
+          onChange={e=>setBlockModal(m=>({...m,end:e.target.value}))}
+          disabled={blockModal.mode==='view'}/>
+      </div>
+      <div className="field"><label className="field-label">Motivo (opcional)</label>
+        <input className="field-input"value={blockModal.reason}placeholder="Comida, formación, ausencia…"
+          onChange={e=>setBlockModal(m=>({...m,reason:e.target.value}))}
+          disabled={blockModal.mode==='view'}/>
+      </div>
+      <div style={{display:'flex',gap:10,marginTop:4}}>
+        <Btn variant="ghost"onClick={()=>setBlockModal(null)}style={{flex:1}}>Cerrar</Btn>
+        {blockModal.mode==='create'
+          ?<Btn onClick={saveBlock}style={{flex:1}}>Bloquear</Btn>
+          :<Btn variant="danger"onClick={deleteBlock}style={{flex:1}}>Eliminar bloqueo</Btn>}
       </div>
     </Modal>}
   </>
