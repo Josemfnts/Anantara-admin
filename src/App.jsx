@@ -435,6 +435,34 @@ function Agenda(){
     setToast({msg:'Cita actualizada',type:'ok'}); setModal(null); load()
   }
 
+  const moveToList = async (queueType) => {
+    // Cargar service_id si modal no lo tiene directamente
+    let serviceId = modal.service_id
+    if (!serviceId) {
+      const { data } = await sb.from('appointments').select('service_id').eq('id', modal.id).maybeSingle()
+      serviceId = data?.service_id
+    }
+    if (!serviceId) { setToast({msg:'No pude leer el servicio',type:'error'}); return }
+    // Calcular priority_order = max + 1 en esa cola
+    const { data: max } = await sb.from('wait_queue').select('priority_order').eq('queue_type', queueType).order('priority_order',{ascending:false}).limit(1).maybeSingle()
+    const newPrio = (max?.priority_order || 0) + 1
+    // Hora preferida = hora de la cita actual
+    const hour = parseInt(modal.starts_at.slice(11,13))
+    const{error}=await sb.from('wait_queue').insert({
+      queue_type: queueType,
+      patient_id: modal.patients.id,
+      professional_id: modal.professional_id,
+      service_id: serviceId,
+      priority_order: newPrio,
+      target_date: null,
+      preferred_hour: hour,
+      fallback_appointment_id: modal.id,
+    })
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setToast({msg:`Añadido a ${queueType==='waiting'?'lista de espera':'lista de adelantar'}`,type:'ok'})
+    setModal(null)
+  }
+
   const cancelAppt=async(id)=>{
     // Pending: DELETE. Confirmed: UPDATE + insertar hold (manual mode notifica desde el bot al recibir webhook;
     // aquí solo escribimos el hold y ya, la secretaria misma recibirá el WhatsApp del bot vía un trigger en el handler de eventos
@@ -809,6 +837,17 @@ function Agenda(){
         </div>
       ) : null}
 
+      {/* Mover a lista (waiting / expedite) */}
+      {(modal.status==='pending'||modal.status==='confirmed') && new Date(modal.starts_at) > new Date() && (
+        <div style={{borderTop:'1px solid var(--border)',paddingTop:14,marginTop:14,marginBottom:14}}>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Mover a cola</div>
+          <div style={{display:'flex',gap:8}}>
+            <Btn variant="ghost" onClick={()=>moveToList('waiting')} style={{flex:1}}>→ Lista de espera</Btn>
+            <Btn variant="ghost" onClick={()=>moveToList('expedite')} style={{flex:1}}>→ Lista de adelantar</Btn>
+          </div>
+        </div>
+      )}
+
       {/* Acciones de estado */}
       {cancelConfirm
         ?<div style={{background:'var(--cream)',border:'1px solid var(--terra)',borderRadius:8,padding:'12px 14px',marginTop:8}}>
@@ -1076,11 +1115,12 @@ function Espera(){
   const[rows,setRows]=useState([])
   const[fbMap,setFbMap]=useState({})
   const[toast,setToast]=useState(null)
+  const[assignModal,setAssignModal]=useState(null) // {row, candidates: [{appt, fits}]}
 
   const load=useCallback(async()=>{
     setLoading(true)
     const{data}=await sb.from('wait_queue')
-      .select('id,queue_type,priority_order,target_date,preferred_hour,weeks_pautadas,fallback_appointment_id,created_at,notes,patients(id,full_name,phone),services(name),professionals(name)')
+      .select('id,queue_type,priority_order,target_date,preferred_hour,weeks_pautadas,fallback_appointment_id,created_at,notes,patient_id,professional_id,service_id,patients(id,full_name,phone),services(name),professionals(name)')
       .eq('queue_type', tab)
       .order('priority_order',{ascending:true})
     const items = data||[]
@@ -1120,6 +1160,57 @@ function Espera(){
   const remove = async (id) => {
     await sb.from('wait_queue').delete().eq('id', id)
     setToast({msg:'Eliminado de la lista',type:'ok'}); load()
+  }
+
+  const openAssign = async (row) => {
+    // Buscar huecos cancelled del profesional de la fila
+    const fbStart = row.fallback_appointment_id ? fbMap[row.fallback_appointment_id]?.starts_at : null
+    const minDate = row.target_date || new Date().toISOString().slice(0,10)
+    const { data: cancelled } = await sb.from('appointments')
+      .select('id,starts_at,ends_at,service_id')
+      .eq('professional_id', row.professional_id)
+      .eq('status', 'cancelled')
+      .gte('starts_at', minDate + 'T00:00:00')
+      .order('starts_at')
+      .limit(15)
+    const candidates = (cancelled || []).map(a => {
+      const hour = parseInt(a.starts_at.slice(11,13))
+      const beforeFb = !fbStart || a.starts_at < fbStart.slice(0, 19)
+      const hourOk = row.preferred_hour == null || row.preferred_hour === hour
+      return { appt: a, fits: beforeFb && hourOk }
+    })
+    candidates.sort((a,b) => (b.fits - a.fits))
+    setAssignModal({ row, candidates })
+  }
+
+  const confirmAssign = async (cancelledAppt) => {
+    const row = assignModal.row
+    const proposedUntil = new Date(Date.now() + 36*60*60*1000).toISOString().slice(0,19)
+    // Crear nueva pending para el paciente WL en el mismo slot del cancelled
+    const { data: newAppt, error } = await sb.from('appointments').insert({
+      patient_id: row.patient_id,
+      professional_id: row.professional_id,
+      service_id: cancelledAppt.service_id || row.service_id,
+      starts_at: cancelledAppt.starts_at,
+      ends_at: cancelledAppt.ends_at,
+      status: 'pending',
+      proposed_until: proposedUntil,
+      notes: 'Asignación manual desde lista',
+    }).select('id').single()
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    // Marcar el hold con current_offer_id
+    await sb.from('cancellation_holds').update({ current_offer_id: newAppt.id }).eq('appointment_id', cancelledAppt.id)
+    // Disparar WhatsApp via endpoint del bot (Brecha 3)
+    try {
+      await fetch('http://localhost:3002/notify-wl-assignment', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ appointment_id: newAppt.id })
+      })
+    } catch(e) {
+      console.warn('notify-wl-assignment fail:', e.message)
+    }
+    setAssignModal(null); setToast({msg:'Hueco asignado. Esperando confirmación del paciente.',type:'ok'}); load()
   }
 
   const weeksLeft = (row) => {
@@ -1176,12 +1267,33 @@ function Espera(){
               <Btn variant="ghost" style={{padding:'4px 8px',fontSize:11}} onClick={()=>moveUp(r, idx)} disabled={idx===0}>⬆️</Btn>
               <Btn variant="ghost" style={{padding:'4px 8px',fontSize:11}} onClick={()=>moveDown(r, idx)} disabled={idx===rows.length-1}>⬇️</Btn>
               <Btn variant="ghost" style={{padding:'4px 8px',fontSize:11}} onClick={()=>moveToOther(r)}>↔ {r.queue_type==='waiting'?'Adelantar':'Espera'}</Btn>
+              <Btn variant="ghost" style={{padding:'4px 8px',fontSize:11}} onClick={()=>openAssign(r)} title="Buscar hueco cancelado">🔍</Btn>
               <Btn variant="danger" style={{padding:'4px 8px',fontSize:11}} onClick={()=>remove(r.id)}>🗑</Btn>
             </div>
           </div>
         })}
       </div>
     }
+
+    {assignModal && <Modal title={`Asignar hueco a ${assignModal.row.patients?.full_name || ''}`} onClose={()=>setAssignModal(null)}>
+      <div style={{maxHeight:400,overflowY:'auto'}}>
+        {assignModal.candidates.length === 0
+          ? <Em icon="📭" title="No hay huecos cancelados disponibles"/>
+          : assignModal.candidates.map(({appt, fits}) => (
+            <div key={appt.id} style={{
+              padding:'10px 12px',marginBottom:8,
+              background:fits?'#ecfdf5':'#f9fafb',
+              border:`1px solid ${fits?'#10b981':'#d1d5db'}`,
+              borderRadius:6,cursor:fits?'pointer':'not-allowed',opacity:fits?1:0.5
+            }} onClick={fits ? () => confirmAssign(appt) : undefined}>
+              <div style={{fontSize:13,fontWeight:700}}>{fDT(appt.starts_at)}</div>
+              {!fits && <div style={{fontSize:10,color:'#dc2626'}}>No encaja (fuera de fechas o de hora preferida)</div>}
+            </div>
+          ))
+        }
+      </div>
+      <Btn variant="ghost" onClick={()=>setAssignModal(null)} style={{marginTop:8,width:'100%'}}>Cerrar</Btn>
+    </Modal>}
   </>
 }
 
