@@ -224,10 +224,11 @@ function Agenda(){
   const[modal,setModal]=useState(null)
   const[blockModal,setBlockModal]=useState(null) // {mode:'create'|'view', professional_id, date, start, end, reason, id?}
   const[cancelConfirm,setCancelConfirm]=useState(false)
+  const[assignModal,setAssignModal]=useState(null) // {appointment, candidates: []}
   const[patSearch,setPatSearch]=useState('')
   const[patResults,setPatResults]=useState([])
   const[selPat,setSelPat]=useState(null)
-  const[form,setForm]=useState({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:''})
+  const[form,setForm]=useState({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:'',leave_pending:true})
   const[editNotes,setEditNotes]=useState('')
   const[editProfId,setEditProfId]=useState('')
   const[editPayment,setEditPayment]=useState('')
@@ -246,8 +247,8 @@ function Agenda(){
     setLoading(true)
     const from=toK(days[0])+'T00:00:00', to=toK(days[6])+'T23:59:59'
     const[appts,profsR,blks]=await Promise.all([
-      sb.from('appointments').select('id,starts_at,ends_at,status,professional_id,notes,payment_method,patients(id,full_name),services(name,duration_minutes),professionals(name)')
-        .gte('starts_at',from).lte('starts_at',to).neq('status','cancelled'),
+      sb.from('appointments').select('id,starts_at,ends_at,status,professional_id,notes,payment_method,reminder_sent_at,proposed_until,patients(id,full_name),services(name,duration_minutes),professionals(name)')
+        .gte('starts_at',from).lte('starts_at',to),
       sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name'),
       sb.from('blocked_slots').select('id,professional_id,starts_at,ends_at,reason')
         .gte('starts_at',from).lte('starts_at',to),
@@ -306,15 +307,98 @@ function Agenda(){
   // Antes solo se actualizaba `status`, lo que perdía el método de pago si el usuario lo
   // seleccionaba y pulsaba "Completada" sin pasar por "Guardar cambios".
   const updateStatus=async(status)=>{
-    const{error}=await sb.from('appointments').update({
+    const updates = {
       status,
       payment_method:editPayment||null,
       notes:editNotes||null,
       professional_id:editProfId||modal.professional_id,
-    }).eq('id',modal.id)
+    }
+    if (status === 'confirmed') updates.proposed_until = null
+    const{error}=await sb.from('appointments').update(updates).eq('id',modal.id)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setToast({msg:STATUS_TXT[status]+' correctamente',type:'ok'})
     setModal(null); load()
+  }
+
+  const markReminderSent=async()=>{
+    // Pone reminder_sent_at = now - 3h para que pase a verde oscuro inmediatamente
+    const ts = new Date(Date.now() - 3*60*60*1000).toISOString().slice(0,19)
+    const{error}=await sb.from('appointments').update({reminder_sent_at:ts}).eq('id',modal.id)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setToast({msg:'Recordatorio marcado',type:'ok'})
+    setModal(null); load()
+  }
+
+  const openAssignModal = async (appt) => {
+    // Cargar primeras 10 filas de wait_queue de ese profesional, ordenadas por queue_type (waiting primero) + priority
+    const { data: rows } = await sb.from('wait_queue')
+      .select('id,queue_type,priority_order,target_date,preferred_hour,fallback_appointment_id,patients(id,full_name,phone),services(name,duration_minutes)')
+      .eq('professional_id', appt.professional_id)
+      .order('queue_type', { ascending: false })  // 'waiting' < 'expedite' alphabetically — invertir
+      .order('priority_order', { ascending: true })
+      .limit(10)
+
+    // Cargar fallbacks para ver fecha actual del paciente
+    const fbIds = (rows||[]).filter(r=>r.fallback_appointment_id).map(r=>r.fallback_appointment_id)
+    let fbMap = {}
+    if (fbIds.length) {
+      const { data: fb } = await sb.from('appointments').select('id,starts_at').in('id', fbIds)
+      fbMap = Object.fromEntries((fb||[]).map(f=>[f.id, f.starts_at]))
+    }
+
+    // Cargar el suggested del cancellation_holds
+    const { data: hold } = await sb.from('cancellation_holds')
+      .select('suggested_wait_queue_id')
+      .eq('appointment_id', appt.id)
+      .maybeSingle()
+
+    const huecoStart = appt.starts_at
+    const huecoHour = parseInt(huecoStart.slice(11,13))
+    const huecoDate = huecoStart.slice(0,10)
+
+    const candidates = (rows || []).map(r => {
+      const fbDate = fbMap[r.fallback_appointment_id] || null
+      const beforeFallback = !fbDate || huecoStart < fbDate.slice(0, 19)
+      const afterTarget = !r.target_date || huecoDate >= r.target_date
+      const hourOk = r.preferred_hour == null || r.preferred_hour === huecoHour
+      const fits = beforeFallback && afterTarget && hourOk
+      return {
+        ...r,
+        fits,
+        fallback_starts_at: fbDate,
+        isSuggestion: hold?.suggested_wait_queue_id === r.id,
+      }
+    })
+
+    // Ordenar: sugerencia primero, luego que encajan, luego no encajan
+    candidates.sort((a,b) => (b.isSuggestion - a.isSuggestion) || (b.fits - a.fits))
+
+    setAssignModal({ appointment: appt, candidates })
+  }
+
+  const confirmAssignToWL = async (candidate) => {
+    const appt = assignModal.appointment
+    // 1. Crear nueva fila pending para el paciente WL
+    const proposedUntil = localDT(new Date(Date.now() + 36*60*60*1000))
+    const { data: newAppt, error: insertErr } = await sb.from('appointments').insert({
+      patient_id: candidate.patient_id,
+      professional_id: appt.professional_id,
+      service_id: appt.service_id || candidate.service_id,
+      starts_at: appt.starts_at,
+      ends_at: appt.ends_at,
+      status: 'pending',
+      proposed_until: proposedUntil,
+      notes: 'Asignación desde lista (cancelación)',
+    }).select('id').single()
+    if (insertErr) { setToast({msg:'Error: '+insertErr.message,type:'error'}); return }
+
+    // 2. Marcar hold con current_offer_id
+    await sb.from('cancellation_holds')
+      .update({ current_offer_id: newAppt.id })
+      .eq('appointment_id', appt.id)
+
+    // 3. TODO: enviar WhatsApp al paciente (lo hará el bot al detectar el evento via supabase realtime, o desde un endpoint)
+    setAssignModal(null); setToast({msg:'Asignación creada. Esperando confirmación del paciente.',type:'ok'}); load()
   }
 
   const saveApptChanges=async()=>{
@@ -326,9 +410,38 @@ function Agenda(){
   }
 
   const cancelAppt=async(id)=>{
-    const{error}=await sb.from('appointments').update({status:'cancelled',cancelled_by:'secretary',cancelled_at:localDT(new Date())}).eq('id',id)
-    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    setModal(null); setToast({msg:'Cita cancelada',type:'ok'}); load()
+    // Pending: DELETE. Confirmed: UPDATE + insertar hold (manual mode notifica desde el bot al recibir webhook;
+    // aquí solo escribimos el hold y ya, la secretaria misma recibirá el WhatsApp del bot vía un trigger en el handler de eventos
+    // pero como no hay WhatsApp del lado del admin React, la notificación vendrá por la vía del bot al detectar el cambio en BD.
+    // Para evitar duplicados, NO notificamos desde aquí. El bot scheduler/listener detectará).
+    const cur = modal
+    if (cur.status === 'pending') {
+      const{error}=await sb.from('appointments').delete().eq('id',id)
+      if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+      setModal(null); setToast({msg:'Propuesta eliminada',type:'ok'}); load()
+      return
+    }
+    if (cur.status === 'confirmed') {
+      const{error}=await sb.from('appointments').update({status:'cancelled',cancelled_by:'secretary',cancelled_at:localDT(new Date())}).eq('id',id)
+      if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+      // Insertar el hold desde aquí: la secretaria es la que cancela, así que necesitamos crear el hold manualmente.
+      // hold_until según urgencia
+      const startsAt = new Date(cur.starts_at.slice(0, 19))
+      const hoursAhead = (startsAt - new Date()) / 36e5
+      let holdType, holdUntil
+      if (hoursAhead > 72)      { holdType = 'normal';     holdUntil = null }
+      else if (hoursAhead > 24) { holdType = 'urgent_72h'; holdUntil = new Date(Date.now() + 4*60*60*1000).toISOString() }
+      else                       { holdType = 'urgent_24h'; holdUntil = new Date(Date.now() + 1*60*60*1000).toISOString() }
+      await sb.from('cancellation_holds').insert({
+        appointment_id: id,
+        hold_until: holdUntil,
+        hold_type: holdType,
+        notified_secretary: true,  // ya está aquí mirándolo
+      })
+      setModal(null); setToast({msg:'Cita cancelada — retenida para lista de espera',type:'ok'}); load()
+      return
+    }
+    setToast({msg:'Esa cita no se puede cancelar',type:'error'})
   }
 
   const createAppt=async()=>{
@@ -345,13 +458,19 @@ function Agenda(){
       .eq('professional_id',form.prof_id).neq('status','cancelled')
       .gte('starts_at',localDT(startDT)).lt('starts_at',localDT(endDT))
     if(overlap?.length){setToast({msg:'El profesional ya tiene una cita en ese horario.',type:'error'});return}
+    const status = form.leave_pending ? 'pending' : 'confirmed'
+    const proposedUntil = form.leave_pending
+      ? localDT(new Date(Date.now() + 36 * 60 * 60 * 1000))
+      : null
     const{error}=await sb.from('appointments').insert({
       patient_id:selPat.id,professional_id:form.prof_id,service_id:form.svc_id,
       starts_at:localDT(startDT),ends_at:localDT(endDT),notes:form.notes||null,
-      payment_method:form.payment_method||null,status:'confirmed',
+      payment_method:form.payment_method||null,
+      status,
+      proposed_until: proposedUntil,
     })
     if(error){setToast({msg:error.message,type:'error'});return}
-    setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:''})
+    setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:'',leave_pending:true})
     setToast({msg:'Cita creada',type:'ok'});load()
   }
 
@@ -404,7 +523,7 @@ function Agenda(){
         if(!d.moved||end-start<15){
           // Click → crear cita pre-rellenada
           const defSvc=services.find(s=>s.duration_minutes===60)||services[0]
-          setForm({prof_id:profId||'',svc_id:defSvc?.id||'',date,time:fmt(d.startMin),notes:'',payment_method:''})
+          setForm({prof_id:profId||'',svc_id:defSvc?.id||'',date,time:fmt(d.startMin),notes:'',payment_method:'',leave_pending:true})
           setSelPat(null);setPatSearch('')
           setModal('create')
         }else{
@@ -456,10 +575,21 @@ function Agenda(){
   const today=toK(new Date())
   const weekStr=`${fD(days[0])} – ${fD(days[6])}`
 
-  const apptColor=s=>{
-    if(s==='confirmed')return{bg:'#d1fae5',border:'#10b981',text:'#065f46'}
-    if(s==='completed')return{bg:'#e0e7ff',border:'#6366f1',text:'#3730a3'}
-    if(s==='pending')return{bg:  '#fef9c3',border:'#ca8a04',text:'#713f12'}
+  const apptColor=(a)=>{
+    // a puede ser un objeto cita o solo un status
+    const status = typeof a === 'string' ? a : a.status
+    const reminderSentAt = typeof a === 'object' ? a.reminder_sent_at : null
+    if(status==='pending')   return{bg:'#fed7aa',border:'#ea580c',text:'#7c2d12'}  // naranja
+    if(status==='completed') return{bg:'#e0e7ff',border:'#6366f1',text:'#3730a3'}  // índigo
+    if(status==='cancelled') return{bg:'#fee2e2',border:'#dc2626',text:'#7f1d1d'}  // rojo claro
+    if(status==='confirmed') {
+      if (reminderSentAt) {
+        const sent = new Date(reminderSentAt.slice(0,19))
+        const hours = (Date.now() - sent.getTime()) / 36e5
+        if (hours >= 3) return {bg:'#a7f3d0',border:'#059669',text:'#064e3b'}  // verde oscuro
+      }
+      return{bg:'#d1fae5',border:'#10b981',text:'#065f46'}  // verde claro
+    }
     return{bg:'#f1f5f9',border:'#94a3b8',text:'#64748b'}
   }
 
@@ -489,7 +619,7 @@ function Agenda(){
         <Btn variant="ghost"style={{padding:'6px 12px'}}onClick={()=>setWeekRef(new Date(weekRef.getTime()-7*86400000))}>← Anterior</Btn>
         <Btn variant="ghost"style={{padding:'6px 10px'}}onClick={()=>setWeekRef(new Date())}>Hoy</Btn>
         <Btn variant="ghost"style={{padding:'6px 12px'}}onClick={()=>setWeekRef(new Date(weekRef.getTime()+7*86400000))}>Siguiente →</Btn>
-        <Btn style={{padding:'6px 14px'}}onClick={()=>{const defSvc=services.find(s=>s.duration_minutes===60)||services[0];const defProf=filterProf!=='all'?filterProf:(profs[0]?.id||'');setForm({prof_id:defProf,svc_id:defSvc?.id||'',date:'',time:'',notes:''});setModal('create')}}>+ Cita</Btn>
+        <Btn style={{padding:'6px 14px'}}onClick={()=>{const defSvc=services.find(s=>s.duration_minutes===60)||services[0];const defProf=filterProf!=='all'?filterProf:(profs[0]?.id||'');setForm({prof_id:defProf,svc_id:defSvc?.id||'',date:'',time:'',notes:'',payment_method:'',leave_pending:true});setModal('create')}}>+ Cita</Btn>
       </div>
     </div>
 
@@ -537,11 +667,27 @@ function Agenda(){
                 const t=a.starts_at?.slice(11,16)||'08:00'
                 const et=a.ends_at?.slice(11,16)
                 const dur=et?(new Date('2000-01-01T'+et)-new Date('2000-01-01T'+t))/60000:60
-                const c=apptColor(a.status)
-                return<div key={a.id}className="appt-block"onClick={ev=>{ev.stopPropagation();setModal(a)}}
-                  style={{top:timeToYLocal(t),height:Math.max(durToH(dur)-2,18),background:c.bg,borderLeft:`3px solid ${c.border}`,color:c.text}}>
-                  <div style={{fontWeight:700,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{t} {a.patients?.full_name||''}</div>
-                  <div style={{fontSize:9,opacity:.8,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{a.services?.name}{filterProf==='all'&&a.professionals?.name?` · ${a.professionals.name}`:''}</div>
+                const c=apptColor(a)
+                const isCancelled = a.status === 'cancelled'
+                const cancelledStyle = isCancelled ? {
+                  background: 'repeating-linear-gradient(45deg, #fee2e2, #fee2e2 6px, #fecaca 6px, #fecaca 12px)',
+                  borderLeft: '3px solid #dc2626',
+                  color: '#7f1d1d',
+                } : {
+                  background: c.bg,
+                  borderLeft: `3px solid ${c.border}`,
+                  color: c.text,
+                }
+                return<div key={a.id} className={`appt-block${isCancelled ? ' cancelled' : ''}`}
+                  onClick={ev=>{ev.stopPropagation(); a.status==='cancelled' ? openAssignModal(a) : setModal(a)}}
+                  style={{top:timeToYLocal(t),height:Math.max(durToH(dur)-2,18),...cancelledStyle}}>
+                  <div style={{fontWeight:700,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>
+                    {isCancelled ? `🚫 ${t} Vacante WL` : `${t} ${a.patients?.full_name||''}`}
+                  </div>
+                  <div style={{fontSize:9,opacity:.8,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>
+                    {isCancelled ? a.patients?.full_name : a.services?.name}
+                    {filterProf==='all'&&a.professionals?.name?` · ${a.professionals.name}`:''}
+                  </div>
                 </div>
               })}
               {showDrag&&(()=>{
@@ -571,6 +717,12 @@ function Agenda(){
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
         <Inp label="Fecha"type="date"value={form.date}onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>
         <Sel label="Hora"value={form.time}onChange={e=>setForm(f=>({...f,time:e.target.value}))}options={[['','--:--'],...Array.from({length:(21-7)*4+4},(_,i)=>{const h=7+Math.floor(i/4),m=(i%4)*15;const v=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;return[v,v]}).filter(([v])=>v<='21:45')]}/>
+      </div>
+      <div className="field" style={{display:'flex',alignItems:'center',gap:8,marginBottom:14}}>
+        <Toggle on={form.leave_pending} onChange={v=>setForm(f=>({...f,leave_pending:v}))}/>
+        <label className="field-label" style={{marginBottom:0}}>
+          Dejar pendiente de confirmación (naranja)
+        </label>
       </div>
       <Sel label="Forma de pago (opcional)"value={form.payment_method}onChange={e=>setForm(f=>({...f,payment_method:e.target.value}))}options={[['','No especificada'],['efectivo','Efectivo'],['tarjeta','Tarjeta'],['bizum','Bizum'],['transferencia','Transferencia']]}/>
       <div className="field"><label className="field-label">Notas (opcional)</label><textarea className="notes-area"value={form.notes}onChange={e=>setForm(f=>({...f,notes:e.target.value}))}placeholder="Observaciones…"/></div>
@@ -626,6 +778,7 @@ function Agenda(){
           </div>
         :<div className="appt-actions">
           {modal.status==='pending'&&<Btn variant="secondary"onClick={()=>updateStatus('confirmed')}style={{flex:1}}>✓ Confirmar</Btn>}
+          {modal.status==='confirmed'&&!modal.reminder_sent_at&&<Btn variant="ghost"onClick={markReminderSent}style={{flex:1}}>📞 Recordatorio enviado</Btn>}
           {(modal.status==='confirmed'||modal.status==='pending')&&<Btn variant="gold"onClick={()=>updateStatus('completed')}style={{flex:1}}>✓ Completada</Btn>}
           {modal.status!=='cancelled'&&<Btn variant="danger"onClick={()=>setCancelConfirm(true)}style={{flex:1}}>Cancelar</Btn>}
         </div>
@@ -662,6 +815,40 @@ function Agenda(){
           ?<Btn onClick={saveBlock}style={{flex:1}}>Bloquear</Btn>
           :<Btn variant="danger"onClick={deleteBlock}style={{flex:1}}>Eliminar bloqueo</Btn>}
       </div>
+    </Modal>}
+
+    {assignModal && <Modal title="Asignar hueco vacante" onClose={()=>setAssignModal(null)}>
+      <div style={{marginBottom:12,fontSize:13,color:'var(--text-muted)'}}>
+        Hueco del <strong>{fDT(assignModal.appointment.starts_at)}</strong>. Selecciona paciente de la cola:
+      </div>
+      <div style={{maxHeight:400,overflowY:'auto'}}>
+        {assignModal.candidates.length === 0
+          ? <Em icon="📭" title="Lista de espera vacía"/>
+          : assignModal.candidates.map(c => (
+            <div key={c.id} style={{
+              padding:'10px 12px',marginBottom:8,
+              background:c.isSuggestion?'#fef3c7':c.fits?'#ecfdf5':'#f9fafb',
+              border:`1px solid ${c.isSuggestion?'#f59e0b':c.fits?'#10b981':'#d1d5db'}`,
+              borderRadius:6,cursor:c.fits?'pointer':'not-allowed',opacity:c.fits?1:0.5,
+              display:'flex',alignItems:'center',gap:10
+            }}
+            onClick={c.fits ? ()=>confirmAssignToWL(c) : undefined}>
+              {c.isSuggestion && <span style={{fontSize:18}}>✨</span>}
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:13}}>
+                  #{c.priority_order} ({c.queue_type==='waiting'?'Espera':'Adelantar'}) · {c.patients?.full_name}
+                </div>
+                <div style={{fontSize:11,color:'var(--text-muted)'}}>
+                  {c.fallback_starts_at ? `Cita actual: ${fDT(c.fallback_starts_at)}` : 'Sin cita asignada'} ·
+                  Hora preferida: {c.preferred_hour ?? '—'}
+                </div>
+                {!c.fits && <div style={{fontSize:10,color:'#dc2626',marginTop:2}}>No encaja</div>}
+              </div>
+            </div>
+          ))
+        }
+      </div>
+      <Btn variant="ghost" onClick={()=>setAssignModal(null)} style={{marginTop:8,width:'100%'}}>Cerrar</Btn>
     </Modal>}
   </>
 }
