@@ -232,6 +232,9 @@ function Agenda(){
   const[editNotes,setEditNotes]=useState('')
   const[editProfId,setEditProfId]=useState('')
   const[editPayment,setEditPayment]=useState('')
+  const[followupWeeks,setFollowupWeeks]=useState('')
+  const[followupHour,setFollowupHour]=useState('any')
+  const[followupBusy,setFollowupBusy]=useState(false)
   const[saving,setSaving]=useState(false)
   const[toast,setToast]=useState(null)
   const[drag,setDrag]=useState(null) // {di, startMin, endMin, startY, moved}
@@ -300,6 +303,7 @@ function Agenda(){
       setEditNotes(modal.notes||'')
       setEditProfId(modal.professional_id||'')
       setEditPayment(modal.payment_method||'')
+      setFollowupWeeks(''); setFollowupHour('any')
     }
   },[modal])
 
@@ -327,6 +331,28 @@ function Agenda(){
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setToast({msg:'Recordatorio marcado',type:'ok'})
     setModal(null); load()
+  }
+
+  const assignFollowup = async () => {
+    const weeks = parseInt(followupWeeks)
+    if (!weeks) { setToast({msg:'Indica las semanas',type:'error'}); return }
+    const hour = followupHour === 'any' ? null : parseInt(followupHour)
+    setFollowupBusy(true)
+    // El admin no tiene acceso al bot. Inserta directamente en pending_searches y deja que el cron del bot recoja.
+    const targetDate = new Date(Date.now() + weeks*7*24*36e5).toISOString().slice(0,10)
+    const{data:search,error}=await sb.from('pending_searches').insert({
+      patient_id: modal.patients.id,
+      professional_id: modal.professional_id,
+      service_id: modal.service_id || (await sb.from('appointments').select('service_id').eq('id',modal.id).maybeSingle()).data?.service_id,
+      source_appointment_id: modal.id,
+      target_date: targetDate,
+      preferred_hour: hour,
+      weeks_pautadas: weeks,
+    }).select('id').single()
+    setFollowupBusy(false)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setToast({msg:'Búsqueda iniciada. El bot intentará asignar y avisará al paciente.',type:'ok'})
+    setModal(null)
   }
 
   const openAssignModal = async (appt) => {
@@ -766,6 +792,22 @@ function Agenda(){
         <label className="field-label">Notas internas</label>
         <textarea className="notes-area"value={editNotes}onChange={e=>setEditNotes(e.target.value)}placeholder="Observaciones del profesional…"/>
       </div>
+
+      {/* Próxima cita (follow-up) — solo si la cita es del pasado o completed */}
+      {modal.status==='completed' || (modal.starts_at && modal.starts_at < localDT(new Date())) ? (
+        <div style={{borderTop:'1px solid var(--border)',paddingTop:14,marginTop:14}}>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Próxima cita</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
+            <Sel label="Semanas" value={followupWeeks} onChange={e=>setFollowupWeeks(e.target.value)}
+              options={[['','—'],['2','2'],['3','3'],['4','4'],['5','5'],['6','6'],['8','8'],['10','10'],['12','12']]}/>
+            <Sel label="Hora preferida" value={followupHour} onChange={e=>setFollowupHour(e.target.value)}
+              options={[['any','Cualquiera'],['7','07:00'],['8','08:00'],['9','09:00'],['10','10:00'],['11','11:00'],['12','12:00'],['13','13:00'],['14','14:00']]}/>
+          </div>
+          <Btn onClick={assignFollowup} disabled={followupBusy||!followupWeeks} style={{width:'100%'}}>
+            {followupBusy?'Buscando…':'Asignar próxima cita'}
+          </Btn>
+        </div>
+      ) : null}
 
       {/* Acciones de estado */}
       {cancelConfirm
