@@ -71,7 +71,7 @@ const NAV_GROUPS = [
     {id:'agenda',icon:'📅',label:'Agenda'},
     {id:'horarios',icon:'🕐',label:'Horarios'},
     {id:'bloqueados',icon:'🚫',label:'Días bloqueados'},
-    {id:'espera',icon:'⏳',label:'Lista de espera'},
+    {id:'espera',icon:'⏳',label:'Listas'},
   ]},
   {label:'Clases',items:[
     {id:'yoga',icon:'🧘',label:'Yoga'},
@@ -1029,106 +1029,117 @@ function Bloqueados(){
 
 // ─── Espera ───────────────────────────────────────────────────────────────────
 function Espera(){
-  const[list,setList]=useState([])
+  const[tab,setTab]=useState('waiting') // 'waiting' | 'expedite'
   const[loading,setLoading]=useState(true)
-  const[assignItem,setAssignItem]=useState(null)
-  const[assignDate,setAssignDate]=useState('')
-  const[availSlots,setAvailSlots]=useState([])
-  const[slotsLoad,setSlotsLoad]=useState(false)
-  const[selSlot,setSelSlot]=useState(null)
-  const[confirming,setConfirming]=useState(false)
+  const[rows,setRows]=useState([])
+  const[fbMap,setFbMap]=useState({})
   const[toast,setToast]=useState(null)
 
   const load=useCallback(async()=>{
     setLoading(true)
-    const{data}=await sb.from('waiting_list')
-      .select('id,patient_id,professional_id,service_id,created_at,notes,patients(full_name,phone),services(name,duration_minutes),professionals(name)')
-      .order('created_at')
-    setList(data||[]);setLoading(false)
-  },[])
+    const{data}=await sb.from('wait_queue')
+      .select('id,queue_type,priority_order,target_date,preferred_hour,weeks_pautadas,fallback_appointment_id,created_at,notes,patients(id,full_name,phone),services(name),professionals(name)')
+      .eq('queue_type', tab)
+      .order('priority_order',{ascending:true})
+    const items = data||[]
+    // Cargar fallbacks
+    const fbIds = items.filter(r=>r.fallback_appointment_id).map(r=>r.fallback_appointment_id)
+    let map = {}
+    if (fbIds.length) {
+      const{data:fb}=await sb.from('appointments').select('id,starts_at,status').in('id',fbIds)
+      map = Object.fromEntries((fb||[]).map(f=>[f.id, f]))
+    }
+    setRows(items); setFbMap(map); setLoading(false)
+  },[tab])
   useEffect(()=>{load()},[load])
 
-  useEffect(()=>{
-    if(!assignDate||!assignItem)return
-    setSlotsLoad(true);setAvailSlots([]);setSelSlot(null)
-    const profId=assignItem.professional_id
-    if(!profId){setSlotsLoad(false);return}
-    sb.rpc('get_available_slots',{p_professional_id:profId,p_date:assignDate})
-      .then(({data,error})=>{
-        if(!error&&data?.length){
-          setAvailSlots(data.map(s=>typeof s==='string'?{time:s}:{time:s.time||s.start_time?.slice(11,16)}))
-        }else{
-          // Fallback
-          sb.from('appointments').select('starts_at').eq('professional_id',profId)
-            .gte('starts_at',assignDate+'T00:00:00').lte('starts_at',assignDate+'T23:59:59')
-            .neq('status','cancelled').then(({data:ex})=>{
-              const taken=new Set((ex||[]).map(a=>a.starts_at.slice(11,16)))
-              setAvailSlots([9,10,11,12,13,16,17,18].filter(h=>!taken.has(`${pad(h)}:00`)).map(h=>({time:`${pad(h)}:00`})))
-            })
-        }
-        setSlotsLoad(false)
-      })
-  },[assignDate,assignItem])
-
-  const confirmAssign=async()=>{
-    if(!assignItem||!assignDate||!selSlot)return
-    setConfirming(true)
-    const startDT=new Date(`${assignDate}T${selSlot.time}:00`)
-    const dur=assignItem.services?.duration_minutes||60
-    const endDT=new Date(startDT.getTime()+dur*60000)
-    const{error}=await sb.from('appointments').insert({
-      patient_id:assignItem.patient_id,professional_id:assignItem.professional_id,
-      service_id:assignItem.service_id,starts_at:localDT(startDT),ends_at:localDT(endDT),status:'confirmed',
-    })
-    if(error){setToast({msg:error.message,type:'error'});setConfirming(false);return}
-    await sb.from('waiting_list').delete().eq('id',assignItem.id)
-    setAssignItem(null);setAssignDate('');setAvailSlots([]);setSelSlot(null)
-    setToast({msg:'Cita asignada y eliminado de la lista',type:'ok'});setConfirming(false);load()
+  const moveUp = async (row, idx) => {
+    if (idx === 0) return
+    const above = rows[idx-1]
+    // Swap priority_order
+    await sb.from('wait_queue').update({priority_order: above.priority_order}).eq('id', row.id)
+    await sb.from('wait_queue').update({priority_order: row.priority_order}).eq('id', above.id)
+    load()
+  }
+  const moveDown = async (row, idx) => {
+    if (idx === rows.length - 1) return
+    const below = rows[idx+1]
+    await sb.from('wait_queue').update({priority_order: below.priority_order}).eq('id', row.id)
+    await sb.from('wait_queue').update({priority_order: row.priority_order}).eq('id', below.id)
+    load()
+  }
+  const moveToOther = async (row) => {
+    const other = row.queue_type === 'waiting' ? 'expedite' : 'waiting'
+    const{data:max}=await sb.from('wait_queue').select('priority_order').eq('queue_type', other).order('priority_order',{ascending:false}).limit(1).maybeSingle()
+    const newPrio = (max?.priority_order || 0) + 1
+    await sb.from('wait_queue').update({queue_type: other, priority_order: newPrio}).eq('id', row.id)
+    setToast({msg:`Movido a ${other==='waiting'?'lista de espera':'lista de adelantar'}`,type:'ok'}); load()
+  }
+  const remove = async (id) => {
+    await sb.from('wait_queue').delete().eq('id', id)
+    setToast({msg:'Eliminado de la lista',type:'ok'}); load()
   }
 
-  const remove=async id=>{await sb.from('waiting_list').delete().eq('id',id);setToast({msg:'Eliminado de la lista',type:'ok'});load()}
+  const weeksLeft = (row) => {
+    if (row.weeks_pautadas == null) return null
+    const passed = (Date.now() - new Date(row.created_at).getTime()) / (7*24*36e5)
+    return Math.max(0, row.weeks_pautadas - Math.floor(passed))
+  }
 
-  if(loading)return<Sp/>
   return<>
     {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
-    <div className="section-header"><span className="section-title">Lista de espera</span><Bg variant="gold">{list.length} en espera</Bg></div>
-    <div className="card"style={{overflow:'hidden'}}>
-      {list.length===0?<Em icon="✅"title="Lista vacía"sub="No hay pacientes en lista de espera"/>
-      :list.map(item=><div key={item.id}className="wait-card">
-        <div className="pac-avatar">{item.patients?.full_name?.slice(0,2).toUpperCase()||'?'}</div>
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{fontSize:13,fontWeight:700}}>{item.patients?.full_name||'—'}</div>
-          <div style={{fontSize:11,color:'var(--text-muted)'}}>{item.patients?.phone||'Sin tel.'}{item.services?.name?` · ${item.services.name}`:''}{item.professionals?.name?` · ${item.professionals.name}`:''}</div>
-          {item.notes&&<div style={{fontSize:11,color:'var(--text2)',marginTop:2}}>{item.notes}</div>}
-        </div>
-        <div style={{textAlign:'right',flexShrink:0}}>
-          <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:6}}>{fD(item.created_at)}</div>
-          <div style={{display:'flex',gap:6}}>
-            <Btn variant="secondary"style={{padding:'4px 10px',fontSize:11}}onClick={()=>{setAssignItem(item);setAssignDate('');setAvailSlots([]);setSelSlot(null)}}>Asignar hueco</Btn>
-            <Btn variant="danger"style={{padding:'4px 10px',fontSize:11}}onClick={()=>remove(item.id)}>Eliminar</Btn>
-          </div>
-        </div>
-      </div>)}
+    <div className="section-header">
+      <span className="section-title">Listas</span>
+      <div style={{display:'flex',gap:8,alignItems:'center'}}>
+        <span style={{fontSize:11,color:'var(--text-muted)'}} title="Próximamente">Auto-asignación</span>
+        <Toggle on={false} onChange={()=>setToast({msg:'Próximamente. Habilita tras validar el bot.',type:'ok'})}/>
+      </div>
     </div>
 
-    {assignItem&&<Modal title={`Asignar hueco — ${assignItem.patients?.full_name}`}onClose={()=>setAssignItem(null)}>
-      <div style={{fontSize:13,color:'var(--text-muted)',marginBottom:14}}>
-        {assignItem.services?.name}{assignItem.professionals?.name?` · ${assignItem.professionals.name}`:''}
-      </div>
-      <Inp label="Fecha"type="date"value={assignDate}min={toK(new Date())}onChange={e=>setAssignDate(e.target.value)}/>
-      {slotsLoad&&<div style={{textAlign:'center',padding:16,color:'var(--text-muted)',fontSize:13}}>Cargando huecos…</div>}
-      {!slotsLoad&&assignDate&&availSlots.length===0&&<div style={{textAlign:'center',padding:16,color:'var(--text-muted)',fontSize:13}}>Sin huecos disponibles este día</div>}
-      {!slotsLoad&&availSlots.length>0&&<>
-        <label className="field-label">Hora disponible</label>
-        <div className="assign-slots">
-          {availSlots.map(s=><button key={s.time}className={`assign-slot ${selSlot?.time===s.time?'selected':''}`}onClick={()=>setSelSlot(s)}>{s.time}</button>)}
+    <div style={{display:'flex',gap:8,marginBottom:16}}>
+      <button onClick={()=>setTab('waiting')}
+        style={{padding:'8px 22px',fontSize:14,fontWeight:600,borderRadius:10,border:'2px solid',cursor:'pointer',
+          background:tab==='waiting'?'var(--sage)':'transparent',
+          borderColor:tab==='waiting'?'var(--sage)':'var(--stone)',
+          color:tab==='waiting'?'#fff':'var(--muted)'}}>Lista de espera</button>
+      <button onClick={()=>setTab('expedite')}
+        style={{padding:'8px 22px',fontSize:14,fontWeight:600,borderRadius:10,border:'2px solid',cursor:'pointer',
+          background:tab==='expedite'?'var(--sage)':'transparent',
+          borderColor:tab==='expedite'?'var(--sage)':'var(--stone)',
+          color:tab==='expedite'?'#fff':'var(--muted)'}}>Lista de adelantar</button>
+    </div>
+
+    {loading?<Sp/>:rows.length===0?<Em icon="✅" title="Lista vacía"/>:
+      <div className="card" style={{overflow:'hidden'}}>
+        <div style={{display:'grid',gridTemplateColumns:'50px 1.5fr 1fr 1fr 0.8fr 1.2fr 1.2fr',gap:8,padding:'10px 12px',background:'var(--cream)',fontSize:11,fontWeight:700,color:'var(--text-muted)'}}>
+          <div>#</div><div>Paciente</div><div>Sem. restantes</div><div>Fecha pautada</div>
+          <div>Hora pref.</div><div>Próxima cita</div><div>Acciones</div>
         </div>
-      </>}
-      <div style={{display:'flex',gap:10,marginTop:14}}>
-        <Btn variant="ghost"onClick={()=>setAssignItem(null)}style={{flex:1}}>Cancelar</Btn>
-        <Btn onClick={confirmAssign}disabled={!selSlot||confirming}style={{flex:1}}>{confirming?'Asignando…':'Confirmar cita'}</Btn>
+        {rows.map((r, idx) => {
+          const fb = fbMap[r.fallback_appointment_id]
+          const wl = weeksLeft(r)
+          return <div key={r.id} style={{display:'grid',gridTemplateColumns:'50px 1.5fr 1fr 1fr 0.8fr 1.2fr 1.2fr',gap:8,padding:'12px',borderBottom:'1px solid var(--border)',alignItems:'center',fontSize:13}}>
+            <div style={{fontWeight:700}}>{r.priority_order}</div>
+            <div>
+              <div style={{fontWeight:700}}>{r.patients?.full_name}</div>
+              <div style={{fontSize:11,color:'var(--text-muted)'}}>{r.patients?.phone}</div>
+            </div>
+            <div>{wl!=null ? (wl===0 ? <Bg variant="gold">Vencida</Bg> : `${wl} sem`) : '—'}</div>
+            <div>{r.target_date || '—'}</div>
+            <div>{r.preferred_hour!=null ? `${pad(r.preferred_hour)}:00` : 'Cualquiera'}</div>
+            <div>
+              {fb ? <span style={fb.status==='cancelled'?{color:'#dc2626'}:{}}>{fDT(fb.starts_at)}</span> : <span style={{color:'#dc2626'}}>Sin cita</span>}
+            </div>
+            <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+              <Btn variant="ghost" style={{padding:'4px 8px',fontSize:11}} onClick={()=>moveUp(r, idx)} disabled={idx===0}>⬆️</Btn>
+              <Btn variant="ghost" style={{padding:'4px 8px',fontSize:11}} onClick={()=>moveDown(r, idx)} disabled={idx===rows.length-1}>⬇️</Btn>
+              <Btn variant="ghost" style={{padding:'4px 8px',fontSize:11}} onClick={()=>moveToOther(r)}>↔ {r.queue_type==='waiting'?'Adelantar':'Espera'}</Btn>
+              <Btn variant="danger" style={{padding:'4px 8px',fontSize:11}} onClick={()=>remove(r.id)}>🗑</Btn>
+            </div>
+          </div>
+        })}
       </div>
-    </Modal>}
+    }
   </>
 }
 
