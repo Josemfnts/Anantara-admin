@@ -969,10 +969,6 @@ function Horarios(){
   const[toast,setToast]=useState(null)
   const[waPhone,setWaPhone]=useState('')
   const[agendaTime,setAgendaTime]=useState('')
-  const[breaks,setBreaks]=useState([])
-  const[newBreakDay,setNewBreakDay]=useState('1')
-  const[newBreakStart,setNewBreakStart]=useState('14:00')
-  const[newBreakEnd,setNewBreakEnd]=useState('14:30')
   const WORK_DAYS=[1,2,3,4,5,6]
   const DAY_NAMES=['','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
 
@@ -986,17 +982,36 @@ function Horarios(){
     setSlotDur(selProf.slot_duration||60)
     setWaPhone(selProf.whatsapp_phone||'')
     setAgendaTime(selProf.daily_agenda_time?.slice(0,5)||'')
-    sb.from('recurring_breaks').select('*').eq('professional_id',selProf.id).order('day_of_week').order('start_time')
-      .then(({data})=>setBreaks(data||[]))
-    sb.from('working_hours').select('day_of_week,start_time,end_time').eq('professional_id',selProf.id)
-      .then(({data})=>{
-        setRows(WORK_DAYS.map(d=>{
-          const ex=data?.find(r=>r.day_of_week===d)
-          // Si hay fila → activo; si no hay → inactivo por defecto
-          return ex?{day_of_week:d,active:true,start_time:ex.start_time?.slice(0,5)||'09:00',end_time:ex.end_time?.slice(0,5)||'18:00'}
-                   :{day_of_week:d,active:false,start_time:'09:00',end_time:'18:00'}
-        }))
-      })
+
+    // Cargamos working_hours y recurring_breaks en paralelo, luego los fusionamos por día.
+    Promise.all([
+      sb.from('working_hours').select('day_of_week,start_time,end_time').eq('professional_id',selProf.id),
+      sb.from('recurring_breaks').select('id,day_of_week,start_time,end_time').eq('professional_id',selProf.id).order('day_of_week').order('start_time'),
+    ]).then(([wh,br])=>{
+      const breaksByDay={}
+      for (const b of (br.data||[])) {
+        // Solo conservamos UN descanso por día (el primero). Si hay más, se ignoran en UI pero permanecen en BD.
+        if (!breaksByDay[b.day_of_week]) breaksByDay[b.day_of_week] = b
+      }
+      setRows(WORK_DAYS.map(d=>{
+        const ex=wh.data?.find(r=>r.day_of_week===d)
+        const br=breaksByDay[d]
+        return ex?{
+          day_of_week:d, active:true,
+          start_time:ex.start_time?.slice(0,5)||'09:00',
+          end_time:ex.end_time?.slice(0,5)||'18:00',
+          break_id: br?.id || null,
+          break_start: br?.start_time?.slice(0,5) || '',
+          break_end: br?.end_time?.slice(0,5) || '',
+        }:{
+          day_of_week:d, active:false,
+          start_time:'09:00', end_time:'18:00',
+          break_id: br?.id || null,
+          break_start: br?.start_time?.slice(0,5) || '',
+          break_end: br?.end_time?.slice(0,5) || '',
+        }
+      }))
+    })
   },[selProf])
 
   const saveProfNotifs=async()=>{
@@ -1008,44 +1023,46 @@ function Horarios(){
     setToast({msg:'Datos guardados',type:'ok'})
   }
 
-  const addBreak=async()=>{
-    if(!newBreakStart||!newBreakEnd||newBreakEnd<=newBreakStart){setToast({msg:'Hora inválida',type:'error'});return}
-    const{error}=await sb.from('recurring_breaks').insert({
-      professional_id: selProf.id,
-      day_of_week: parseInt(newBreakDay),
-      start_time: newBreakStart,
-      end_time: newBreakEnd,
-    })
-    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    const{data}=await sb.from('recurring_breaks').select('*').eq('professional_id',selProf.id).order('day_of_week').order('start_time')
-    setBreaks(data||[])
-    setToast({msg:'Descanso añadido',type:'ok'})
-  }
-
-  const deleteBreak=async(id)=>{
-    const{error}=await sb.from('recurring_breaks').delete().eq('id',id)
-    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    setBreaks(breaks.filter(b=>b.id!==id))
-  }
-
   const save=async()=>{
     setSaving(true)
     for(const row of rows){
       if(row.active){
-        // Día activo → upsert la fila (sin columna active)
         await sb.from('working_hours').upsert(
           {professional_id:selProf.id,day_of_week:row.day_of_week,start_time:row.start_time,end_time:row.end_time},
           {onConflict:'professional_id,day_of_week'}
         )
       } else {
-        // Día inactivo → eliminar la fila si existe
         await sb.from('working_hours').delete()
           .eq('professional_id',selProf.id).eq('day_of_week',row.day_of_week)
       }
+
+      // Gestión del descanso del día
+      const hasBreak = row.break_start && row.break_end && row.break_end > row.break_start
+      if (hasBreak) {
+        if (row.break_id) {
+          await sb.from('recurring_breaks').update({
+            start_time: row.break_start, end_time: row.break_end,
+          }).eq('id', row.break_id)
+        } else {
+          await sb.from('recurring_breaks').insert({
+            professional_id: selProf.id,
+            day_of_week: row.day_of_week,
+            start_time: row.break_start, end_time: row.break_end,
+          })
+        }
+      } else if (row.break_id) {
+        // Vaciaron los campos → borrar la fila existente
+        await sb.from('recurring_breaks').delete().eq('id', row.break_id)
+      }
     }
-    // Save slot duration to professionals table
     try{await sb.from('professionals').update({slot_duration:slotDur}).eq('id',selProf.id)}catch{}
     setSaving(false); setToast({msg:'Horarios guardados',type:'ok'})
+    // Recargar para refrescar break_ids tras inserts
+    if (selProf) {
+      const tmp = selProf
+      setSelProf(null)
+      setTimeout(() => setSelProf(tmp), 0)
+    }
   }
 
   const upd=(idx,key,val)=>setRows(rs=>rs.map((r,i)=>i===idx?{...r,[key]:val}:r))
@@ -1071,17 +1088,23 @@ function Horarios(){
     </div>
 
     <div className="card"style={{padding:'4px 20px 16px',overflow:'hidden'}}>
-      <div style={{display:'grid',gridTemplateColumns:'120px 44px 1fr',gap:10,padding:'10px 0',borderBottom:'1.5px solid var(--border)',fontWeight:700,fontSize:11,color:'var(--text-muted)',textTransform:'uppercase'}}>
-        <span>Día</span><span>Activo</span><span>Horario</span>
+      <div style={{display:'grid',gridTemplateColumns:'110px 44px 240px 240px',gap:10,padding:'10px 0',borderBottom:'1.5px solid var(--border)',fontWeight:700,fontSize:11,color:'var(--text-muted)',textTransform:'uppercase',alignItems:'center'}}>
+        <span>Día</span><span>Activo</span><span>Horario</span><span>Descanso (opcional)</span>
       </div>
-      {rows.map((row,i)=><div key={row.day_of_week}className="hours-row">
+      {rows.map((row,i)=><div key={row.day_of_week} style={{display:'grid',gridTemplateColumns:'110px 44px 240px 240px',gap:10,padding:'10px 0',borderBottom:'1px solid var(--border)',alignItems:'center'}}>
         <span style={{fontSize:13,fontWeight:700,color:row.active?'var(--text)':'var(--text-muted)'}}>{DAY_NAMES[row.day_of_week]}</span>
         <Toggle on={row.active}onChange={v=>upd(i,'active',v)}/>
-        {row.active?<div className="hours-times">
-          <input type="time"step="900"className="field-input"style={{width:100,padding:'6px 8px'}}value={row.start_time}onChange={e=>upd(i,'start_time',e.target.value)}/>
+        {row.active?<div style={{display:'flex',alignItems:'center',gap:6}}>
+          <input type="time"step="900"className="field-input"style={{width:90,padding:'6px 8px'}}value={row.start_time}onChange={e=>upd(i,'start_time',e.target.value)}/>
           <span>–</span>
-          <input type="time"step="900"className="field-input"style={{width:100,padding:'6px 8px'}}value={row.end_time}onChange={e=>upd(i,'end_time',e.target.value)}/>
+          <input type="time"step="900"className="field-input"style={{width:90,padding:'6px 8px'}}value={row.end_time}onChange={e=>upd(i,'end_time',e.target.value)}/>
         </div>:<span style={{fontSize:12,color:'var(--text-muted)'}}>Día libre</span>}
+        {row.active?<div style={{display:'flex',alignItems:'center',gap:6}}>
+          <input type="time"step="900"className="field-input"style={{width:90,padding:'6px 8px'}}value={row.break_start} placeholder="Sin descanso" onChange={e=>upd(i,'break_start',e.target.value)}/>
+          <span>–</span>
+          <input type="time"step="900"className="field-input"style={{width:90,padding:'6px 8px'}}value={row.break_end} onChange={e=>upd(i,'break_end',e.target.value)}/>
+          {(row.break_start||row.break_end)&&<button onClick={()=>{upd(i,'break_start','');upd(i,'break_end','')}} title="Quitar descanso" style={{background:'transparent',border:0,cursor:'pointer',color:'var(--text-muted)',fontSize:14,padding:'0 4px'}}>✕</button>}
+        </div>:<span style={{fontSize:12,color:'var(--text-muted)'}}>—</span>}
       </div>)}
     </div>
 
@@ -1095,23 +1118,6 @@ function Horarios(){
       <Btn onClick={saveProfNotifs}>Guardar</Btn>
     </div>}
 
-    {/* Descansos recurrentes */}
-    {selProf&&<div className="card"style={{padding:16,marginTop:16}}>
-      <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Descansos recurrentes (semanales)</div>
-      {breaks.length===0&&<div style={{fontSize:12,color:'var(--text-muted)',marginBottom:8}}>No hay descansos configurados.</div>}
-      {breaks.map(b=>(
-        <div key={b.id}style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px solid var(--border)'}}>
-          <span style={{flex:1,fontSize:13}}>{DAYS_ES[b.day_of_week]} · {b.start_time.slice(0,5)} – {b.end_time.slice(0,5)}</span>
-          <Btn variant="danger"style={{padding:'4px 8px',fontSize:11}}onClick={()=>deleteBreak(b.id)}>🗑</Btn>
-        </div>
-      ))}
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr auto',gap:8,marginTop:10,alignItems:'end'}}>
-        <Sel label="Día" value={newBreakDay} onChange={e=>setNewBreakDay(e.target.value)} options={[['1','Lun'],['2','Mar'],['3','Mié'],['4','Jue'],['5','Vie'],['6','Sáb'],['0','Dom']]}/>
-        <Inp label="Desde" type="time" step="900" value={newBreakStart} onChange={e=>setNewBreakStart(e.target.value)}/>
-        <Inp label="Hasta" type="time" step="900" value={newBreakEnd} onChange={e=>setNewBreakEnd(e.target.value)}/>
-        <Btn onClick={addBreak}>Añadir</Btn>
-      </div>
-    </div>}
   </>
 }
 
