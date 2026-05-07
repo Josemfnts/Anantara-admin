@@ -890,31 +890,34 @@ function Agenda(){
 
   return<>
     {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
-    <div className="section-header">
-      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+    <div className="agenda-toolbar">
+      <div className="agenda-toolbar-left">
         <span className="section-title">{weekStr}</span>
-        <div style={{display:'flex',gap:8}}>
-          {profs.map(p=><button key={p.id}onClick={()=>setFilterProf(p.id)}style={{padding:'8px 22px',fontSize:14,fontWeight:600,borderRadius:10,border:'2px solid',cursor:'pointer',transition:'all .15s',background:filterProf===p.id?'var(--sage)':'transparent',borderColor:filterProf===p.id?'var(--sage)':'var(--stone)',color:filterProf===p.id?'#fff':'var(--muted)'}}>{p.name}</button>)}
+        <div className="tab-pills" style={{margin:0}}>
+          {profs.map(p => (
+            <button key={p.id} onClick={()=>setFilterProf(p.id)}
+              className={`tab-pill${filterProf===p.id?' active':''}`}>{p.name}</button>
+          ))}
         </div>
       </div>
-      <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-start'}}>
-        <Btn variant="ghost"style={{padding:'6px 12px'}}onClick={()=>setWeekRef(new Date(weekRef.getTime()-7*86400000))}>← Anterior</Btn>
-        <Btn variant="ghost"style={{padding:'6px 10px'}}onClick={()=>setWeekRef(new Date())}>Hoy</Btn>
-        <Btn variant="ghost"style={{padding:'6px 12px'}}onClick={()=>setWeekRef(new Date(weekRef.getTime()+7*86400000))}>Siguiente →</Btn>
-        <Btn style={{padding:'6px 14px'}}onClick={()=>{const defSvc=services.find(s=>s.duration_minutes===60)||services[0];const defProf=filterProf!=='all'?filterProf:(profs[0]?.id||'');setForm({prof_id:defProf,svc_id:defSvc?.id||'',date:'',time:'',notes:'',payment_method:'',leave_pending:true});setModal('create')}}>+ Cita</Btn>
+      <div className="agenda-toolbar-right">
+        <Btn variant="ghost" onClick={()=>setWeekRef(new Date(weekRef.getTime()-7*86400000))}>← Anterior</Btn>
+        <Btn variant="ghost" onClick={()=>setWeekRef(new Date())}>Hoy</Btn>
+        <Btn variant="ghost" onClick={()=>setWeekRef(new Date(weekRef.getTime()+7*86400000))}>Siguiente →</Btn>
+        <Btn onClick={()=>{const defSvc=services.find(s=>s.duration_minutes===60)||services[0];const defProf=filterProf!=='all'?filterProf:(profs[0]?.id||'');setForm({prof_id:defProf,svc_id:defSvc?.id||'',date:'',time:'',notes:'',payment_method:'',leave_pending:true});setModal('create')}}>+ Cita</Btn>
       </div>
     </div>
 
     {/* Hour range filter */}
     <div style={{display:'flex',gap:12,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
-      <div style={{display:'flex',alignItems:'center',gap:6}}>
-        <span style={{fontSize:12,fontWeight:700,color:'var(--text-muted)'}}>Desde</span>
-        <select className="field-input"style={{width:'auto',padding:'6px 10px',fontSize:13}}
+      <div style={{display:'flex',alignItems:'center',gap:8}}>
+        <span style={{fontSize:12,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>Desde</span>
+        <select className="field-input" style={{width:'auto',padding:'6px 10px',fontSize:13,minHeight:36}}
           value={hourFrom} onChange={e=>{const v=Number(e.target.value);setHourFrom(v);localStorage.setItem('ag_from',v)}}>
           {HOUR_OPTIONS.filter(h=>h<hourTo).map(h=><option key={h}value={h}>{pad(h)}:00</option>)}
         </select>
-        <span style={{fontSize:12,fontWeight:700,color:'var(--text-muted)'}}>Hasta</span>
-        <select className="field-input"style={{width:'auto',padding:'6px 10px',fontSize:13}}
+        <span style={{fontSize:12,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>Hasta</span>
+        <select className="field-input" style={{width:'auto',padding:'6px 10px',fontSize:13,minHeight:36}}
           value={hourTo} onChange={e=>{const v=Number(e.target.value);setHourTo(v);localStorage.setItem('ag_to',v)}}>
           {HOUR_OPTIONS.filter(h=>h>hourFrom).map(h=><option key={h}value={h}>{pad(h)}:00</option>)}
         </select>
@@ -1314,33 +1317,33 @@ function Horarios(){
     </div>
 
     <div className="card"style={{padding:'4px 20px 16px',overflow:'hidden'}}>
-      <div style={{display:'grid',gridTemplateColumns:'110px 44px 240px 240px',gap:10,padding:'10px 0',borderBottom:'1.5px solid var(--border)',fontWeight:700,fontSize:11,color:'var(--text-muted)',textTransform:'uppercase',alignItems:'center'}}>
-        <span>Día</span><span>Activo</span><span>Horario</span><span>Descanso (opcional)</span>
+      <div className="hours-grid" style={{borderBottom:'1.5px solid var(--border)',fontWeight:700,fontSize:11,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>
+        <span>Día</span><span>Activo</span><span>Horario</span><span className="hours-break">Descanso (opcional)</span>
       </div>
-      {rows.map((row,i)=><div key={row.day_of_week} style={{display:'grid',gridTemplateColumns:'110px 44px 240px 240px',gap:10,padding:'10px 0',borderBottom:'1px solid var(--border)',alignItems:'center'}}>
+      {rows.map((row,i)=><div key={row.day_of_week} className="hours-grid">
         <span style={{fontSize:13,fontWeight:700,color:row.active?'var(--text)':'var(--text-muted)'}}>{DAY_NAMES[row.day_of_week]}</span>
         <Toggle on={row.active}onChange={v=>upd(i,'active',v)}/>
         {row.active?<div style={{display:'flex',alignItems:'center',gap:6}}>
-          <select className="field-input" style={{width:90,padding:'6px 8px'}} value={row.start_time} onChange={e=>upd(i,'start_time',e.target.value)}>
+          <select className="field-input" style={{width:96,padding:'8px 10px'}} value={row.start_time} onChange={e=>upd(i,'start_time',e.target.value)}>
             {TIMES_15.map(t=><option key={t} value={t}>{t}</option>)}
           </select>
-          <span>–</span>
-          <select className="field-input" style={{width:90,padding:'6px 8px'}} value={row.end_time} onChange={e=>upd(i,'end_time',e.target.value)}>
+          <span style={{color:'var(--muted)'}}>–</span>
+          <select className="field-input" style={{width:96,padding:'8px 10px'}} value={row.end_time} onChange={e=>upd(i,'end_time',e.target.value)}>
             {TIMES_15.map(t=><option key={t} value={t}>{t}</option>)}
           </select>
-        </div>:<span style={{fontSize:12,color:'var(--text-muted)'}}>Día libre</span>}
-        {row.active?<div style={{display:'flex',alignItems:'center',gap:6}}>
-          <select className="field-input" style={{width:90,padding:'6px 8px'}} value={row.break_start} onChange={e=>upd(i,'break_start',e.target.value)}>
+        </div>:<span style={{fontSize:12,color:'var(--text-muted)',fontStyle:'italic'}}>Día libre</span>}
+        {row.active?<div className="hours-break" style={{display:'flex',alignItems:'center',gap:6}}>
+          <select className="field-input" style={{width:96,padding:'8px 10px'}} value={row.break_start} onChange={e=>upd(i,'break_start',e.target.value)}>
             <option value="">—</option>
             {TIMES_15.map(t=><option key={t} value={t}>{t}</option>)}
           </select>
-          <span>–</span>
-          <select className="field-input" style={{width:90,padding:'6px 8px'}} value={row.break_end} onChange={e=>upd(i,'break_end',e.target.value)}>
+          <span style={{color:'var(--muted)'}}>–</span>
+          <select className="field-input" style={{width:96,padding:'8px 10px'}} value={row.break_end} onChange={e=>upd(i,'break_end',e.target.value)}>
             <option value="">—</option>
             {TIMES_15.map(t=><option key={t} value={t}>{t}</option>)}
           </select>
-          {(row.break_start||row.break_end)&&<button onClick={()=>{upd(i,'break_start','');upd(i,'break_end','')}} title="Quitar descanso" style={{background:'transparent',border:0,cursor:'pointer',color:'var(--text-muted)',fontSize:14,padding:'0 4px'}}>✕</button>}
-        </div>:<span style={{fontSize:12,color:'var(--text-muted)'}}>—</span>}
+          {(row.break_start||row.break_end)&&<button onClick={()=>{upd(i,'break_start','');upd(i,'break_end','')}} title="Quitar descanso" style={{background:'transparent',border:0,cursor:'pointer',color:'var(--muted)',fontSize:16,padding:'4px 8px',borderRadius:6,minWidth:32,minHeight:32}}>✕</button>}
+        </div>:<span className="hours-break" style={{fontSize:12,color:'var(--text-muted)'}}>—</span>}
       </div>)}
     </div>
 
@@ -1580,34 +1583,38 @@ function Espera(){
 
     {loading?<Sp/>:rows.length===0?<Em icon="✅" title="Lista vacía"/>:
       <div className="card" style={{overflow:'hidden'}}>
-        <div style={{display:'grid',gridTemplateColumns:'50px 1.5fr 1fr 1fr 0.8fr 1.2fr 1.2fr',gap:8,padding:'10px 12px',background:'var(--cream)',fontSize:11,fontWeight:700,color:'var(--text-muted)'}}>
-          <div>#</div><div>Paciente</div><div>Sem. restantes</div><div>Fecha pautada</div>
-          <div>Hora pref.</div><div>Próxima cita</div><div>Acciones</div>
-        </div>
-        {rows.map((r, idx) => {
-          const fb = fbMap[r.fallback_appointment_id]
-          const wl = weeksLeft(r)
-          return <div key={r.id} style={{display:'grid',gridTemplateColumns:'50px 1.5fr 1fr 1fr 0.8fr 1.2fr 1.2fr',gap:8,padding:'12px',borderBottom:'1px solid var(--border)',alignItems:'center',fontSize:13}}>
-            <div style={{fontWeight:700}}>{r.priority_order}</div>
-            <div>
-              <div style={{fontWeight:700}}>{r.patients?.full_name}</div>
-              <div style={{fontSize:11,color:'var(--text-muted)'}}>{r.patients?.phone}</div>
+        <div style={{overflowX:'auto'}}>
+          <div style={{minWidth:920}}>
+            <div style={{display:'grid',gridTemplateColumns:'50px 1.5fr 1fr 1fr 0.8fr 1.2fr 1.4fr',gap:8,padding:'12px 14px',background:'var(--cream)',fontSize:11,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em',borderBottom:'1.5px solid var(--border)'}}>
+              <div>#</div><div>Paciente</div><div>Sem. restantes</div><div>Fecha pautada</div>
+              <div>Hora pref.</div><div>Próxima cita</div><div>Acciones</div>
             </div>
-            <div>{wl!=null ? (wl===0 ? <Bg variant="gold">Vencida</Bg> : `${wl} sem`) : '—'}</div>
-            <div>{r.target_date || '—'}</div>
-            <div>{r.preferred_hour!=null ? `${pad(r.preferred_hour)}:00` : 'Cualquiera'}</div>
-            <div>
-              {fb ? <span style={fb.status==='cancelled'?{color:'#dc2626'}:{}}>{fDT(fb.starts_at)}</span> : <span style={{color:'#dc2626'}}>Sin cita</span>}
-            </div>
-            <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-              <Btn variant="ghost" style={{padding:'4px 8px',fontSize:11}} onClick={()=>moveUp(r, idx)} disabled={idx===0}>⬆️</Btn>
-              <Btn variant="ghost" style={{padding:'4px 8px',fontSize:11}} onClick={()=>moveDown(r, idx)} disabled={idx===rows.length-1}>⬇️</Btn>
-              <Btn variant="ghost" style={{padding:'4px 8px',fontSize:11}} onClick={()=>moveToOther(r)}>↔ {r.queue_type==='waiting'?'Adelantar':'Espera'}</Btn>
-              <Btn variant="ghost" style={{padding:'4px 8px',fontSize:11}} onClick={()=>openAssign(r)} title="Buscar hueco cancelado">🔍</Btn>
-              <Btn variant="danger" style={{padding:'4px 8px',fontSize:11}} onClick={()=>remove(r.id)}>🗑</Btn>
-            </div>
+            {rows.map((r, idx) => {
+              const fb = fbMap[r.fallback_appointment_id]
+              const wl = weeksLeft(r)
+              return <div key={r.id} style={{display:'grid',gridTemplateColumns:'50px 1.5fr 1fr 1fr 0.8fr 1.2fr 1.4fr',gap:8,padding:'14px',borderBottom:'1px solid var(--border)',alignItems:'center',fontSize:13}}>
+                <div style={{fontWeight:700,fontSize:15,color:'var(--sage-deep)'}}>{r.priority_order}</div>
+                <div style={{minWidth:0}}>
+                  <div style={{fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.patients?.full_name}</div>
+                  <div style={{fontSize:11,color:'var(--text-muted)'}}>{r.patients?.phone}</div>
+                </div>
+                <div>{wl!=null ? (wl===0 ? <Bg variant="gold">Vencida</Bg> : `${wl} sem`) : '—'}</div>
+                <div>{r.target_date || '—'}</div>
+                <div>{r.preferred_hour!=null ? `${pad(r.preferred_hour)}:00` : 'Cualquiera'}</div>
+                <div style={{minWidth:0}}>
+                  {fb ? <span style={fb.status==='cancelled'?{color:'#dc2626'}:{}}>{fDT(fb.starts_at)}</span> : <span style={{color:'#dc2626'}}>Sin cita</span>}
+                </div>
+                <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                  <Btn variant="ghost" style={{padding:'6px 10px',fontSize:13,minHeight:34}} onClick={()=>moveUp(r, idx)} disabled={idx===0} title="Subir">⬆</Btn>
+                  <Btn variant="ghost" style={{padding:'6px 10px',fontSize:13,minHeight:34}} onClick={()=>moveDown(r, idx)} disabled={idx===rows.length-1} title="Bajar">⬇</Btn>
+                  <Btn variant="ghost" style={{padding:'6px 10px',fontSize:11,minHeight:34}} onClick={()=>moveToOther(r)}>{r.queue_type==='waiting'?'→ Adelantar':'→ Espera'}</Btn>
+                  <Btn variant="ghost" style={{padding:'6px 10px',fontSize:13,minHeight:34}} onClick={()=>openAssign(r)} title="Buscar hueco cancelado">🔍</Btn>
+                  <Btn variant="danger" style={{padding:'6px 10px',fontSize:13,minHeight:34}} onClick={()=>remove(r.id)} title="Quitar">🗑</Btn>
+                </div>
+              </div>
+            })}
           </div>
-        })}
+        </div>
       </div>
     }
 
