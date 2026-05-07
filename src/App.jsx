@@ -1188,6 +1188,16 @@ function Horarios(){
   const WORK_DAYS=[1,2,3,4,5,6]
   const DAY_NAMES=['','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
 
+  // Opciones de hora cada 15 min (06:00 → 22:00). Se usan en horarios de trabajo y descansos
+  // para garantizar que solo se puedan elegir múltiplos de :00, :15, :30 o :45.
+  const TIMES_15 = (() => {
+    const arr = []
+    for (let m = 6 * 60; m <= 22 * 60; m += 15) {
+      arr.push(`${pad(Math.floor(m / 60))}:${pad(m % 60)}`)
+    }
+    return arr
+  })()
+
   useEffect(()=>{
     sb.from('professionals').select('id,name,slot_duration,whatsapp_phone,daily_agenda_time,max_half_hour_per_day').eq('is_active',true).eq('section','osteopathy').order('name')
       .then(({data})=>{setProfs(data||[]);if(data?.length)setSelProf(data[0])})
@@ -1311,14 +1321,24 @@ function Horarios(){
         <span style={{fontSize:13,fontWeight:700,color:row.active?'var(--text)':'var(--text-muted)'}}>{DAY_NAMES[row.day_of_week]}</span>
         <Toggle on={row.active}onChange={v=>upd(i,'active',v)}/>
         {row.active?<div style={{display:'flex',alignItems:'center',gap:6}}>
-          <input type="time"step="900"className="field-input"style={{width:90,padding:'6px 8px'}}value={row.start_time}onChange={e=>upd(i,'start_time',e.target.value)}/>
+          <select className="field-input" style={{width:90,padding:'6px 8px'}} value={row.start_time} onChange={e=>upd(i,'start_time',e.target.value)}>
+            {TIMES_15.map(t=><option key={t} value={t}>{t}</option>)}
+          </select>
           <span>–</span>
-          <input type="time"step="900"className="field-input"style={{width:90,padding:'6px 8px'}}value={row.end_time}onChange={e=>upd(i,'end_time',e.target.value)}/>
+          <select className="field-input" style={{width:90,padding:'6px 8px'}} value={row.end_time} onChange={e=>upd(i,'end_time',e.target.value)}>
+            {TIMES_15.map(t=><option key={t} value={t}>{t}</option>)}
+          </select>
         </div>:<span style={{fontSize:12,color:'var(--text-muted)'}}>Día libre</span>}
         {row.active?<div style={{display:'flex',alignItems:'center',gap:6}}>
-          <input type="time"step="900"className="field-input"style={{width:90,padding:'6px 8px'}}value={row.break_start} placeholder="Sin descanso" onChange={e=>upd(i,'break_start',e.target.value)}/>
+          <select className="field-input" style={{width:90,padding:'6px 8px'}} value={row.break_start} onChange={e=>upd(i,'break_start',e.target.value)}>
+            <option value="">—</option>
+            {TIMES_15.map(t=><option key={t} value={t}>{t}</option>)}
+          </select>
           <span>–</span>
-          <input type="time"step="900"className="field-input"style={{width:90,padding:'6px 8px'}}value={row.break_end} onChange={e=>upd(i,'break_end',e.target.value)}/>
+          <select className="field-input" style={{width:90,padding:'6px 8px'}} value={row.break_end} onChange={e=>upd(i,'break_end',e.target.value)}>
+            <option value="">—</option>
+            {TIMES_15.map(t=><option key={t} value={t}>{t}</option>)}
+          </select>
           {(row.break_start||row.break_end)&&<button onClick={()=>{upd(i,'break_start','');upd(i,'break_end','')}} title="Quitar descanso" style={{background:'transparent',border:0,cursor:'pointer',color:'var(--text-muted)',fontSize:14,padding:'0 4px'}}>✕</button>}
         </div>:<span style={{fontSize:12,color:'var(--text-muted)'}}>—</span>}
       </div>)}
