@@ -123,88 +123,304 @@ function Layout({title,children,sidebarOpen,onToggleSidebar,notifCount,page,onNa
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 function Dashboard({onNav}){
-  const[stats,setStats]=useState({today:0,week:0,patients:0})
-  const[waitCount,setWaitCount]=useState(0)
-  const[todayA,setTodayA]=useState([])
-  const[slots,setSlots]=useState([])
   const[loading,setLoading]=useState(true)
   const[toast,setToast]=useState(null)
+  const[kpi,setKpi]=useState({tomorrow:{total:0,confirmed:0,pending:0},weekFreeSlots:0,nextWeekFreeSlots:0})
+  const[pending,setPending]=useState({proposals:[],unrespondedReminders:[],unassignedHoles:[]})
+  const[lists,setLists]=useState({waiting:0,expedite:0,overdue:0})
+  const[tomorrowByProf,setTomorrowByProf]=useState([])
+  const[monthly,setMonthly]=useState({completed:0,cancelled:0,revenue:0})
+
+  // Calcula huecos libres de un rango sumando minutos:
+  //   working_hours - recurring_breaks - blocked_slots - blocked_days - citas activas
+  // Devuelve count aproximado (minutos / slot_duration del prof, default 60).
+  async function countFreeSlots(profs, fromDate, toDate) {
+    const days = []
+    for (let d = new Date(fromDate + 'T00:00:00'); d <= new Date(toDate + 'T23:59:59'); d.setDate(d.getDate() + 1)) {
+      days.push({ ds: toK(d), dow: d.getDay() })
+    }
+    const profIds = profs.map(p => p.id)
+    if (!profIds.length) return 0
+
+    const [whResp, brResp, bsResp, bdResp, apResp] = await Promise.all([
+      sb.from('working_hours').select('professional_id,day_of_week,start_time,end_time').in('professional_id', profIds),
+      sb.from('recurring_breaks').select('professional_id,day_of_week,start_time,end_time').in('professional_id', profIds),
+      sb.from('blocked_slots').select('professional_id,starts_at,ends_at').in('professional_id', profIds).gte('starts_at', fromDate+'T00:00:00').lte('starts_at', toDate+'T23:59:59'),
+      sb.from('blocked_days').select('professional_id,date').in('professional_id', profIds).gte('date', fromDate).lte('date', toDate),
+      sb.from('appointments').select('professional_id,starts_at,ends_at').in('professional_id', profIds).gte('starts_at', fromDate+'T00:00:00').lte('starts_at', toDate+'T23:59:59').in('status', ['pending','confirmed']),
+    ])
+
+    const minOf = (hhmm) => parseInt(hhmm.slice(0,2)) * 60 + parseInt(hhmm.slice(3,5))
+
+    let totalFreeMin = 0
+    for (const p of profs) {
+      const slotDur = p.slot_duration || 60
+      for (const day of days) {
+        const wh = (whResp.data || []).find(r => r.professional_id === p.id && r.day_of_week === day.dow)
+        if (!wh) continue
+        if ((bdResp.data || []).find(r => r.professional_id === p.id && r.date === day.ds)) continue
+
+        let mins = minOf(wh.end_time) - minOf(wh.start_time)
+        for (const br of (brResp.data || []).filter(r => r.professional_id === p.id && r.day_of_week === day.dow)) {
+          mins -= (minOf(br.end_time) - minOf(br.start_time))
+        }
+        for (const bs of (bsResp.data || []).filter(r => r.professional_id === p.id && r.starts_at.slice(0,10) === day.ds)) {
+          mins -= ((minOf(bs.ends_at.slice(11,16)) - minOf(bs.starts_at.slice(11,16))))
+        }
+        for (const a of (apResp.data || []).filter(r => r.professional_id === p.id && r.starts_at.slice(0,10) === day.ds)) {
+          mins -= ((minOf(a.ends_at.slice(11,16)) - minOf(a.starts_at.slice(11,16))))
+        }
+        if (mins > 0) totalFreeMin += Math.floor(mins / slotDur) * slotDur
+      }
+    }
+    // Devolvemos n° de huecos asumiendo slot estándar 60 (lo más común).
+    // Ajustamos por professional ya: cada prof hizo su Math.floor(mins/slotDur)*slotDur,
+    // sumamos los minutos múltiplos y dividimos por 60 para una unidad común.
+    return Math.floor(totalFreeMin / 60)
+  }
 
   const load=useCallback(async()=>{
     setLoading(true)
-    const today=toK(new Date()), weekEnd=toK(new Date(Date.now()+6*86400000))
-    const[apToday,apWeek,pats,upSlots,waitList]=await Promise.all([
-      sb.from('appointments').select('id,starts_at,status,patients(full_name),services(name),professionals(name)',{count:'exact'})
-        .gte('starts_at',today+'T00:00:00').lte('starts_at',today+'T23:59:59').neq('status','cancelled').order('starts_at').limit(10),
-      sb.from('appointments').select('id',{count:'exact'})
-        .gte('starts_at',today+'T00:00:00').lte('starts_at',weekEnd+'T23:59:59').neq('status','cancelled'),
-      sb.from('patients').select('id',{count:'exact'}),
-      sb.from('availability_slots').select('id,starts_at,max_bookings,services(name),bookings(id)')
-        .gte('starts_at',today+'T00:00:00').order('starts_at').limit(6),
-      sb.from('waiting_list').select('id',{count:'exact'}),
+    const today = toK(new Date())
+    const tomorrow = toK(new Date(Date.now() + 86400000))
+    const weekStart = today
+    const weekEnd = toK(new Date(Date.now() + 6 * 86400000))
+    const nextWeekStart = toK(new Date(Date.now() + 7 * 86400000))
+    const nextWeekEnd = toK(new Date(Date.now() + 13 * 86400000))
+    const monthStart = toK(new Date(new Date().getFullYear(), new Date().getMonth(), 1))
+    const monthEnd = toK(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0))
+
+    const [profsResp, tomorrowAppts, waitingResp, expediteResp, holdsResp, monthAppts] = await Promise.all([
+      sb.from('professionals').select('id,name,slot_duration').eq('is_active', true).eq('section', 'osteopathy').order('name'),
+      sb.from('appointments').select('id,starts_at,status,reminder_sent_at,patients(full_name),services(name),professionals(id,name)')
+        .gte('starts_at', tomorrow + 'T00:00:00').lte('starts_at', tomorrow + 'T23:59:59').neq('status', 'cancelled').order('starts_at'),
+      sb.from('wait_queue').select('id,weeks_pautadas,created_at').eq('queue_type', 'waiting'),
+      sb.from('wait_queue').select('id,weeks_pautadas,created_at').eq('queue_type', 'expedite'),
+      sb.from('cancellation_holds').select('id,appointment_id,current_offer_id,appointments(starts_at,patients(full_name),professionals(name))').is('current_offer_id', null),
+      sb.from('appointments').select('id,status,services(price)')
+        .gte('starts_at', monthStart + 'T00:00:00').lte('starts_at', monthEnd + 'T23:59:59'),
     ])
-    setStats({today:apToday.count||0,week:apWeek.count||0,patients:pats.count||0})
-    setWaitCount(waitList.count||0)
-    setTodayA(apToday.data||[])
-    setSlots((upSlots.data||[]).map(s=>({...s,booked:s.bookings?.length||0})))
+
+    const profs = profsResp.data || []
+    const tomorrowList = tomorrowAppts.data || []
+
+    // KPI 1: citas mañana
+    const tomorrowConfirmed = tomorrowList.filter(a => a.status === 'confirmed').length
+    const tomorrowPending = tomorrowList.filter(a => a.status === 'pending').length
+
+    // KPI 2/3: huecos libres
+    const [weekFree, nextWeekFree] = await Promise.all([
+      countFreeSlots(profs, weekStart, weekEnd),
+      countFreeSlots(profs, nextWeekStart, nextWeekEnd),
+    ])
+
+    setKpi({
+      tomorrow: { total: tomorrowList.length, confirmed: tomorrowConfirmed, pending: tomorrowPending },
+      weekFreeSlots: weekFree,
+      nextWeekFreeSlots: nextWeekFree,
+    })
+
+    // Pendientes de hoy: propuestas activas + recordatorios sin respuesta + huecos cancelled sin asignar
+    const proposals = tomorrowList.filter(a => a.status === 'pending')
+    const unrespondedReminders = tomorrowList.filter(a => a.status === 'confirmed' && a.reminder_sent_at)
+    const unassignedHoles = (holdsResp.data || []).filter(h => h.appointments)
+
+    setPending({ proposals, unrespondedReminders, unassignedHoles })
+
+    // Listas y avisos
+    const overdue = (waitingResp.data || []).filter(r => {
+      if (r.weeks_pautadas == null) return false
+      const elapsed = (Date.now() - new Date(r.created_at).getTime()) / (7 * 24 * 36e5)
+      return elapsed >= r.weeks_pautadas
+    }).length
+    setLists({
+      waiting: (waitingResp.data || []).length,
+      expedite: (expediteResp.data || []).length,
+      overdue,
+    })
+
+    // Citas mañana por profesional
+    const byProf = profs.map(p => ({
+      prof: p,
+      appts: tomorrowList.filter(a => a.professionals?.id === p.id),
+    }))
+    setTomorrowByProf(byProf)
+
+    // Resumen del mes
+    const monthList = monthAppts.data || []
+    const completed = monthList.filter(a => a.status === 'completed').length
+    const cancelled = monthList.filter(a => a.status === 'cancelled').length
+    const revenue = monthList.filter(a => a.status === 'completed').reduce((s, a) => s + (a.services?.price || 0), 0)
+    setMonthly({ completed, cancelled, revenue })
+
     setLoading(false)
-  },[])
+  }, [])
 
   useEffect(()=>{load()},[load])
   useEffect(()=>{
     const ch=sb.channel('admin-notifs')
       .on('postgres_changes',{event:'INSERT',schema:'public',table:'appointments'},()=>{setToast({msg:'Nueva cita registrada',type:'ok'});load()})
-      .on('postgres_changes',{event:'INSERT',schema:'public',table:'bookings'},()=>{setToast({msg:'Nueva reserva de clase',type:'ok'});load()})
       .subscribe()
     return()=>sb.removeChannel(ch)
   },[load])
 
   if(loading)return<Sp/>
+
+  const totalListItems = lists.waiting + lists.expedite
+  const hasAlerts = lists.overdue > 0 || pending.unassignedHoles.length > 0
+
   return<>
     {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
 
-    {waitCount>0&&<div className="alert-banner"onClick={()=>onNav('espera')}>
-      <span style={{fontSize:20}}>⏳</span>
-      <span className="alert-banner-text">Hay {waitCount} paciente{waitCount!==1?'s':''} en lista de espera. Pulsa para gestionar.</span>
-      <span style={{fontSize:12,fontWeight:700,color:'#7a5c10'}}>Ver →</span>
+    {hasAlerts && <div className="alert-banner" onClick={()=>onNav('espera')}>
+      <span style={{fontSize:20}}>⚠️</span>
+      <span className="alert-banner-text">
+        {lists.overdue > 0 && `${lists.overdue} paciente${lists.overdue!==1?'s':''} en lista vencido${lists.overdue!==1?'s':''}. `}
+        {pending.unassignedHoles.length > 0 && `${pending.unassignedHoles.length} hueco${pending.unassignedHoles.length!==1?'s':''} cancelado${pending.unassignedHoles.length!==1?'s':''} sin asignar.`}
+      </span>
+      <span style={{fontSize:12,fontWeight:700,color:'#7a5c10'}}>Gestionar →</span>
     </div>}
 
+    {/* Fila 1: KPIs */}
     <div className="stats-grid">
-      {[['Citas hoy',stats.today,'osteopatía'],['Esta semana',stats.week,'próximos 7 días'],['Pacientes',stats.patients,'registrados']].map(([l,v,s])=>
-        <div key={l}className="card stat-card"><div className="stat-label">{l}</div><div className="stat-value">{v}</div><div className="stat-sub">{s}</div></div>
-      )}
-    </div>
-
-    <div className="dash-grid">
-      <div>
-        <div className="section-header"><span className="section-title">Citas de hoy</span></div>
-        <div className="card"style={{overflow:'hidden'}}>
-          {todayA.length===0?<Em icon="📅"title="Sin citas hoy"sub="No hay citas programadas"/>
-          :todayA.map(a=><div key={a.id}className="dash-row">
-            <span style={{fontSize:12,fontWeight:700,color:'var(--green)',minWidth:44}}>{fTime(a.starts_at)}</span>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:13,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.patients?.full_name||'—'}</div>
-              <div style={{fontSize:11,color:'var(--text-muted)'}}>{a.services?.name} {a.professionals?.name?`· ${a.professionals.name}`:''}</div>
-            </div>
-            <Bg variant={STATUS_CLS[a.status]?.replace('badge-','')||'gray'}>{STATUS_TXT[a.status]||a.status}</Bg>
-          </div>)}
+      <div className="card stat-card" style={{cursor:'pointer'}} onClick={()=>onNav('agenda')}>
+        <div className="stat-label">Citas mañana</div>
+        <div className="stat-value">{kpi.tomorrow.total}</div>
+        <div className="stat-sub">
+          {kpi.tomorrow.confirmed} confirmada{kpi.tomorrow.confirmed!==1?'s':''}
+          {kpi.tomorrow.pending > 0 && ` · ${kpi.tomorrow.pending} pendiente${kpi.tomorrow.pending!==1?'s':''}`}
         </div>
       </div>
+      <div className="card stat-card">
+        <div className="stat-label">Huecos esta semana</div>
+        <div className="stat-value">{kpi.weekFreeSlots}</div>
+        <div className="stat-sub">disponibles para reservar</div>
+      </div>
+      <div className="card stat-card">
+        <div className="stat-label">Huecos próxima semana</div>
+        <div className="stat-value">{kpi.nextWeekFreeSlots}</div>
+        <div className="stat-sub">disponibles para reservar</div>
+      </div>
+    </div>
+
+    {/* Fila 2: Pendientes y listas/avisos */}
+    <div className="dash-grid">
       <div>
-        <div className="section-header"><span className="section-title">Próximas clases</span></div>
-        <div className="card"style={{overflow:'hidden'}}>
-          {slots.length===0?<Em icon="🧘"title="Sin clases próximas"/>
-          :slots.map(s=>{const pct=s.max_bookings>0?Math.round(s.booked/s.max_bookings*100):0;return(
-            <div key={s.id}className="slot-card">
-              <div className="slot-info">
-                <div className="slot-title">{s.services?.name||'Clase'}</div>
-                <div className="slot-meta">{fDT(s.starts_at)} · {s.booked}/{s.max_bookings} plazas</div>
-                <div className="slot-bar"><div className="slot-bar-fill"style={{width:`${pct}%`}}/></div>
-              </div>
-              <Bg variant={pct>=100?'red':pct>=80?'gold':'green'}>{pct}%</Bg>
-            </div>
-          )})}
+        <div className="section-header"><span className="section-title">Pendientes</span></div>
+        <div className="card" style={{overflow:'hidden'}}>
+          {pending.proposals.length === 0 && pending.unrespondedReminders.length === 0 && pending.unassignedHoles.length === 0
+            ? <Em icon="✅" title="Todo al día" sub="Sin pendientes"/>
+            : <>
+              {pending.unassignedHoles.length > 0 && <div style={{padding:'10px 14px',background:'#fee2e2',borderBottom:'1px solid var(--border)'}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#991b1b',textTransform:'uppercase',marginBottom:4}}>Huecos cancelados sin asignar</div>
+                {pending.unassignedHoles.slice(0,3).map(h => <div key={h.id} className="dash-row" onClick={()=>onNav('agenda')} style={{cursor:'pointer',padding:'4px 0'}}>
+                  <span style={{fontSize:12,color:'var(--text-muted)',minWidth:90}}>{fDT(h.appointments?.starts_at)}</span>
+                  <div style={{flex:1,fontSize:13}}>{h.appointments?.patients?.full_name||'—'}</div>
+                  <div style={{fontSize:11,color:'var(--text-muted)'}}>{h.appointments?.professionals?.name||''}</div>
+                </div>)}
+              </div>}
+              {pending.proposals.length > 0 && <div style={{padding:'10px 14px',background:'#fef3c7',borderBottom:'1px solid var(--border)'}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#92400e',textTransform:'uppercase',marginBottom:4}}>Propuestas pendientes (mañana)</div>
+                {pending.proposals.slice(0,3).map(a => <div key={a.id} className="dash-row" style={{padding:'4px 0'}}>
+                  <span style={{fontSize:12,color:'var(--text-muted)',minWidth:44}}>{fTime(a.starts_at)}</span>
+                  <div style={{flex:1,fontSize:13}}>{a.patients?.full_name||'—'}</div>
+                  <div style={{fontSize:11,color:'var(--text-muted)'}}>{a.professionals?.name}</div>
+                </div>)}
+              </div>}
+              {pending.unrespondedReminders.length > 0 && <div style={{padding:'10px 14px'}}>
+                <div style={{fontSize:11,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',marginBottom:4}}>Recordatorios enviados (sin respuesta)</div>
+                {pending.unrespondedReminders.slice(0,3).map(a => <div key={a.id} className="dash-row" style={{padding:'4px 0'}}>
+                  <span style={{fontSize:12,color:'var(--text-muted)',minWidth:44}}>{fTime(a.starts_at)}</span>
+                  <div style={{flex:1,fontSize:13}}>{a.patients?.full_name||'—'}</div>
+                  <div style={{fontSize:11,color:'var(--text-muted)'}}>{a.professionals?.name}</div>
+                </div>)}
+              </div>}
+            </>
+          }
         </div>
+      </div>
+
+      <div>
+        <div className="section-header"><span className="section-title">Listas y avisos</span></div>
+        <div className="card" style={{padding:0,overflow:'hidden'}}>
+          <div className="dash-row" style={{cursor:'pointer',padding:'14px'}} onClick={()=>onNav('espera')}>
+            <span style={{fontSize:20}}>⏳</span>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13,fontWeight:700}}>Lista de espera</div>
+              <div style={{fontSize:11,color:'var(--text-muted)'}}>esperan hueco más cercano</div>
+            </div>
+            <div style={{fontSize:20,fontWeight:900,color:'var(--green)'}}>{lists.waiting}</div>
+          </div>
+          <div className="dash-row" style={{cursor:'pointer',padding:'14px',borderTop:'1px solid var(--border)'}} onClick={()=>onNav('espera')}>
+            <span style={{fontSize:20}}>⏫</span>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13,fontWeight:700}}>Lista de adelantar</div>
+              <div style={{fontSize:11,color:'var(--text-muted)'}}>quieren venir antes</div>
+            </div>
+            <div style={{fontSize:20,fontWeight:900,color:'var(--green)'}}>{lists.expedite}</div>
+          </div>
+          {lists.overdue > 0 && <div className="dash-row" style={{cursor:'pointer',padding:'14px',borderTop:'1px solid var(--border)',background:'#fef3c7'}} onClick={()=>onNav('espera')}>
+            <span style={{fontSize:20}}>🔴</span>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13,fontWeight:700,color:'#92400e'}}>Pacientes con plazo vencido</div>
+              <div style={{fontSize:11,color:'#92400e'}}>llevan más semanas de las pautadas</div>
+            </div>
+            <div style={{fontSize:20,fontWeight:900,color:'#dc2626'}}>{lists.overdue}</div>
+          </div>}
+          {totalListItems === 0 && <div style={{padding:24,textAlign:'center',fontSize:12,color:'var(--text-muted)'}}>Listas vacías</div>}
+        </div>
+      </div>
+    </div>
+
+    {/* Fila 3: Citas mañana por profesional */}
+    <div className="section-header" style={{marginTop:24}}>
+      <span className="section-title">Agenda de mañana</span>
+    </div>
+    <div className="dash-grid" style={{gridTemplateColumns:`repeat(${Math.max(tomorrowByProf.length,1)},1fr)`}}>
+      {tomorrowByProf.length === 0
+        ? <div className="card"><Em icon="📅" title="Sin profesionales activos"/></div>
+        : tomorrowByProf.map(({prof, appts}) => (
+          <div key={prof.id}>
+            <div className="card" style={{overflow:'hidden'}}>
+              <div style={{padding:'10px 14px',borderBottom:'1.5px solid var(--border)',background:'var(--cream)',fontWeight:700,fontSize:13}}>
+                {prof.name} <span style={{color:'var(--text-muted)',fontWeight:400,fontSize:11}}>· {appts.length} cita{appts.length!==1?'s':''}</span>
+              </div>
+              {appts.length === 0
+                ? <div style={{padding:24,textAlign:'center',fontSize:12,color:'var(--text-muted)'}}>Sin citas mañana</div>
+                : appts.map(a => <div key={a.id} className="dash-row" style={{padding:'10px 14px'}}>
+                  <span style={{fontSize:12,fontWeight:700,color:'var(--green)',minWidth:44}}>{fTime(a.starts_at)}</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.patients?.full_name||'—'}</div>
+                    <div style={{fontSize:11,color:'var(--text-muted)'}}>{a.services?.name||''}</div>
+                  </div>
+                  <Bg variant={STATUS_CLS[a.status]?.replace('badge-','')||'gray'}>{STATUS_TXT[a.status]||a.status}</Bg>
+                </div>)
+              }
+            </div>
+          </div>
+        ))
+      }
+    </div>
+
+    {/* Fila 4: Resumen del mes */}
+    <div className="section-header" style={{marginTop:24}}>
+      <span className="section-title">Este mes</span>
+    </div>
+    <div className="stats-grid">
+      <div className="card stat-card">
+        <div className="stat-label">Completadas</div>
+        <div className="stat-value">{monthly.completed}</div>
+        <div className="stat-sub">citas atendidas</div>
+      </div>
+      <div className="card stat-card">
+        <div className="stat-label">Cancelaciones</div>
+        <div className="stat-value">{monthly.cancelled}</div>
+        <div className="stat-sub">{monthly.completed+monthly.cancelled>0?`${Math.round(monthly.cancelled/(monthly.completed+monthly.cancelled)*100)}% del total`:'—'}</div>
+      </div>
+      <div className="card stat-card">
+        <div className="stat-label">Ingresos estimados</div>
+        <div className="stat-value">{monthly.revenue.toLocaleString('es-ES')} €</div>
+        <div className="stat-sub">basado en precio del servicio</div>
       </div>
     </div>
   </>
