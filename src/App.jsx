@@ -395,23 +395,20 @@ function Agenda(){
       const beforeFallback = !fbDate || huecoStart < fbDate.slice(0, 19)
       const afterTarget = !r.target_date || huecoDate >= r.target_date
       const hourMatches = r.preferred_hour == null || r.preferred_hour === huecoHour
-      // fits = constraints duros (fecha). Hora preferida es soft → solo aviso visual.
-      const fits = beforeFallback && afterTarget
+      // Nada es bloqueante: la secretaria decide. Solo se muestran avisos.
       return {
         ...r,
-        fits,
+        beforeFallback,
+        afterTarget,
         hourMatches,
         fallback_starts_at: fbDate,
         isSuggestion: hold?.suggested_wait_queue_id === r.id,
       }
     })
 
-    // Ordenar: sugerencia primero, luego encaja+hora, luego encaja, luego no encaja
-    candidates.sort((a,b) =>
-      (b.isSuggestion - a.isSuggestion) ||
-      (b.fits - a.fits) ||
-      (b.hourMatches - a.hourMatches)
-    )
+    // Ordenar: sugerencia primero, luego los que cumplen todo, después los que cumplen menos.
+    const score = c => (c.isSuggestion?1000:0) + (c.beforeFallback?100:0) + (c.afterTarget?10:0) + (c.hourMatches?1:0)
+    candidates.sort((a,b) => score(b) - score(a))
 
     setAssignModal({ appointment: appt, candidates })
   }
@@ -921,26 +918,21 @@ function Agenda(){
         {assignModal.candidates.length === 0
           ? <Em icon="📭" title="Lista de espera vacía"/>
           : assignModal.candidates.map(c => {
-            // Estilo: sugerencia (oro) > encaja+hora (verde) > encaja sin hora (amarillo aviso) > no encaja (gris bloqueado)
-            const bg = c.isSuggestion ? '#fef3c7'
-              : (c.fits && c.hourMatches) ? '#ecfdf5'
-              : c.fits ? '#fefce8'
-              : '#f9fafb'
-            const border = c.isSuggestion ? '#f59e0b'
-              : (c.fits && c.hourMatches) ? '#10b981'
-              : c.fits ? '#eab308'
-              : '#d1d5db'
+            const allMatch = c.beforeFallback && c.afterTarget && c.hourMatches
+            const someMismatch = !allMatch
+            // Verde si todo encaja, amarillo si hay algún aviso. Nunca se bloquea.
+            const bg = c.isSuggestion ? '#fef3c7' : allMatch ? '#ecfdf5' : '#fefce8'
+            const border = c.isSuggestion ? '#f59e0b' : allMatch ? '#10b981' : '#eab308'
             return (
               <div key={c.id} style={{
                 padding:'10px 12px',marginBottom:8,
                 background:bg,
                 border:`1px solid ${border}`,
                 borderRadius:6,
-                cursor:c.fits?'pointer':'not-allowed',
-                opacity:c.fits?1:0.5,
+                cursor:'pointer',
                 display:'flex',alignItems:'center',gap:10
               }}
-              onClick={c.fits ? ()=>confirmAssignToWL(c) : undefined}>
+              onClick={()=>confirmAssignToWL(c)}>
                 {c.isSuggestion && <span style={{fontSize:18}}>✨</span>}
                 <div style={{flex:1}}>
                   <div style={{fontWeight:700,fontSize:13}}>
@@ -950,8 +942,12 @@ function Agenda(){
                     {c.fallback_starts_at ? `Cita actual: ${fDT(c.fallback_starts_at)}` : 'Sin cita asignada'} ·
                     Hora preferida: {c.preferred_hour != null ? `${pad(c.preferred_hour)}:00` : 'Cualquiera'}
                   </div>
-                  {!c.fits && <div style={{fontSize:10,color:'#dc2626',marginTop:2}}>Fecha incompatible (después de su cita actual o antes de target)</div>}
-                  {c.fits && !c.hourMatches && <div style={{fontSize:10,color:'#a16207',marginTop:2,fontWeight:600}}>⚠ No coincide con la hora preferida ({pad(c.preferred_hour)}:00) — puedes asignarlo igualmente</div>}
+                  {someMismatch && <div style={{fontSize:10,color:'#a16207',marginTop:2,fontWeight:600}}>
+                    ⚠ {!c.beforeFallback && 'Posterior a su cita actual. '}
+                    {!c.afterTarget && 'Antes de la fecha pautada. '}
+                    {!c.hourMatches && `Hora preferida: ${pad(c.preferred_hour)}:00. `}
+                    Puedes asignarlo igualmente.
+                  </div>}
                 </div>
               </div>
             )
@@ -1273,10 +1269,11 @@ function Espera(){
       const hour = parseInt(a.starts_at.slice(11,13))
       const beforeFb = !fbStart || a.starts_at < fbStart.slice(0, 19)
       const hourMatches = row.preferred_hour == null || row.preferred_hour === hour
-      // fits = solo constraint duro de fecha. Hora preferida es soft (aviso, no bloqueo).
-      return { appt: a, fits: beforeFb, hourMatches }
+      // Nada bloquea: solo avisos visuales.
+      return { appt: a, beforeFb, hourMatches }
     })
-    candidates.sort((a,b) => (b.fits - a.fits) || (b.hourMatches - a.hourMatches))
+    const score2 = c => (c.beforeFb?10:0) + (c.hourMatches?1:0)
+    candidates.sort((a,b) => score2(b) - score2(a))
     setAssignModal({ row, candidates })
   }
 
@@ -1376,19 +1373,23 @@ function Espera(){
       <div style={{maxHeight:400,overflowY:'auto'}}>
         {assignModal.candidates.length === 0
           ? <Em icon="📭" title="No hay huecos cancelados disponibles"/>
-          : assignModal.candidates.map(({appt, fits, hourMatches}) => {
-            const bg = fits && hourMatches ? '#ecfdf5' : fits ? '#fefce8' : '#f9fafb'
-            const border = fits && hourMatches ? '#10b981' : fits ? '#eab308' : '#d1d5db'
+          : assignModal.candidates.map(({appt, beforeFb, hourMatches}) => {
+            const allMatch = beforeFb && hourMatches
+            const bg = allMatch ? '#ecfdf5' : '#fefce8'
+            const border = allMatch ? '#10b981' : '#eab308'
             return (
               <div key={appt.id} style={{
                 padding:'10px 12px',marginBottom:8,
                 background:bg,
                 border:`1px solid ${border}`,
-                borderRadius:6,cursor:fits?'pointer':'not-allowed',opacity:fits?1:0.5
-              }} onClick={fits ? () => confirmAssign(appt) : undefined}>
+                borderRadius:6,cursor:'pointer'
+              }} onClick={() => confirmAssign(appt)}>
                 <div style={{fontSize:13,fontWeight:700}}>{fDT(appt.starts_at)}</div>
-                {!fits && <div style={{fontSize:10,color:'#dc2626'}}>Fecha fuera del rango (después de su cita actual o antes de target)</div>}
-                {fits && !hourMatches && <div style={{fontSize:10,color:'#a16207',fontWeight:600}}>⚠ No coincide con la hora preferida — puedes asignarlo igualmente</div>}
+                {!allMatch && <div style={{fontSize:10,color:'#a16207',fontWeight:600}}>
+                  ⚠ {!beforeFb && 'Posterior a su cita actual. '}
+                  {!hourMatches && 'Hora preferida distinta. '}
+                  Puedes asignarlo igualmente.
+                </div>}
               </div>
             )
           })
