@@ -338,7 +338,6 @@ function Agenda(){
     if (!weeks) { setToast({msg:'Indica las semanas',type:'error'}); return }
     const hour = followupHour === 'any' ? null : parseInt(followupHour)
     setFollowupBusy(true)
-    // El admin no tiene acceso al bot. Inserta directamente en pending_searches y deja que el cron del bot recoja.
     const targetDate = new Date(Date.now() + weeks*7*24*36e5).toISOString().slice(0,10)
     const{data:search,error}=await sb.from('pending_searches').insert({
       patient_id: modal.patients.id,
@@ -349,9 +348,17 @@ function Agenda(){
       preferred_hour: hour,
       weeks_pautadas: weeks,
     }).select('id').single()
+    if(error){setFollowupBusy(false);setToast({msg:'Error: '+error.message,type:'error'});return}
+    // Disparar al bot inmediatamente; el cron seguirá como respaldo si el bot está caído.
+    try {
+      await fetch('http://localhost:3002/trigger-followup-search', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ search_id: search.id })
+      })
+    } catch(e) { console.warn('trigger-followup-search fail:', e.message) }
     setFollowupBusy(false)
-    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    setToast({msg:'Búsqueda iniciada. El bot intentará asignar y avisará al paciente.',type:'ok'})
+    setToast({msg:'Listo. El paciente recibirá el WhatsApp en unos segundos.',type:'ok'})
     setModal(null)
   }
 
@@ -942,17 +949,27 @@ function Horarios(){
   const[slotDur,setSlotDur]=useState(60)
   const[saving,setSaving]=useState(false)
   const[toast,setToast]=useState(null)
+  const[waPhone,setWaPhone]=useState('')
+  const[agendaTime,setAgendaTime]=useState('')
+  const[breaks,setBreaks]=useState([])
+  const[newBreakDay,setNewBreakDay]=useState('1')
+  const[newBreakStart,setNewBreakStart]=useState('14:00')
+  const[newBreakEnd,setNewBreakEnd]=useState('14:30')
   const WORK_DAYS=[1,2,3,4,5,6]
   const DAY_NAMES=['','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
 
   useEffect(()=>{
-    sb.from('professionals').select('id,name,slot_duration').eq('is_active',true).eq('section','osteopathy').order('name')
+    sb.from('professionals').select('id,name,slot_duration,whatsapp_phone,daily_agenda_time,max_half_hour_per_day').eq('is_active',true).eq('section','osteopathy').order('name')
       .then(({data})=>{setProfs(data||[]);if(data?.length)setSelProf(data[0])})
   },[])
 
   useEffect(()=>{
     if(!selProf)return
     setSlotDur(selProf.slot_duration||60)
+    setWaPhone(selProf.whatsapp_phone||'')
+    setAgendaTime(selProf.daily_agenda_time?.slice(0,5)||'')
+    sb.from('recurring_breaks').select('*').eq('professional_id',selProf.id).order('day_of_week').order('start_time')
+      .then(({data})=>setBreaks(data||[]))
     sb.from('working_hours').select('day_of_week,start_time,end_time').eq('professional_id',selProf.id)
       .then(({data})=>{
         setRows(WORK_DAYS.map(d=>{
@@ -963,6 +980,35 @@ function Horarios(){
         }))
       })
   },[selProf])
+
+  const saveProfNotifs=async()=>{
+    const{error}=await sb.from('professionals').update({
+      whatsapp_phone: waPhone || null,
+      daily_agenda_time: agendaTime || null,
+    }).eq('id', selProf.id)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setToast({msg:'Datos guardados',type:'ok'})
+  }
+
+  const addBreak=async()=>{
+    if(!newBreakStart||!newBreakEnd||newBreakEnd<=newBreakStart){setToast({msg:'Hora inválida',type:'error'});return}
+    const{error}=await sb.from('recurring_breaks').insert({
+      professional_id: selProf.id,
+      day_of_week: parseInt(newBreakDay),
+      start_time: newBreakStart,
+      end_time: newBreakEnd,
+    })
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    const{data}=await sb.from('recurring_breaks').select('*').eq('professional_id',selProf.id).order('day_of_week').order('start_time')
+    setBreaks(data||[])
+    setToast({msg:'Descanso añadido',type:'ok'})
+  }
+
+  const deleteBreak=async(id)=>{
+    const{error}=await sb.from('recurring_breaks').delete().eq('id',id)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setBreaks(breaks.filter(b=>b.id!==id))
+  }
 
   const save=async()=>{
     setSaving(true)
@@ -1020,6 +1066,34 @@ function Horarios(){
         </div>:<span style={{fontSize:12,color:'var(--text-muted)'}}>Día libre</span>}
       </div>)}
     </div>
+
+    {/* Configuración WhatsApp y agenda diaria */}
+    {selProf&&<div className="card"style={{padding:16,marginTop:16}}>
+      <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Notificaciones del profesional</div>
+      <div style={{display:'grid',gridTemplateColumns:'2fr 1fr',gap:10,marginBottom:10}}>
+        <Inp label="WhatsApp del profesional" placeholder="34612345678" value={waPhone} onChange={e=>setWaPhone(e.target.value)}/>
+        <Inp label="Hora envío agenda" type="time" step="900" value={agendaTime} onChange={e=>setAgendaTime(e.target.value)}/>
+      </div>
+      <Btn onClick={saveProfNotifs}>Guardar</Btn>
+    </div>}
+
+    {/* Descansos recurrentes */}
+    {selProf&&<div className="card"style={{padding:16,marginTop:16}}>
+      <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Descansos recurrentes (semanales)</div>
+      {breaks.length===0&&<div style={{fontSize:12,color:'var(--text-muted)',marginBottom:8}}>No hay descansos configurados.</div>}
+      {breaks.map(b=>(
+        <div key={b.id}style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px solid var(--border)'}}>
+          <span style={{flex:1,fontSize:13}}>{DAYS_ES[b.day_of_week]} · {b.start_time.slice(0,5)} – {b.end_time.slice(0,5)}</span>
+          <Btn variant="danger"style={{padding:'4px 8px',fontSize:11}}onClick={()=>deleteBreak(b.id)}>🗑</Btn>
+        </div>
+      ))}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr auto',gap:8,marginTop:10,alignItems:'end'}}>
+        <Sel label="Día" value={newBreakDay} onChange={e=>setNewBreakDay(e.target.value)} options={[['1','Lun'],['2','Mar'],['3','Mié'],['4','Jue'],['5','Vie'],['6','Sáb'],['0','Dom']]}/>
+        <Inp label="Desde" type="time" step="900" value={newBreakStart} onChange={e=>setNewBreakStart(e.target.value)}/>
+        <Inp label="Hasta" type="time" step="900" value={newBreakEnd} onChange={e=>setNewBreakEnd(e.target.value)}/>
+        <Btn onClick={addBreak}>Añadir</Btn>
+      </div>
+    </div>}
   </>
 }
 
