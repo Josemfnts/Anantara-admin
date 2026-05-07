@@ -302,7 +302,8 @@ function Agenda(){
     if(modal&&modal!=='create'){
       setEditNotes(modal.notes||'')
       setEditProfId(modal.professional_id||'')
-      setEditPayment(modal.payment_method||'')
+      const isPast = modal.starts_at && new Date(modal.starts_at.slice(0,19)) < new Date()
+      setEditPayment(modal.payment_method || (isPast ? 'efectivo' : ''))
       setFollowupWeeks(''); setFollowupHour('any')
     }
   },[modal])
@@ -546,17 +547,17 @@ function Agenda(){
     const top=anchor.getBoundingClientRect().top
     const totalMin=hourFrom*60+(clientY-top)
     const clamped=Math.max(hourFrom*60,Math.min(hourTo*60,totalMin))
-    return Math.round(clamped/15)*15
+    return Math.round(clamped/30)*30
   }
 
   const startDrag=(e,hi,di)=>{
     if(filterProf==='all'){setToast({msg:'Selecciona un profesional para crear o bloquear',type:'error'});return}
-    if(e.button!==0)return
+    if(e.button!==undefined&&e.button!==0)return
     if(e.target.closest('.appt-block')||e.target.closest('.block-card'))return
     e.preventDefault()
     const rect=e.currentTarget.getBoundingClientRect()
     const offsetY=Math.max(0,Math.min(rect.height,e.clientY-rect.top))
-    const startMin=Math.round(((hourFrom+hi)*60+offsetY)/15)*15
+    const startMin=Math.round(((hourFrom+hi)*60+offsetY)/30)*30
     setDrag({di,startMin,endMin:startMin,startY:e.clientY,moved:false})
   }
 
@@ -594,11 +595,11 @@ function Agenda(){
         return null
       })
     }
-    document.addEventListener('mousemove',onMove)
-    document.addEventListener('mouseup',onUp)
+    document.addEventListener('pointermove',onMove)
+    document.addEventListener('pointerup',onUp)
     return()=>{
-      document.removeEventListener('mousemove',onMove)
-      document.removeEventListener('mouseup',onUp)
+      document.removeEventListener('pointermove',onMove)
+      document.removeEventListener('pointerup',onUp)
     }
   },[drag,days,filterProf,profs,services,hourFrom,hourTo]) // eslint-disable-line
 
@@ -712,8 +713,8 @@ function Agenda(){
             const da=hi===0?dayAppts(d):[]
             const bl=hi===0?dayBlocks(d):[]
             const showDrag=hi===0&&drag&&drag.di===di
-            return<div key={`c-${h}-${di}`}className="ag-col"style={{gridColumn:di+2,gridRow:hi+2,cursor:filterProf!=='all'?'crosshair':'default'}}
-              onMouseDown={e=>startDrag(e,hi,di)}>
+            return<div key={`c-${h}-${di}`}className="ag-col"style={{gridColumn:di+2,gridRow:hi+2,cursor:filterProf!=='all'?'crosshair':'default',touchAction:'none'}}
+              onPointerDown={e=>startDrag(e,hi,di)}>
               {bl.map(b=>{
                 const[sh,sm]=b.starts_at.slice(11,16).split(':').map(Number)
                 const[eh,em]=b.ends_at.slice(11,16).split(':').map(Number)
@@ -777,7 +778,7 @@ function Agenda(){
       <Sel label="Servicio"value={form.svc_id}onChange={e=>setForm(f=>({...f,svc_id:e.target.value}))}options={[['','Seleccionar…'],...services.map(s=>[s.id,`${s.name} (${s.duration_minutes}min)`])]}/>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
         <Inp label="Fecha"type="date"value={form.date}onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>
-        <Sel label="Hora"value={form.time}onChange={e=>setForm(f=>({...f,time:e.target.value}))}options={[['','--:--'],...Array.from({length:(21-7)*4+4},(_,i)=>{const h=7+Math.floor(i/4),m=(i%4)*15;const v=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;return[v,v]}).filter(([v])=>v<='21:45')]}/>
+        <Sel label="Hora"value={form.time}onChange={e=>setForm(f=>({...f,time:e.target.value}))}options={[['','--:--'],...Array.from({length:(21-7)*2+2},(_,i)=>{const h=7+Math.floor(i/2),m=(i%2)*30;const v=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;return[v,v]}).filter(([v])=>v<='21:30')]}/>
       </div>
       <div className="field" style={{display:'flex',alignItems:'center',gap:8,marginBottom:14}}>
         <Toggle on={form.leave_pending} onChange={v=>setForm(f=>({...f,leave_pending:v}))}/>
@@ -2041,30 +2042,47 @@ function Facturacion(){
     return{type:'quarter',from:`${y}-${pad(sm+1)}-01`,to:`${y}-${pad(em+1)}-${pad(new Date(y,em+1,0).getDate())}`}
   }
   function distribute(list,p){
-    const n=list.length; if(!n)return new Set()
-    const keep=Math.round(n*p/100)
-    if(keep>=n)return new Set(list.map(a=>a.id))
-    if(keep<=0)return new Set()
-    const excl=n-keep,byDow={}
-    for(const a of list){
-      const dow=new Date(a.starts_at.slice(0,10)+'T12:00:00').getDay()
-      if(!byDow[dow])byDow[dow]=[]
+    if(!list.length)return new Set()
+    // Reglas:
+    // - bizum, tarjeta, transferencia → SIEMPRE facturadas (trazables).
+    // - efectivo o sin método → sometidas al porcentaje p.
+    const forced = list.filter(a => ['bizum','tarjeta','transferencia'].includes(a.payment_method))
+    const discretionary = list.filter(a => !['bizum','tarjeta','transferencia'].includes(a.payment_method))
+    const result = new Set(forced.map(a => a.id))
+
+    const n = discretionary.length
+    if (n === 0) return result
+    const keep = Math.round(n * p / 100)
+    if (keep >= n) {
+      for (const a of discretionary) result.add(a.id)
+      return result
+    }
+    if (keep <= 0) return result
+    // Distribuir los `keep` seleccionados entre días de la semana proporcionalmente
+    const byDow = {}
+    for (const a of discretionary) {
+      const dow = new Date(a.starts_at.slice(0,10)+'T12:00:00').getDay()
+      if (!byDow[dow]) byDow[dow] = []
       byDow[dow].push(a)
     }
-    const dows=Object.keys(byDow).map(Number)
-    const exPerDow={};let assigned=0
-    for(let i=0;i<dows.length;i++){
-      const dow=dows[i],cnt=byDow[dow].length
-      if(i===dows.length-1){exPerDow[dow]=Math.max(0,Math.min(excl-assigned,cnt))}
-      else{const e=Math.min(Math.round(cnt/n*excl),cnt);exPerDow[dow]=e;assigned+=e}
+    const excl = n - keep
+    const dows = Object.keys(byDow).map(Number)
+    const exPerDow = {}
+    let assigned = 0
+    for (let i = 0; i < dows.length; i++) {
+      const dow = dows[i], cnt = byDow[dow].length
+      if (i === dows.length-1) exPerDow[dow] = Math.max(0, Math.min(excl - assigned, cnt))
+      else { const e = Math.min(Math.round(cnt/n * excl), cnt); exPerDow[dow] = e; assigned += e }
     }
-    const exIds=new Set()
-    for(const dow of dows){
-      const lst=byDow[dow],ex=exPerDow[dow]||0; if(!ex)continue
-      const step=lst.length/ex
-      for(let j=0;j<ex;j++) exIds.add(lst[Math.min(Math.floor(j*step+step/2),lst.length-1)].id)
+    const exIds = new Set()
+    for (const dow of dows) {
+      const lst = byDow[dow], ex = exPerDow[dow] || 0
+      if (!ex) continue
+      const step = lst.length / ex
+      for (let j = 0; j < ex; j++) exIds.add(lst[Math.min(Math.floor(j*step + step/2), lst.length-1)].id)
     }
-    return new Set(list.filter(a=>!exIds.has(a.id)).map(a=>a.id))
+    for (const a of discretionary) if (!exIds.has(a.id)) result.add(a.id)
+    return result
   }
 
   const[period,setPeriod]=useState(mP)
@@ -2274,6 +2292,9 @@ function Facturacion(){
         <div style={{display:'flex',justifyContent:'space-between',marginBottom:6}}>
           <label style={{fontSize:13,fontWeight:700}}>¿Qué % de citas quieres facturar?</label>
           <span style={{fontSize:15,fontWeight:800,color:'var(--green)'}}>{pct}%</span>
+        </div>
+        <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:8}}>
+          Bizum, tarjeta y transferencia se facturan siempre. El porcentaje aplica solo a efectivo y citas sin método.
         </div>
         <input type="range"min={10}max={100}step={5}value={pct}
           onChange={e=>handlePct(Number(e.target.value))}
