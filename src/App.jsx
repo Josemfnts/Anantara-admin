@@ -1800,6 +1800,11 @@ function Pacientes(){
   const[histLoad,setHistLoad]=useState(false)
   const[page,setPage]=useState(0)
   const[total,setTotal]=useState(0)
+  const[showNewModal,setShowNewModal]=useState(false)
+  const[newName,setNewName]=useState('')
+  const[newPhone,setNewPhone]=useState('')
+  const[savingNew,setSavingNew]=useState(false)
+  const[toast,setToast]=useState(null)
   const PAGE_SIZE=20
 
   useEffect(()=>{const t=setTimeout(()=>fetchPats(query,0),300);return()=>clearTimeout(t)},[query])
@@ -1826,12 +1831,46 @@ function Pacientes(){
   const selectPat=p=>{setSelected(p);fetchHistory(p.id)}
   const totalPages=Math.ceil(total/PAGE_SIZE)
 
+  const normalizePhone = (raw) => {
+    if (!raw) return ''
+    let p = String(raw).replace(/[^\d+]/g, '')
+    if (p.startsWith('+') && !p.startsWith('+34')) return ''
+    p = p.replace(/^\+?34/, '').replace(/^0+/, '')
+    return /^\d{9}$/.test(p) ? p : ''
+  }
+
+  const createPatient = async () => {
+    const name = newName.trim()
+    const phone = normalizePhone(newPhone)
+    if (!name) { setToast({msg:'Nombre obligatorio',type:'error'}); return }
+    if (!phone) { setToast({msg:'Teléfono inválido (debe ser español, 9 dígitos)',type:'error'}); return }
+
+    setSavingNew(true)
+    // Comprobar si ya existe por teléfono
+    const { data: ex } = await sb.from('patients').select('id, full_name').ilike('phone', `%${phone}`).maybeSingle()
+    if (ex) {
+      setToast({msg:`Ya existe: ${ex.full_name}`,type:'error'})
+      setSavingNew(false)
+      return
+    }
+    const { error } = await sb.from('patients').insert({ full_name: name, phone })
+    setSavingNew(false)
+    if (error) { setToast({msg:'Error: '+error.message,type:'error'}); return }
+    setShowNewModal(false); setNewName(''); setNewPhone('')
+    setToast({msg:'Paciente añadido',type:'ok'})
+    fetchPats(query, 0)
+  }
+
   return<div className="pac-layout">
+    {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
     <div>
-      <div className="pac-search-bar">
-        <span style={{fontSize:16}}>🔍</span>
-        <input className="pac-search-input"placeholder="Buscar por nombre o teléfono…"value={query}onChange={e=>setQuery(e.target.value)}autoFocus/>
-        {query&&<button style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-muted)',fontSize:14}}onClick={()=>setQuery('')}>✕</button>}
+      <div style={{display:'flex',gap:8,marginBottom:10,alignItems:'stretch'}}>
+        <div className="pac-search-bar" style={{margin:0,flex:1}}>
+          <span style={{fontSize:16}}>🔍</span>
+          <input className="pac-search-input"placeholder="Buscar por nombre o teléfono…"value={query}onChange={e=>setQuery(e.target.value)}autoFocus/>
+          {query&&<button style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-muted)',fontSize:14}}onClick={()=>setQuery('')}>✕</button>}
+        </div>
+        <Btn onClick={()=>setShowNewModal(true)} style={{whiteSpace:'nowrap'}}>+ Cliente</Btn>
       </div>
       <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:8,paddingLeft:4}}>{total} paciente{total!==1?'s':''}</div>
       <div className="card"style={{overflow:'hidden'}}>
@@ -1878,6 +1917,18 @@ function Pacientes(){
         </div>)}
       </>}
     </div>
+
+    {showNewModal && <Modal title="Nuevo cliente" onClose={()=>{setShowNewModal(false);setNewName('');setNewPhone('')}}>
+      <Inp label="Nombre completo" value={newName} onChange={e=>setNewName(e.target.value)} autoFocus placeholder="Ej: Lucia Sánchez García"/>
+      <Inp label="Teléfono (9 dígitos, sin +34)" value={newPhone} onChange={e=>setNewPhone(e.target.value)} placeholder="612345678" inputMode="tel"/>
+      <div style={{fontSize:11,color:'var(--text-muted)',marginTop:-8,marginBottom:14}}>
+        Sólo móviles o fijos españoles. Ejemplo: 666 111 222 → 666111222.
+      </div>
+      <div style={{display:'flex',gap:10,marginTop:6}}>
+        <Btn variant="ghost" onClick={()=>{setShowNewModal(false);setNewName('');setNewPhone('')}} style={{flex:1}}>Cancelar</Btn>
+        <Btn onClick={createPatient} disabled={savingNew} style={{flex:1}}>{savingNew?'Guardando…':'Crear cliente'}</Btn>
+      </div>
+    </Modal>}
   </div>
 }
 
