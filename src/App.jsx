@@ -441,6 +441,7 @@ function Agenda(){
   const[blockModal,setBlockModal]=useState(null) // {mode:'create'|'view', professional_id, date, start, end, reason, id?}
   const[cancelConfirm,setCancelConfirm]=useState(false)
   const[assignModal,setAssignModal]=useState(null) // {appointment, candidates: []}
+  const[assignTab,setAssignTab]=useState('waiting') // 'waiting' | 'expedite'
   const[patSearch,setPatSearch]=useState('')
   const[patResults,setPatResults]=useState([])
   const[selPat,setSelPat]=useState(null)
@@ -582,11 +583,11 @@ function Agenda(){
   const openAssignModal = async (appt) => {
     // Cargar primeras 10 filas de wait_queue de ese profesional, ordenadas por queue_type (waiting primero) + priority
     const { data: rows } = await sb.from('wait_queue')
-      .select('id,queue_type,priority_order,target_date,preferred_hour,fallback_appointment_id,patients(id,full_name,phone),services(name,duration_minutes)')
+      .select('id,queue_type,priority_order,target_date,preferred_hour,fallback_appointment_id,patient_id,patients(id,full_name,phone),services(name,duration_minutes)')
       .eq('professional_id', appt.professional_id)
       .order('queue_type', { ascending: false })  // 'waiting' < 'expedite' alphabetically — invertir
       .order('priority_order', { ascending: true })
-      .limit(10)
+      .limit(20)
 
     // Cargar fallbacks para ver fecha actual del paciente
     const fbIds = (rows||[]).filter(r=>r.fallback_appointment_id).map(r=>r.fallback_appointment_id)
@@ -626,15 +627,25 @@ function Agenda(){
     const score = c => (c.isSuggestion?1000:0) + (c.beforeFallback?100:0) + (c.afterTarget?10:0) + (c.hourMatches?1:0)
     candidates.sort((a,b) => score(b) - score(a))
 
+    setAssignTab('waiting')
     setAssignModal({ appointment: appt, candidates })
+  }
+
+  const freeHole = async () => {
+    const appt = assignModal.appointment
+    const{error}=await sb.from('cancellation_holds').delete().eq('appointment_id', appt.id)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setAssignModal(null); setToast({msg:'Hueco liberado — disponible para cualquier cita',type:'ok'}); load()
   }
 
   const confirmAssignToWL = async (candidate) => {
     const appt = assignModal.appointment
     // 1. Crear nueva fila pending para el paciente WL
     const proposedUntil = localDT(new Date(Date.now() + 36*60*60*1000))
+    const pid = candidate.patient_id || candidate.patients?.id
+    if (!pid) { setToast({msg:'Error: paciente sin id',type:'error'}); return }
     const { data: newAppt, error: insertErr } = await sb.from('appointments').insert({
-      patient_id: candidate.patient_id,
+      patient_id: pid,
       professional_id: appt.professional_id,
       service_id: appt.service_id || candidate.service_id,
       starts_at: appt.starts_at,
@@ -1129,14 +1140,22 @@ function Agenda(){
       </div>
     </Modal>}
 
-    {assignModal && <Modal title="Asignar hueco vacante" onClose={()=>setAssignModal(null)}>
+    {assignModal && (() => {
+      const waitCount = assignModal.candidates.filter(c=>c.queue_type==='waiting').length
+      const expedCount = assignModal.candidates.filter(c=>c.queue_type==='expedite').length
+      const visible = assignModal.candidates.filter(c=>c.queue_type===assignTab)
+      return <Modal title="Asignar hueco vacante" onClose={()=>setAssignModal(null)}>
       <div style={{marginBottom:12,fontSize:13,color:'var(--text-muted)'}}>
         Hueco del <strong>{fDT(assignModal.appointment.starts_at)}</strong>. Selecciona paciente de la cola:
       </div>
+      <div className="tab-pills" style={{margin:'0 0 12px 0'}}>
+        <button className={`tab-pill${assignTab==='waiting'?' active':''}`} onClick={()=>setAssignTab('waiting')}>Espera ({waitCount})</button>
+        <button className={`tab-pill${assignTab==='expedite'?' active':''}`} onClick={()=>setAssignTab('expedite')}>Adelantar ({expedCount})</button>
+      </div>
       <div style={{maxHeight:400,overflowY:'auto'}}>
-        {assignModal.candidates.length === 0
-          ? <Em icon="📭" title="Lista de espera vacía"/>
-          : assignModal.candidates.map(c => {
+        {visible.length === 0
+          ? <Em icon="📭" title={assignTab==='waiting'?'Lista de espera vacía':'Lista de adelantar vacía'}/>
+          : visible.map(c => {
             const allMatch = c.beforeFallback && c.afterTarget && c.hourMatches
             const someMismatch = !allMatch
             // Verde si todo encaja, amarillo si hay algún aviso. Nunca se bloquea.
@@ -1173,8 +1192,12 @@ function Agenda(){
           })
         }
       </div>
-      <Btn variant="ghost" onClick={()=>setAssignModal(null)} style={{marginTop:8,width:'100%'}}>Cerrar</Btn>
-    </Modal>}
+      <div style={{display:'flex',gap:8,marginTop:8}}>
+        <Btn variant="danger" onClick={freeHole} style={{flex:1}}>Liberar hueco</Btn>
+        <Btn variant="ghost" onClick={()=>setAssignModal(null)} style={{flex:1}}>Cerrar</Btn>
+      </div>
+    </Modal>
+    })()}
   </>
 }
 
