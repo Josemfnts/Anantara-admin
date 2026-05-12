@@ -666,15 +666,20 @@ function Agenda(){
       .eq('appointment_id', appt.id)
 
     // 3. Notificar al paciente por WhatsApp
+    let waSent = false
     try {
-      await fetch('http://localhost:3002/notify-wl-assignment', {
+      const r = await fetch('http://localhost:3002/notify-wl-assignment', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ appointment_id: newAppt.id })
       })
+      waSent = r.ok
+      if (!r.ok) console.warn('notify-wl-assignment HTTP', r.status, await r.text())
     } catch(e) { console.warn('notify-wl-assignment fail:', e.message) }
 
-    setAssignModal(null); setToast({msg:'Asignación creada. WhatsApp enviado al paciente.',type:'ok'}); load()
+    setAssignModal(null)
+    setToast({msg: waSent ? 'Asignación creada. WhatsApp enviado al paciente.' : 'Asignación creada. ⚠️ WhatsApp no enviado (bot apagado?)', type: waSent ? 'ok' : 'error'})
+    load()
   }
 
   const saveApptChanges=async()=>{
