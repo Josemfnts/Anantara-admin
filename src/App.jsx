@@ -904,7 +904,7 @@ function Agenda(){
 
   const hours=Array.from({length:hourTo-hourFrom},(_,i)=>hourFrom+i)
   const today=toK(new Date())
-  const weekStr=`${fD(days[0])} – ${fD(days[6])}`
+  const weekStr=`${fD(days[0])} – ${fD(days[days.length-1])}`
 
   const apptColor=(a)=>{
     // a puede ser un objeto cita o solo un status
