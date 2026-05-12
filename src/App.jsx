@@ -476,7 +476,7 @@ function Agenda(){
       sb.from('blocked_slots').select('id,professional_id,starts_at,ends_at,reason')
         .gte('starts_at',from).lte('starts_at',to),
       sb.from('cancellation_holds').select('appointment_id').is('current_offer_id',null),
-      sb.from('recurring_breaks').select('professional_id,day_of_week,start_time,end_time').in('professional_id',(profsR.data||[]).map(p=>p.id)),
+      sb.from('recurring_breaks').select('professional_id,day_of_week,start_time,end_time'),
     ])
     setAppts(appts.data||[])
     setBlocks(blks.data||[])
