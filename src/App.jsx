@@ -75,6 +75,7 @@ const NAV_GROUPS = [
   ]},
   {label:'Clases',items:[
     {id:'yoga',icon:'🧘',label:'Yoga'},
+    {id:'escalada',icon:'🧗',label:'Escalada'},
   ]},
   {label:'Centro',items:[
     {id:'belleza',icon:'✨',label:'Belleza'},
@@ -2138,7 +2139,7 @@ function Servicios(){
   const[delConfirm,setDelConfirm]=useState(null)
   const[saving,setSaving]=useState(false)
   const[toast,setToast]=useState(null)
-  const CATS=[['osteopathy','Osteopatía'],['yoga','Yoga'],['beauty','Belleza']]
+  const CATS=[['osteopathy','Osteopatía'],['yoga','Yoga'],['escalada','Escalada'],['beauty','Belleza']]
   const CAT_CLS={osteopathy:'osteopatia',yoga:'yoga',beauty:'belleza'}
 
   const load=useCallback(async()=>{
@@ -2379,6 +2380,7 @@ function Profesionales(){
         <select className="field-input" name="section" value={form.section} onChange={upd}>
           <option value="osteopathy">Osteopatía</option>
           <option value="yoga">Yoga</option>
+          <option value="escalada">Escalada</option>
           <option value="beauty">Belleza</option>
         </select>
       </div>
@@ -2408,6 +2410,245 @@ function Profesionales(){
       <div style={{display:'flex',gap:10}}>
         <Btn variant="ghost" onClick={()=>setDelConfirm(null)} style={{flex:1}}>Cancelar</Btn>
         <Btn variant="danger" onClick={()=>del(delConfirm)} style={{flex:1}}>Eliminar</Btn>
+      </div>
+    </Modal>}
+  </>
+}
+
+// ─── Escalada ─────────────────────────────────────────────────────────────────
+function Escalada(){
+  const[tab,setTab]=useState('clases')
+  const[slotsTab,setSlotsTab]=useState('upcoming')
+  const[slots,setSlots]=useState([])
+  const[templates,setTemplates]=useState([])
+  const[services,setServices]=useState([])
+  const[professionals,setProfessionals]=useState([])
+  const[loading,setLoading]=useState(true)
+  const[tplModal,setTplModal]=useState(null)
+  const[slotModal,setSlotModal]=useState(null)
+  const[bookingsModal,setBookingsModal]=useState(null)
+  const[cancelModal,setCancelModal]=useState(null)
+  const[toast,setToast]=useState(null)
+  const[saving,setSaving]=useState(false)
+  const DAYS=['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
+  const QHOURS=Array.from({length:(21-7)*4+1},(_,i)=>{const h=7+Math.floor(i/4),m=(i%4)*15;return`${pad(h)}:${pad(m)}`})
+  const EMPTY_TPL={day_of_week:2,start_time:'17:00',end_time:'18:30',max_bookings:10,service_id:'',professional_id:'',is_active:true}
+  const[tplForm,setTplForm]=useState(EMPTY_TPL)
+  const[slotForm,setSlotForm]=useState({date:'',start_time:'',end_time:'',max_bookings:10})
+
+  const load=useCallback(async()=>{
+    setLoading(true)
+    const now=localDT(new Date())
+    const[{data:svcs},{data:profs},{data:tpls}]=await Promise.all([
+      sb.from('services').select('id,name,duration_minutes').eq('section','escalada').eq('is_active',true),
+      sb.from('professionals').select('id,name').eq('is_active',true).order('name',{ascending:false}),
+      sb.from('class_templates').select('*,services(name),professionals(name)').eq('section','escalada').order('day_of_week').order('start_time'),
+    ])
+    setServices(svcs||[])
+    setProfessionals(profs||[])
+    setTemplates(tpls||[])
+    let q=sb.from('availability_slots')
+      .select('id,starts_at,ends_at,max_bookings,is_published,template_id,professionals(id,name),services(id,name),bookings(id,status,patients(full_name,phone))')
+      .not('template_id','is',null)
+      .order('starts_at',{ascending:slotsTab==='upcoming'})
+    if(slotsTab==='upcoming') q=q.gte('starts_at',now); else q=q.lt('starts_at',now)
+    const{data:sl}=await q.limit(40)
+    setSlots((sl||[]).map(s=>({...s,booked:(s.bookings||[]).filter(b=>b.status!=='cancelled').length})))
+    setLoading(false)
+  },[slotsTab])
+
+  useEffect(()=>{load()},[load])
+
+  const saveTpl=async()=>{
+    if(!tplForm.service_id||!tplForm.professional_id){setToast({msg:'Selecciona servicio y profesional',type:'error'});return}
+    setSaving(true)
+    const payload={section:'escalada',day_of_week:Number(tplForm.day_of_week),start_time:tplForm.start_time+':00',end_time:tplForm.end_time+':00',max_bookings:Number(tplForm.max_bookings),service_id:tplForm.service_id,professional_id:tplForm.professional_id,is_active:tplForm.is_active}
+    let error
+    if(tplModal?.id)({error}=await sb.from('class_templates').update(payload).eq('id',tplModal.id))
+    else({error}=await sb.from('class_templates').insert(payload))
+    setSaving(false)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setTplModal(null);setToast({msg:tplModal?.id?'Plantilla actualizada':'Plantilla creada',type:'ok'});load()
+  }
+
+  const deleteTpl=async id=>{
+    const{error}=await sb.from('class_templates').delete().eq('id',id)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setToast({msg:'Plantilla eliminada',type:'ok'});load()
+  }
+
+  const generateFromTpl=async(tpl,weeks=8)=>{
+    const today=new Date()
+    const end=new Date(today.getTime()+weeks*7*86400000)
+    const dates=[]
+    for(let d=new Date(today);d<=end;d.setDate(d.getDate()+1)){
+      if(d.getDay()===tpl.day_of_week) dates.push(`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`)
+    }
+    const{data:existing}=await sb.from('availability_slots').select('starts_at').eq('template_id',tpl.id).gte('starts_at',today.toISOString().slice(0,10))
+    const existingDates=new Set((existing||[]).map(s=>s.starts_at.slice(0,10)))
+    const toCreate=dates.filter(d=>!existingDates.has(d)).map(d=>({
+      service_id:tpl.service_id,professional_id:tpl.professional_id,
+      starts_at:`${d}T${tpl.start_time.slice(0,5)}:00`,
+      ends_at:`${d}T${tpl.end_time.slice(0,5)}:00`,
+      max_bookings:tpl.max_bookings,is_published:false,template_id:tpl.id,
+    }))
+    if(toCreate.length===0){setToast({msg:'Todas las clases ya existen para ese periodo',type:'ok'});return}
+    const{error}=await sb.from('availability_slots').insert(toCreate)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setToast({msg:`${toCreate.length} clase${toCreate.length!==1?'s':''} generada${toCreate.length!==1?'s':''}`,type:'ok'});load()
+  }
+
+  const saveSlotEdit=async()=>{
+    if(!slotForm.date||!slotForm.start_time||!slotForm.end_time)return
+    setSaving(true)
+    const{error}=await sb.from('availability_slots').update({
+      starts_at:`${slotForm.date}T${slotForm.start_time}:00`,
+      ends_at:`${slotForm.date}T${slotForm.end_time}:00`,
+      max_bookings:Number(slotForm.max_bookings),
+    }).eq('id',slotModal.id)
+    setSaving(false)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setSlotModal(null);setToast({msg:'Clase actualizada',type:'ok'});load()
+  }
+
+  const deleteSlot=async id=>{
+    const{error}=await sb.from('availability_slots').delete().eq('id',id)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setToast({msg:'Clase eliminada',type:'ok'});load()
+  }
+
+  const cancelClass=async slot=>{
+    await sb.from('availability_slots').update({is_published:false}).eq('id',slot.id)
+    await sb.from('bookings').update({status:'cancelled',cancelled_by:'secretary'}).eq('slot_id',slot.id).neq('status','cancelled')
+    setCancelModal(null);setToast({msg:'Clase cancelada',type:'ok'});load()
+  }
+
+  const togglePublish=async slot=>{
+    await sb.from('availability_slots').update({is_published:!slot.is_published}).eq('id',slot.id)
+    setToast({msg:slot.is_published?'Clase ocultada':'Clase publicada',type:'ok'});load()
+  }
+
+  if(loading)return<Sp/>
+  return<>
+    {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
+    <div className="section-header">
+      <span className="section-title">Escalada</span>
+      <div className="tab-pills"style={{margin:0}}>
+        <button className={`tab-pill${tab==='clases'?' active':''}`}onClick={()=>setTab('clases')}>Clases</button>
+        <button className={`tab-pill${tab==='plantillas'?' active':''}`}onClick={()=>setTab('plantillas')}>Plantillas recurrentes</button>
+      </div>
+    </div>
+
+    {tab==='plantillas'&&<>
+      <div style={{display:'flex',justifyContent:'flex-end',marginBottom:12}}>
+        <Btn onClick={()=>{setTplForm({...EMPTY_TPL,service_id:services[0]?.id||'',professional_id:professionals[0]?.id||''});setTplModal('new')}}>+ Nueva plantilla</Btn>
+      </div>
+      {templates.length===0
+        ?<Em icon="🔁"title="Sin plantillas"sub="Crea una plantilla para generar clases recurrentes"/>
+        :<div className="card"style={{overflow:'hidden'}}>
+          {templates.map(tpl=><div key={tpl.id}style={{display:'flex',alignItems:'center',gap:12,padding:'14px 16px',borderBottom:'1px solid var(--border)'}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:8}}>
+                {DAYS[tpl.day_of_week]}s · {tpl.start_time?.slice(0,5)} – {tpl.end_time?.slice(0,5)}
+                <Bg variant={tpl.is_active?'green':'gray'}>{tpl.is_active?'Activa':'Pausada'}</Bg>
+              </div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>
+                {tpl.services?.name||'—'} · {tpl.professionals?.name||'—'} · {tpl.max_bookings} plazas
+              </div>
+            </div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',justifyContent:'flex-end'}}>
+              <Btn variant="ghost"style={{padding:'4px 10px',fontSize:11}}onClick={()=>generateFromTpl(tpl,8)}>⚡ Generar 8 sem.</Btn>
+              <Btn variant="ghost"style={{padding:'4px 10px',fontSize:11}}onClick={()=>{setTplForm({day_of_week:tpl.day_of_week,start_time:tpl.start_time?.slice(0,5),end_time:tpl.end_time?.slice(0,5),max_bookings:tpl.max_bookings,service_id:tpl.service_id||'',professional_id:tpl.professional_id||'',is_active:tpl.is_active});setTplModal(tpl)}}>✏️</Btn>
+              <Toggle on={tpl.is_active}onChange={async()=>{await sb.from('class_templates').update({is_active:!tpl.is_active}).eq('id',tpl.id);load()}}/>
+              <Btn variant="danger"style={{padding:'4px 10px',fontSize:11}}onClick={()=>deleteTpl(tpl.id)}>🗑</Btn>
+            </div>
+          </div>)}
+        </div>}
+    </>}
+
+    {tab==='clases'&&<>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+        <div className="tab-pills"style={{margin:0}}>
+          {[['upcoming','Próximas'],['past','Pasadas']].map(([id,l])=><button key={id}className={`tab-pill${slotsTab===id?' active':''}`}onClick={()=>setSlotsTab(id)}>{l}</button>)}
+        </div>
+      </div>
+      <div className="card"style={{overflow:'hidden'}}>
+        {slots.length===0
+          ?<Em icon="🧗"title="Sin clases"sub={`No hay clases ${slotsTab==='upcoming'?'próximas':'pasadas'}. Genera desde Plantillas.`}/>
+          :slots.map(slot=>{
+            const pct=slot.max_bookings>0?Math.round(slot.booked/slot.max_bookings*100):0
+            return<div key={slot.id}className="slot-card">
+              <div className="slot-info">
+                <div className="slot-title">{slot.services?.name||'Escalada'}</div>
+                <div className="slot-meta">{fDT(slot.starts_at)} · {slot.professionals?.name||''}{slot.professionals?.name?' · ':''}{slot.booked}/{slot.max_bookings} reservas</div>
+                <div className="slot-bar"><div className="slot-bar-fill"style={{width:`${pct}%`}}/></div>
+              </div>
+              <div style={{display:'flex',flexDirection:'column',gap:4,alignItems:'flex-end'}}>
+                <Bg variant={slot.is_published?'green':'gray'}>{slot.is_published?'Publicada':'Borrador'}</Bg>
+                <div style={{display:'flex',gap:4,marginTop:4}}>
+                  <Btn variant="ghost"style={{padding:'4px 8px',fontSize:11}}onClick={()=>setBookingsModal(slot)}>👥 {slot.booked}</Btn>
+                  <Btn variant="ghost"style={{padding:'4px 8px',fontSize:11}}onClick={()=>{setSlotForm({date:slot.starts_at?.slice(0,10)||'',start_time:slot.starts_at?.slice(11,16)||'',end_time:slot.ends_at?.slice(11,16)||'',max_bookings:slot.max_bookings});setSlotModal(slot)}}>✏️</Btn>
+                  <Btn variant={slot.is_published?'secondary':'primary'}style={{padding:'4px 8px',fontSize:11}}onClick={()=>togglePublish(slot)}>{slot.is_published?'Ocultar':'Publicar'}</Btn>
+                  {slot.booked>0&&<Btn variant="danger"style={{padding:'4px 8px',fontSize:11}}onClick={()=>setCancelModal(slot)}>Cancelar</Btn>}
+                  <Btn variant="danger"style={{padding:'4px 8px',fontSize:11}}onClick={()=>deleteSlot(slot.id)}>🗑</Btn>
+                </div>
+              </div>
+            </div>
+          })}
+      </div>
+    </>}
+
+    {tplModal&&<Modal title={tplModal?.id?'Editar plantilla':'Nueva plantilla recurrente'}onClose={()=>setTplModal(null)}>
+      <Sel label="Servicio"value={tplForm.service_id}onChange={e=>setTplForm(f=>({...f,service_id:e.target.value}))}options={[['','Seleccionar…'],...services.map(s=>[s.id,s.name])]}/>
+      <Sel label="Profesional / Monitor"value={tplForm.professional_id}onChange={e=>setTplForm(f=>({...f,professional_id:e.target.value}))}options={[['','Seleccionar…'],...professionals.map(p=>[p.id,p.name])]}/>
+      <Sel label="Día de la semana"value={String(tplForm.day_of_week)}onChange={e=>setTplForm(f=>({...f,day_of_week:Number(e.target.value)}))}options={DAYS.map((d,i)=>[String(i),d]).filter(([i])=>i>='1'&&i<='6')}/>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10}}>
+        <Sel label="Hora inicio"value={tplForm.start_time}onChange={e=>setTplForm(f=>({...f,start_time:e.target.value}))}options={QHOURS.map(h=>[h,h])}/>
+        <Sel label="Hora fin"value={tplForm.end_time}onChange={e=>setTplForm(f=>({...f,end_time:e.target.value}))}options={QHOURS.map(h=>[h,h])}/>
+        <Inp label="Plazas máx."type="number"min={1}value={tplForm.max_bookings}onChange={e=>setTplForm(f=>({...f,max_bookings:e.target.value}))}/>
+      </div>
+      <label style={{display:'flex',alignItems:'center',gap:10,fontSize:13,marginBottom:16,cursor:'pointer'}}>
+        <Toggle on={tplForm.is_active}onChange={v=>setTplForm(f=>({...f,is_active:v}))}/>
+        Plantilla activa
+      </label>
+      <div style={{display:'flex',gap:10}}>
+        <Btn variant="ghost"onClick={()=>setTplModal(null)}style={{flex:1}}>Cancelar</Btn>
+        <Btn onClick={saveTpl}disabled={!tplForm.service_id||!tplForm.professional_id||saving}style={{flex:1}}>{saving?'Guardando…':'Guardar'}</Btn>
+      </div>
+    </Modal>}
+
+    {slotModal&&<Modal title="Editar clase individual"onClose={()=>setSlotModal(null)}>
+      <p style={{fontSize:12,color:'var(--text-muted)',marginBottom:12}}>Solo modifica esta clase. No afecta a la plantilla ni al resto de semanas.</p>
+      <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr',gap:10}}>
+        <Inp label="Fecha"type="date"value={slotForm.date}onChange={e=>setSlotForm(f=>({...f,date:e.target.value}))}/>
+        <Sel label="Hora inicio"value={slotForm.start_time}onChange={e=>setSlotForm(f=>({...f,start_time:e.target.value}))}options={[['','--:--'],...QHOURS.map(h=>[h,h])]}/>
+        <Sel label="Hora fin"value={slotForm.end_time}onChange={e=>setSlotForm(f=>({...f,end_time:e.target.value}))}options={[['','--:--'],...QHOURS.map(h=>[h,h])]}/>
+      </div>
+      <Inp label="Plazas máximas"type="number"min={1}value={slotForm.max_bookings}onChange={e=>setSlotForm(f=>({...f,max_bookings:e.target.value}))}style={{marginTop:10}}/>
+      <div style={{display:'flex',gap:10,marginTop:16}}>
+        <Btn variant="ghost"onClick={()=>setSlotModal(null)}style={{flex:1}}>Cancelar</Btn>
+        <Btn onClick={saveSlotEdit}disabled={!slotForm.date||!slotForm.start_time||!slotForm.end_time||saving}style={{flex:1}}>{saving?'Guardando…':'Guardar'}</Btn>
+      </div>
+    </Modal>}
+
+    {bookingsModal&&<Modal title={`Reservas — ${bookingsModal.services?.name}`}onClose={()=>setBookingsModal(null)}>
+      <div style={{marginBottom:14,fontSize:13,color:'var(--text-muted)'}}>{fDT(bookingsModal.starts_at)} · {bookingsModal.booked}/{bookingsModal.max_bookings} plazas</div>
+      {(bookingsModal.bookings||[]).filter(b=>b.status!=='cancelled').length===0?<Em icon="👥"title="Sin reservas"/>
+      :(bookingsModal.bookings||[]).filter(b=>b.status!=='cancelled').map(b=><div key={b.id}style={{display:'flex',alignItems:'center',gap:10,padding:'10px 0',borderBottom:'1px solid var(--border)'}}>
+        <div className="pac-avatar">{b.patients?.full_name?.slice(0,2).toUpperCase()||'?'}</div>
+        <div><div style={{fontSize:13,fontWeight:700}}>{b.patients?.full_name||'—'}</div><div style={{fontSize:11,color:'var(--text-muted)'}}>{b.patients?.phone||'Sin teléfono'}</div></div>
+      </div>)}
+      <Btn variant="ghost"onClick={()=>setBookingsModal(null)}style={{width:'100%',marginTop:16}}>Cerrar</Btn>
+    </Modal>}
+
+    {cancelModal&&<Modal title="¿Cancelar esta clase?"onClose={()=>setCancelModal(null)}>
+      <p style={{fontSize:13,color:'var(--text-muted)',marginBottom:16,lineHeight:1.6}}>
+        Se cancelará la clase del <strong>{fDT(cancelModal.starts_at)}</strong>.<br/>
+        Las <strong>{cancelModal.booked} reserva{cancelModal.booked!==1?'s':''}</strong> activas también se cancelarán.
+      </p>
+      <div style={{display:'flex',gap:10}}>
+        <Btn variant="ghost"onClick={()=>setCancelModal(null)}style={{flex:1}}>Volver</Btn>
+        <Btn variant="danger"onClick={()=>cancelClass(cancelModal)}style={{flex:1}}>Cancelar clase</Btn>
       </div>
     </Modal>}
   </>
@@ -2755,7 +2996,7 @@ function Facturacion(){
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
-const PAGE_TITLES={dashboard:'Dashboard',agenda:'Agenda',horarios:'Horarios',bloqueados:'Días bloqueados',espera:'Lista de espera',yoga:'Yoga',belleza:'Belleza',pacientes:'Pacientes',servicios:'Servicios',profesionales:'Profesionales',facturacion:'Facturación'}
+const PAGE_TITLES={dashboard:'Dashboard',agenda:'Agenda',horarios:'Horarios',bloqueados:'Días bloqueados',espera:'Lista de espera',yoga:'Yoga',escalada:'Escalada',belleza:'Belleza',pacientes:'Pacientes',servicios:'Servicios',profesionales:'Profesionales',facturacion:'Facturación'}
 
 export default function App(){
   const[user,setUser]=useState(null)
@@ -2790,6 +3031,7 @@ export default function App(){
       case 'bloqueados': return<Bloqueados/>
       case 'espera':     return<Espera/>
       case 'yoga':       return<SlotsManager section="yoga"/>
+      case 'escalada':   return<Escalada/>
       case 'belleza':    return<BellezaAdmin/>
       case 'pacientes':     return<Pacientes/>
       case 'profesionales': return<Profesionales/>
