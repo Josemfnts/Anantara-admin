@@ -1518,7 +1518,8 @@ function Espera(){
     setToast({msg:`Movido a ${other==='waiting'?'lista de espera':'lista de adelantar'}`,type:'ok'}); load()
   }
   const remove = async (id) => {
-    await sb.from('wait_queue').delete().eq('id', id)
+    const{error}=await sb.from('wait_queue').delete().eq('id', id)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setToast({msg:'Eliminado de la lista',type:'ok'}); load()
   }
 
