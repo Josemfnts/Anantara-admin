@@ -665,8 +665,16 @@ function Agenda(){
       .update({ current_offer_id: newAppt.id })
       .eq('appointment_id', appt.id)
 
-    // 3. TODO: enviar WhatsApp al paciente (lo hará el bot al detectar el evento via supabase realtime, o desde un endpoint)
-    setAssignModal(null); setToast({msg:'Asignación creada. Esperando confirmación del paciente.',type:'ok'}); load()
+    // 3. Notificar al paciente por WhatsApp
+    try {
+      await fetch('http://localhost:3002/notify-wl-assignment', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ appointment_id: newAppt.id })
+      })
+    } catch(e) { console.warn('notify-wl-assignment fail:', e.message) }
+
+    setAssignModal(null); setToast({msg:'Asignación creada. WhatsApp enviado al paciente.',type:'ok'}); load()
   }
 
   const saveApptChanges=async()=>{
