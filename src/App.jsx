@@ -191,7 +191,7 @@ function Dashboard({onNav}){
     const monthEnd = toK(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0))
 
     const [profsResp, tomorrowAppts, waitingResp, expediteResp, holdsResp, monthAppts] = await Promise.all([
-      sb.from('professionals').select('id,name,slot_duration').eq('is_active', true).eq('section', 'osteopathy').order('name'),
+      sb.from('professionals').select('id,name,slot_duration').eq('is_active', true).eq('section', 'osteopathy').order('name',{ascending:false}),
       sb.from('appointments').select('id,starts_at,status,reminder_sent_at,patients(full_name),services(name),professionals(id,name)')
         .gte('starts_at', tomorrow + 'T00:00:00').lte('starts_at', tomorrow + 'T23:59:59').neq('status', 'cancelled').order('starts_at'),
       sb.from('wait_queue').select('id,weeks_pautadas,created_at').eq('queue_type', 'waiting'),
@@ -470,7 +470,7 @@ function Agenda(){
     const[appts,profsR,blks,holdsR]=await Promise.all([
       sb.from('appointments').select('id,starts_at,ends_at,status,professional_id,notes,payment_method,reminder_sent_at,proposed_until,patients(id,full_name),services(name,duration_minutes),professionals(name)')
         .gte('starts_at',from).lte('starts_at',to),
-      sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name'),
+      sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name',{ascending:false}),
       sb.from('blocked_slots').select('id,professional_id,starts_at,ends_at,reason')
         .gte('starts_at',from).lte('starts_at',to),
       sb.from('cancellation_holds').select('appointment_id').is('current_offer_id',null),
