@@ -160,6 +160,8 @@ button, input, select, textarea { font-family: inherit }
 .badge-purple::before { background: #7a52b0 }
 .badge-blue   { background: #e8f4f8; color: #1a3d5c }
 .badge-blue::before   { background: #2e82b8 }
+.badge-sage   { background: var(--sage-subtle); color: var(--sage-deep) }
+.badge-sage::before   { background: var(--sage-deep) }
 
 /* ── Scrollbar custom ── */
 ::-webkit-scrollbar { width: 10px; height: 10px }

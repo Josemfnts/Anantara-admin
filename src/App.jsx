@@ -485,7 +485,7 @@ function Agenda(){
   },[weekRef]) // eslint-disable-line
 
   useEffect(()=>{load()},[load])
-  useEffect(()=>{sb.from('services').select('id,name,duration_minutes').eq('is_active',true).eq('section','osteopathy').order('duration_minutes',{ascending:false}).then(({data})=>setServices(data||[]))},[])
+  useEffect(()=>{sb.from('services').select('id,name,duration_minutes,professional_id').eq('is_active',true).eq('section','osteopathy').order('duration_minutes',{ascending:false}).then(({data})=>setServices(data||[]))},[])
 
   // Auto-seleccionar primera fecha libre al cambiar profesional
   useEffect(()=>{
@@ -1013,7 +1013,7 @@ function Agenda(){
         </div>}
       </div>
       <Sel label="Profesional"value={form.prof_id}onChange={e=>setForm(f=>({...f,prof_id:e.target.value}))}options={[['','Seleccionar…'],...profs.map(p=>[p.id,p.name])]}/>
-      <Sel label="Servicio"value={form.svc_id}onChange={e=>setForm(f=>({...f,svc_id:e.target.value}))}options={[['','Seleccionar…'],...services.map(s=>[s.id,`${s.name} (${s.duration_minutes}min)`])]}/>
+      <Sel label="Servicio"value={form.svc_id}onChange={e=>setForm(f=>({...f,svc_id:e.target.value}))}options={[['','Seleccionar…'],...services.filter(s=>!s.professional_id||s.professional_id===form.prof_id).map(s=>[s.id,`${s.name} (${s.duration_minutes}min)`])]}/>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
         <Inp label="Fecha"type="date"value={form.date}onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>
         <Sel label="Hora"value={form.time}onChange={e=>setForm(f=>({...f,time:e.target.value}))}options={[['','--:--'],...Array.from({length:(21-7)*2+2},(_,i)=>{const h=7+Math.floor(i/2),m=(i%2)*30;const v=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;return[v,v]}).filter(([v])=>v<='21:30')]}/>
@@ -2130,9 +2130,11 @@ function BellezaAdmin(){
 // ─── Servicios ────────────────────────────────────────────────────────────────
 function Servicios(){
   const[items,setItems]=useState([])
+  const[profs,setProfs]=useState([])
   const[loading,setLoading]=useState(true)
   const[modal,setModal]=useState(null)
-  const[form,setForm]=useState({name:'',duration_minutes:60,price:'',section:'osteopathy',is_active:true,description:''})
+  const EMPTY_FORM={name:'',duration_minutes:60,price:'',section:'osteopathy',is_active:true,description:'',professional_id:''}
+  const[form,setForm]=useState(EMPTY_FORM)
   const[delConfirm,setDelConfirm]=useState(null)
   const[saving,setSaving]=useState(false)
   const[toast,setToast]=useState(null)
@@ -2141,19 +2143,33 @@ function Servicios(){
 
   const load=useCallback(async()=>{
     setLoading(true)
-    const{data,error}=await sb.from('services').select('*').order('name')
+    const[{data:svcs,error},{data:ps}]=await Promise.all([
+      sb.from('services').select('*').order('section').order('name'),
+      sb.from('professionals').select('id,name,section').eq('is_active',true).order('name',{ascending:false}),
+    ])
     if(error){setToast({msg:'Error al cargar: '+error.message,type:'error'});setLoading(false);return}
-    setItems(data||[]);setLoading(false)
+    setItems(svcs||[]);setProfs(ps||[]);setLoading(false)
   },[])
   useEffect(()=>{load()},[load])
 
-  const openNew=()=>{setForm({name:'',duration_minutes:60,price:'',section:'osteopathy',is_active:true,description:''});setModal('new')}
-  const openEdit=svc=>{setForm({name:svc.name||'',duration_minutes:svc.duration_minutes||60,price:svc.price??'',section:svc.section||'osteopathy',is_active:svc.is_active!==false,description:svc.description||''});setModal(svc)}
+  const openNew=()=>{setForm(EMPTY_FORM);setModal('new')}
+  const openEdit=svc=>{setForm({name:svc.name||'',duration_minutes:svc.duration_minutes||60,price:svc.price??'',section:svc.section||'osteopathy',is_active:svc.is_active!==false,description:svc.description||'',professional_id:svc.professional_id||''});setModal(svc)}
+
+  // Filtra los profesionales relevantes según la sección del form
+  const profsForSection = profs.filter(p => p.section === form.section || form.section === 'osteopathy')
 
   const save=async()=>{
     if(!form.name.trim())return
     setSaving(true)
-    const payload={name:form.name.trim(),duration_minutes:Number(form.duration_minutes),price:form.price!==''?Number(form.price):null,section:form.section,is_active:form.is_active,description:form.description||null}
+    const payload={
+      name:form.name.trim(),
+      duration_minutes:Number(form.duration_minutes),
+      price:form.price!==''?Number(form.price):null,
+      section:form.section,
+      is_active:form.is_active,
+      description:form.description||null,
+      professional_id:form.professional_id||null,
+    }
     let error
     if(modal?.id){
       ({error}=await sb.from('services').update(payload).eq('id',modal.id))
@@ -2188,11 +2204,15 @@ function Servicios(){
 
     <div className="card"style={{overflow:'hidden'}}>
       {items.length===0?<Em icon="🛠"title="Sin servicios"sub="Crea el primer servicio del catálogo"/>
-      :items.map(svc=><div key={svc.id}className="svc-row">
+      :items.map(svc=>{
+        const profName = svc.professional_id ? profs.find(p=>p.id===svc.professional_id)?.name : null
+        return<div key={svc.id}className="svc-row">
         <span className={`svc-cat svc-cat-${CAT_CLS[svc.section]||'otro'}`}>{CATS.find(([k])=>k===svc.section)?.[1]||svc.section}</span>
         <div style={{flex:1,minWidth:0}}>
           <div style={{fontSize:13,fontWeight:700,color:svc.is_active?'var(--text)':'var(--text-muted)',display:'flex',alignItems:'center',gap:8}}>
             {svc.name}
+            {profName&&<Bg variant="sage">{profName}</Bg>}
+            {!profName&&<Bg variant="gray">Todos</Bg>}
             {!svc.is_active&&<Bg variant="gray">Inactivo</Bg>}
           </div>
           <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>
@@ -2205,12 +2225,20 @@ function Servicios(){
           <Btn variant="ghost"style={{padding:'4px 10px',fontSize:11}}onClick={()=>openEdit(svc)}>✏️ Editar</Btn>
           <Btn variant="danger"style={{padding:'4px 10px',fontSize:11}}onClick={()=>setDelConfirm(svc.id)}>🗑</Btn>
         </div>
-      </div>)}
+      </div>
+      })}
     </div>
 
     {modal&&<Modal title={modal?.id?'Editar servicio':'Nuevo servicio'}onClose={()=>setModal(null)}>
-      <Inp label="Nombre del servicio *"value={form.name}onChange={e=>setForm(f=>({...f,name:e.target.value}))}required placeholder="Ej: Consulta osteopatía"/>
-      <Sel label="Sección"value={form.section}onChange={e=>setForm(f=>({...f,section:e.target.value}))}options={CATS}/>
+      <Inp label="Nombre del servicio *"value={form.name}onChange={e=>setForm(f=>({...f,name:e.target.value}))}required placeholder="Ej: Maderoterapia"/>
+      <Sel label="Sección"value={form.section}onChange={e=>setForm(f=>({...f,section:e.target.value,professional_id:''}))}options={CATS}/>
+      <div className="field">
+        <label className="field-label">Profesional</label>
+        <select className="field-input"value={form.professional_id}onChange={e=>setForm(f=>({...f,professional_id:e.target.value}))}>
+          <option value="">Todos los profesionales</option>
+          {profsForSection.map(p=><option key={p.id}value={p.id}>{p.name}</option>)}
+        </select>
+      </div>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
         <div className="field">
           <label className="field-label">Duración (minutos)</label>
