@@ -435,6 +435,7 @@ function Agenda(){
   const[weekRef,setWeekRef]=useState(new Date())
   const[appointments,setAppts]=useState([])
   const[blocks,setBlocks]=useState([])
+  const[breaks,setBreaks]=useState([]) // recurring_breaks por profesional
   const[profs,setProfs]=useState([])
   const[services,setServices]=useState([])
   const[heldApptIds,setHeldApptIds]=useState(new Set())
@@ -468,16 +469,18 @@ function Agenda(){
   const load=useCallback(async()=>{
     setLoading(true)
     const from=toK(days[0])+'T00:00:00', to=toK(days[6])+'T23:59:59'
-    const[appts,profsR,blks,holdsR]=await Promise.all([
+    const[appts,profsR,blks,holdsR,breaksR]=await Promise.all([
       sb.from('appointments').select('id,starts_at,ends_at,status,professional_id,notes,payment_method,reminder_sent_at,proposed_until,patients(id,full_name),services(name,duration_minutes),professionals(name)')
         .gte('starts_at',from).lte('starts_at',to),
       sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name',{ascending:false}),
       sb.from('blocked_slots').select('id,professional_id,starts_at,ends_at,reason')
         .gte('starts_at',from).lte('starts_at',to),
       sb.from('cancellation_holds').select('appointment_id').is('current_offer_id',null),
+      sb.from('recurring_breaks').select('professional_id,day_of_week,start_time,end_time').in('professional_id',(profsR.data||[]).map(p=>p.id)),
     ])
     setAppts(appts.data||[])
     setBlocks(blks.data||[])
+    setBreaks(breaksR.data||[])
     setHeldApptIds(new Set((holdsR.data||[]).map(h=>h.appointment_id)))
     const ps=profsR.data||[]
     setProfs(ps)
@@ -990,6 +993,18 @@ function Agenda(){
                   🚫 Bloqueado{b.reason?` · ${b.reason}`:''}
                 </div>
               })}
+              {hi===0&&(()=>{
+                const dow=d.getDay()
+                const profId=filterProf!=='all'?filterProf:null
+                return breaks.filter(br=>br.day_of_week===dow&&(!profId||br.professional_id===profId)).map((br,i)=>{
+                  const[sh,sm]=br.start_time.slice(0,5).split(':').map(Number)
+                  const[eh,em]=br.end_time.slice(0,5).split(':').map(Number)
+                  const startMin=sh*60+sm,endMin=eh*60+em
+                  return<div key={`br-${br.professional_id}-${i}`}style={{position:'absolute',top:Math.max(0,startMin-hourFrom*60),height:Math.max(18,endMin-startMin-2),left:2,right:2,background:'#f3f4f6',border:'1px solid #d1d5db',borderRadius:4,zIndex:1,padding:'2px 6px',fontSize:10,color:'#9ca3af',fontWeight:600,overflow:'hidden',pointerEvents:'none'}}>
+                    Descanso
+                  </div>
+                })
+              })()}
               {da.map(a=>{
                 const isCancelled = a.status === 'cancelled'
                 if (isCancelled && !heldApptIds.has(a.id)) return null
