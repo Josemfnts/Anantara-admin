@@ -1321,8 +1321,10 @@ function Horarios(){
 
   const saveReminderTime = async () => {
     setSavingReminder(true)
-    await sb.from('app_config').upsert({key:'reminder_time', value:reminderTime})
+    const{error}=await sb.from('app_config')
+      .upsert({key:'reminder_time', value:reminderTime}, {onConflict:'key'})
     setSavingReminder(false)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setToast({msg:`Recordatorios a las ${reminderTime}`,type:'ok'})
   }
   const WORK_DAYS=[1,2,3,4,5,6]
