@@ -23,7 +23,7 @@ function fTime(iso){ const s=toIsoStr(iso); if(!s)return'—'; const d=new Date(
 function getWeekDays(ref) {
   const d=new Date(ref), day=d.getDay()
   const mon=new Date(d); mon.setDate(d.getDate()-(day===0?6:day-1))
-  return Array.from({length:7},(_,i)=>{ const x=new Date(mon); x.setDate(mon.getDate()+i); return x })
+  return Array.from({length:5},(_,i)=>{ const x=new Date(mon); x.setDate(mon.getDate()+i); return x })
 }
 function gMD(year,month) {
   const first=new Date(year,month,1), last=new Date(year,month+1,0)
@@ -435,7 +435,10 @@ function Agenda(){
   const[weekRef,setWeekRef]=useState(new Date())
   const[appointments,setAppts]=useState([])
   const[blocks,setBlocks]=useState([])
-  const[breaks,setBreaks]=useState([]) // recurring_breaks por profesional
+  const[breaks,setBreaks]=useState([])
+  const[patQ,setPatQ]=useState('')
+  const[patMatches,setPatMatches]=useState([]) // [{full_name, appts:[{id,starts_at}]}]
+  const[patOpen,setPatOpen]=useState(false)
   const[profs,setProfs]=useState([])
   const[services,setServices]=useState([])
   const[heldApptIds,setHeldApptIds]=useState(new Set())
@@ -933,8 +936,57 @@ function Agenda(){
 
   const HOUR_OPTIONS=Array.from({length:24},(_,i)=>i)
 
+  const searchPatient = async (q) => {
+    setPatQ(q)
+    if (q.trim().length < 2) { setPatMatches([]); setPatOpen(false); return }
+    const { data } = await sb.from('appointments')
+      .select('starts_at, patients(id, full_name)')
+      .ilike('patients.full_name', `%${q}%`)
+      .neq('status', 'cancelled')
+      .order('starts_at')
+      .limit(50)
+    if (!data?.length) { setPatMatches([]); setPatOpen(false); return }
+    const map = {}
+    for (const a of data) {
+      const name = a.patients?.full_name
+      if (!name) continue
+      if (!map[name]) map[name] = []
+      map[name].push(a.starts_at)
+    }
+    setPatMatches(Object.entries(map).map(([name, dates]) => ({ name, dates })))
+    setPatOpen(true)
+  }
+
+  const goToAppt = (dateStr) => {
+    const d = new Date(dateStr.slice(0,10)+'T12:00:00')
+    setWeekRef(d)
+    setPatQ(''); setPatMatches([]); setPatOpen(false)
+  }
+
   return<>
     {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
+    <div style={{position:'relative',marginBottom:12}}>
+      <input className="field-input" placeholder="Buscar paciente…" value={patQ}
+        onChange={e=>searchPatient(e.target.value)}
+        onBlur={()=>setTimeout(()=>setPatOpen(false),200)}
+        style={{width:'100%',paddingLeft:32}}/>
+      <span style={{position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:'var(--text-muted)',pointerEvents:'none'}}>🔍</span>
+      {patOpen && patMatches.length>0 && <div style={{position:'absolute',top:'100%',left:0,right:0,background:'#fff',border:'1px solid var(--border)',borderRadius:8,boxShadow:'0 4px 16px rgba(0,0,0,.1)',zIndex:100,maxHeight:320,overflowY:'auto'}}>
+        {patMatches.map(({name, dates})=><div key={name} style={{borderBottom:'1px solid var(--border)'}}>
+          <div style={{padding:'8px 12px',fontWeight:700,fontSize:13,color:'var(--text)',background:'var(--cream)',cursor:'pointer'}}
+            onClick={()=>goToAppt(dates[0])}>
+            {name} <span style={{fontSize:11,color:'var(--text-muted)',fontWeight:400}}>({dates.length} cita{dates.length!==1?'s':''})</span>
+          </div>
+          {dates.length>1 && dates.map((dt,i)=><div key={i} style={{padding:'5px 12px 5px 24px',fontSize:12,color:'var(--text-muted)',cursor:'pointer'}}
+            onClick={()=>goToAppt(dt)}
+            onMouseEnter={e=>e.currentTarget.style.background='var(--cream)'}
+            onMouseLeave={e=>e.currentTarget.style.background=''}>
+            {new Date(dt.slice(0,10)+'T12:00:00').toLocaleDateString('es-ES',{weekday:'short',day:'numeric',month:'short',year:'numeric'})} · {dt.slice(11,16)}
+          </div>)}
+        </div>)}
+      </div>}
+    </div>
+
     <div className="agenda-toolbar">
       <div className="agenda-toolbar-left">
         <span className="section-title">{weekStr}</span>
@@ -1258,6 +1310,20 @@ function Horarios(){
   const[toast,setToast]=useState(null)
   const[waPhone,setWaPhone]=useState('')
   const[agendaTime,setAgendaTime]=useState('')
+  const[reminderTime,setReminderTime]=useState('10:00')
+  const[savingReminder,setSavingReminder]=useState(false)
+
+  useEffect(()=>{
+    sb.from('app_config').select('value').eq('key','reminder_time').maybeSingle()
+      .then(({data})=>{ if(data?.value) setReminderTime(data.value) })
+  },[])
+
+  const saveReminderTime = async () => {
+    setSavingReminder(true)
+    await sb.from('app_config').upsert({key:'reminder_time', value:reminderTime})
+    setSavingReminder(false)
+    setToast({msg:`Recordatorios a las ${reminderTime}`,type:'ok'})
+  }
   const WORK_DAYS=[1,2,3,4,5,6]
   const DAY_NAMES=['','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
 
@@ -1368,6 +1434,18 @@ function Horarios(){
 
   return<>
     {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
+
+    <div className="card" style={{padding:'14px 16px',marginBottom:16,display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
+      <span style={{fontWeight:700,fontSize:13}}>Hora recordatorios D-1</span>
+      <div className="field" style={{margin:0,flex:'0 0 auto'}}>
+        <select className="field-input" style={{width:'auto'}} value={reminderTime} onChange={e=>setReminderTime(e.target.value)}>
+          {Array.from({length:24*4},(_,i)=>{const h=Math.floor(i/4),m=(i%4)*15;const v=`${pad(h)}:${pad(m)}`;return<option key={v}value={v}>{v}</option>})}
+        </select>
+      </div>
+      <Btn onClick={saveReminderTime} disabled={savingReminder}>{savingReminder?'Guardando…':'Guardar hora'}</Btn>
+      <span style={{fontSize:11,color:'var(--text-muted)'}}>El bot manda WhatsApp a los pacientes del día siguiente a esta hora</span>
+    </div>
+
     <div className="section-header">
       <span className="section-title">Horarios de trabajo</span>
       <Btn onClick={save}disabled={saving}>{saving?'Guardando…':'Guardar cambios'}</Btn>
