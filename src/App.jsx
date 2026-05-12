@@ -1494,6 +1494,8 @@ function Espera(){
   const[fbMap,setFbMap]=useState({})
   const[toast,setToast]=useState(null)
   const[assignModal,setAssignModal]=useState(null) // {row, candidates: [{appt, fits}]}
+  const[editModal,setEditModal]=useState(null) // {row}
+  const[editForm,setEditForm]=useState({target_date:'',weeks_pautadas:'',preferred_hour:''})
 
   const load=useCallback(async()=>{
     setLoading(true)
@@ -1594,6 +1596,26 @@ function Espera(){
     setAssignModal(null); setToast({msg:'Hueco asignado. Esperando confirmación del paciente.',type:'ok'}); load()
   }
 
+  const openEdit = (row) => {
+    setEditForm({
+      target_date: row.target_date || '',
+      weeks_pautadas: row.weeks_pautadas != null ? String(row.weeks_pautadas) : '',
+      preferred_hour: row.preferred_hour != null ? String(row.preferred_hour) : '',
+    })
+    setEditModal(row)
+  }
+
+  const saveEdit = async () => {
+    const payload = {
+      target_date: editForm.target_date || null,
+      weeks_pautadas: editForm.weeks_pautadas !== '' ? Number(editForm.weeks_pautadas) : null,
+      preferred_hour: editForm.preferred_hour !== '' ? Number(editForm.preferred_hour) : null,
+    }
+    const{error}=await sb.from('wait_queue').update(payload).eq('id', editModal.id)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setEditModal(null); setToast({msg:'Actualizado',type:'ok'}); load()
+  }
+
   const weeksLeft = (row) => {
     if (row.weeks_pautadas == null) return null
     const passed = (Date.now() - new Date(row.created_at).getTime()) / (7*24*36e5)
@@ -1640,8 +1662,8 @@ function Espera(){
                   <div style={{fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.patients?.full_name}</div>
                   <div style={{fontSize:11,color:'var(--text-muted)'}}>{r.patients?.phone}</div>
                 </div>
-                <div>{wl!=null ? (wl===0 ? <Bg variant="gold">Vencida</Bg> : `${wl} sem`) : '—'}</div>
-                <div>{r.target_date || '—'}</div>
+                <div>{wl!=null ? (wl===0 ? <Bg variant="gold">Vencida</Bg> : `${wl} sem`) : <span style={{color:'var(--text-muted)',fontSize:11}}>Sin límite</span>}</div>
+                <div>{r.target_date || <span style={{color:'var(--text-muted)',fontSize:11}}>Cualquier fecha</span>}</div>
                 <div>{r.preferred_hour!=null ? `${pad(r.preferred_hour)}:00` : 'Cualquiera'}</div>
                 <div style={{minWidth:0}}>
                   {fb ? <span style={fb.status==='cancelled'?{color:'#dc2626'}:{}}>{fDT(fb.starts_at)}</span> : <span style={{color:'#dc2626'}}>Sin cita</span>}
@@ -1650,6 +1672,7 @@ function Espera(){
                   <Btn variant="ghost" style={{padding:'6px 10px',fontSize:13,minHeight:34}} onClick={()=>moveUp(r, idx)} disabled={idx===0} title="Subir">⬆</Btn>
                   <Btn variant="ghost" style={{padding:'6px 10px',fontSize:13,minHeight:34}} onClick={()=>moveDown(r, idx)} disabled={idx===rows.length-1} title="Bajar">⬇</Btn>
                   <Btn variant="ghost" style={{padding:'6px 10px',fontSize:11,minHeight:34}} onClick={()=>moveToOther(r)}>{r.queue_type==='waiting'?'→ Adelantar':'→ Espera'}</Btn>
+                  <Btn variant="ghost" style={{padding:'6px 10px',fontSize:13,minHeight:34}} onClick={()=>openEdit(r)} title="Editar fechas">✏️</Btn>
                   <Btn variant="ghost" style={{padding:'6px 10px',fontSize:13,minHeight:34}} onClick={()=>openAssign(r)} title="Buscar hueco cancelado">🔍</Btn>
                   <Btn variant="danger" style={{padding:'6px 10px',fontSize:13,minHeight:34}} onClick={()=>remove(r.id)} title="Quitar">🗑</Btn>
                 </div>
@@ -1687,6 +1710,28 @@ function Espera(){
         }
       </div>
       <Btn variant="ghost" onClick={()=>setAssignModal(null)} style={{marginTop:8,width:'100%'}}>Cerrar</Btn>
+    </Modal>}
+
+    {editModal&&<Modal title="Editar parámetros de espera" onClose={()=>setEditModal(null)}>
+      <p style={{fontSize:12,color:'var(--text-muted)',marginBottom:12}}>{editModal.patients?.full_name}</p>
+      <Inp label="Fecha pautada (no ofrecer antes de esta fecha)" type="date"
+        value={editForm.target_date}
+        onChange={e=>setEditForm(f=>({...f,target_date:e.target.value}))}/>
+      <Inp label="Semanas pautadas (para calcular si lleva demasiado tiempo)" type="number" min={1} max={52}
+        placeholder="Ej: 4"
+        value={editForm.weeks_pautadas}
+        onChange={e=>setEditForm(f=>({...f,weeks_pautadas:e.target.value}))}/>
+      <div className="field">
+        <label className="field-label">Hora preferida</label>
+        <select className="field-input" value={editForm.preferred_hour} onChange={e=>setEditForm(f=>({...f,preferred_hour:e.target.value}))}>
+          <option value="">Cualquier hora</option>
+          {Array.from({length:13},(_,i)=>i+7).map(h=><option key={h} value={h}>{pad(h)}:00</option>)}
+        </select>
+      </div>
+      <div style={{display:'flex',gap:10,marginTop:4}}>
+        <Btn variant="ghost" onClick={()=>setEditModal(null)} style={{flex:1}}>Cancelar</Btn>
+        <Btn onClick={saveEdit} style={{flex:1}}>Guardar</Btn>
+      </div>
     </Modal>}
   </>
 }
