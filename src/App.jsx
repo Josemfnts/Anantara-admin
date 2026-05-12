@@ -472,19 +472,20 @@ function Agenda(){
   const load=useCallback(async()=>{
     setLoading(true)
     const from=toK(days[0])+'T00:00:00', to=toK(days[6])+'T23:59:59'
-    const[appts,profsR,blks,holdsR,breaksR]=await Promise.all([
+    const[appts,profsR,blks,holdsR]=await Promise.all([
       sb.from('appointments').select('id,starts_at,ends_at,status,professional_id,notes,payment_method,reminder_sent_at,proposed_until,patients(id,full_name),services(name,duration_minutes),professionals(name)')
         .gte('starts_at',from).lte('starts_at',to),
       sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name',{ascending:false}),
       sb.from('blocked_slots').select('id,professional_id,starts_at,ends_at,reason')
         .gte('starts_at',from).lte('starts_at',to),
       sb.from('cancellation_holds').select('appointment_id').is('current_offer_id',null),
-      sb.from('recurring_breaks').select('professional_id,day_of_week,start_time,end_time'),
     ])
     setAppts(appts.data||[])
     setBlocks(blks.data||[])
-    setBreaks(breaksR.data||[])
     setHeldApptIds(new Set((holdsR.data||[]).map(h=>h.appointment_id)))
+    // Breaks en query separada para no bloquear el load si falla
+    sb.from('recurring_breaks').select('professional_id,day_of_week,start_time,end_time')
+      .then(({data})=>setBreaks(data||[])).catch(()=>{})
     const ps=profsR.data||[]
     setProfs(ps)
     setFilterProf(prev=>prev==='all'&&ps.length>0?ps[0].id:prev)
@@ -1048,7 +1049,7 @@ function Agenda(){
               {hi===0&&(()=>{
                 const dow=d.getDay()
                 const profId=filterProf!=='all'?filterProf:null
-                return breaks.filter(br=>br.day_of_week===dow&&(!profId||br.professional_id===profId)).map((br,i)=>{
+                return breaks.filter(br=>br.start_time&&br.end_time&&br.day_of_week===dow&&(!profId||br.professional_id===profId)).map((br,i)=>{
                   const[sh,sm]=br.start_time.slice(0,5).split(':').map(Number)
                   const[eh,em]=br.end_time.slice(0,5).split(':').map(Number)
                   const startMin=sh*60+sm,endMin=eh*60+em
