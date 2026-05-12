@@ -772,16 +772,30 @@ function Agenda(){
     const proposedUntil = form.leave_pending
       ? localDT(new Date(Date.now() + 36 * 60 * 60 * 1000))
       : null
-    const{error}=await sb.from('appointments').insert({
+    const{data:newAppt,error}=await sb.from('appointments').insert({
       patient_id:selPat.id,professional_id:form.prof_id,service_id:form.svc_id,
       starts_at:localDT(startDT),ends_at:localDT(endDT),notes:form.notes||null,
       payment_method:form.payment_method||null,
       status,
       proposed_until: proposedUntil,
-    })
+    }).select('id').single()
     if(error){setToast({msg:error.message,type:'error'});return}
     setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:'',leave_pending:true})
-    setToast({msg:'Cita creada',type:'ok'});load()
+    // Si se dejó en pending, notificar al paciente por WhatsApp
+    if(status==='pending' && newAppt?.id){
+      try{
+        const r=await fetch('http://localhost:3002/notify-pending-proposal',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({appointment_id:newAppt.id})
+        })
+        setToast({msg: r.ok ? 'Cita creada. WhatsApp enviado al paciente.' : 'Cita creada. ⚠️ WhatsApp no enviado (bot apagado?)',type:r.ok?'ok':'error'})
+      }catch(e){
+        setToast({msg:'Cita creada. ⚠️ Bot no disponible.',type:'error'})
+      }
+    } else {
+      setToast({msg:'Cita creada',type:'ok'})
+    }
+    load()
   }
 
   // ── Drag-to-block / click-to-create ─────────────────────────────────────────
