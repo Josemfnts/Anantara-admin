@@ -436,6 +436,7 @@ function Agenda(){
   const[blocks,setBlocks]=useState([])
   const[profs,setProfs]=useState([])
   const[services,setServices]=useState([])
+  const[heldApptIds,setHeldApptIds]=useState(new Set())
   const[loading,setLoading]=useState(true)
   const[modal,setModal]=useState(null)
   const[blockModal,setBlockModal]=useState(null) // {mode:'create'|'view', professional_id, date, start, end, reason, id?}
@@ -466,15 +467,17 @@ function Agenda(){
   const load=useCallback(async()=>{
     setLoading(true)
     const from=toK(days[0])+'T00:00:00', to=toK(days[6])+'T23:59:59'
-    const[appts,profsR,blks]=await Promise.all([
+    const[appts,profsR,blks,holdsR]=await Promise.all([
       sb.from('appointments').select('id,starts_at,ends_at,status,professional_id,notes,payment_method,reminder_sent_at,proposed_until,patients(id,full_name),services(name,duration_minutes),professionals(name)')
         .gte('starts_at',from).lte('starts_at',to),
       sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name'),
       sb.from('blocked_slots').select('id,professional_id,starts_at,ends_at,reason')
         .gte('starts_at',from).lte('starts_at',to),
+      sb.from('cancellation_holds').select('appointment_id').is('current_offer_id',null),
     ])
     setAppts(appts.data||[])
     setBlocks(blks.data||[])
+    setHeldApptIds(new Set((holdsR.data||[]).map(h=>h.appointment_id)))
     const ps=profsR.data||[]
     setProfs(ps)
     setFilterProf(prev=>prev==='all'&&ps.length>0?ps[0].id:prev)
@@ -960,11 +963,12 @@ function Agenda(){
                 </div>
               })}
               {da.map(a=>{
+                const isCancelled = a.status === 'cancelled'
+                if (isCancelled && !heldApptIds.has(a.id)) return null
                 const t=a.starts_at?.slice(11,16)||'08:00'
                 const et=a.ends_at?.slice(11,16)
                 const dur=et?(new Date('2000-01-01T'+et)-new Date('2000-01-01T'+t))/60000:60
                 const c=apptColor(a)
-                const isCancelled = a.status === 'cancelled'
                 const cancelledStyle = isCancelled ? {
                   background: 'repeating-linear-gradient(45deg, #fee2e2, #fee2e2 6px, #fecaca 6px, #fecaca 12px)',
                   borderLeft: '3px solid #dc2626',
