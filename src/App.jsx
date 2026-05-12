@@ -232,7 +232,7 @@ function Dashboard({onNav}){
     const overdue = (waitingResp.data || []).filter(r => {
       if (r.weeks_pautadas == null) return false
       const elapsed = (Date.now() - new Date(r.created_at).getTime()) / (7 * 24 * 36e5)
-      return elapsed >= r.weeks_pautadas
+      return elapsed > r.weeks_pautadas  // untilDue < 0
     }).length
     setLists({
       waiting: (waitingResp.data || []).length,
@@ -1616,10 +1616,23 @@ function Espera(){
     setEditModal(null); setToast({msg:'Actualizado',type:'ok'}); load()
   }
 
-  const weeksLeft = (row) => {
+  // Fecha teórica ideal = created_at + weeks_pautadas*7, ajustada si cae en finde
+  const fechaPautada = (row) => {
     if (row.weeks_pautadas == null) return null
-    const passed = (Date.now() - new Date(row.created_at).getTime()) / (7*24*36e5)
-    return Math.max(0, row.weeks_pautadas - Math.floor(passed))
+    const d = new Date(new Date(row.created_at).getTime() + row.weeks_pautadas * 7 * 24 * 36e5)
+    const dow = d.getDay()
+    if (dow === 6) d.setDate(d.getDate() - 1) // sábado → viernes
+    if (dow === 0) d.setDate(d.getDate() + 1) // domingo → lunes
+    return d
+  }
+
+  // { untilAppt, untilDue } en semanas — untilDue puede ser negativo (ya va tarde)
+  const weeksCalc = (row) => {
+    const fb = fbMap[row.fallback_appointment_id]
+    const untilAppt = fb ? (new Date(fb.starts_at) - Date.now()) / (7*24*36e5) : null
+    const fp = fechaPautada(row)
+    const untilDue = fp ? (fp - Date.now()) / (7*24*36e5) : null
+    return { untilAppt, untilDue }
   }
 
   return<>
@@ -1655,15 +1668,24 @@ function Espera(){
             </div>
             {rows.map((r, idx) => {
               const fb = fbMap[r.fallback_appointment_id]
-              const wl = weeksLeft(r)
+              const { untilAppt, untilDue } = weeksCalc(r)
+              const showRatio = untilAppt != null || untilDue != null
+              const isLate = untilDue != null && untilDue < 0
+              const fmt = v => v == null ? '?' : (v >= 0 ? `+${Math.round(v)}` : String(Math.round(v)))
               return <div key={r.id} style={{display:'grid',gridTemplateColumns:'50px 1.5fr 1fr 1fr 0.8fr 1.2fr 1.4fr',gap:8,padding:'14px',borderBottom:'1px solid var(--border)',alignItems:'center',fontSize:13}}>
                 <div style={{fontWeight:700,fontSize:15,color:'var(--sage-deep)'}}>{r.priority_order}</div>
                 <div style={{minWidth:0}}>
                   <div style={{fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.patients?.full_name}</div>
                   <div style={{fontSize:11,color:'var(--text-muted)'}}>{r.patients?.phone}</div>
                 </div>
-                <div>{wl!=null ? (wl===0 ? <Bg variant="gold">Vencida</Bg> : `${wl} sem`) : <span style={{color:'var(--text-muted)',fontSize:11}}>Sin límite</span>}</div>
-                <div>{r.target_date || <span style={{color:'var(--text-muted)',fontSize:11}}>Cualquier fecha</span>}</div>
+                <div>
+                  {showRatio
+                    ? <span style={{fontWeight:600,color: isLate ? '#dc2626' : untilDue != null && untilDue < 1 ? '#d97706' : 'var(--text)'}}>
+                        {untilAppt != null ? `${Math.round(untilAppt)} sem` : '?'} / {untilDue != null ? `${Math.round(untilDue)} sem` : '?'}
+                      </span>
+                    : <span style={{color:'var(--text-muted)',fontSize:11}}>Sin límite</span>}
+                </div>
+                <div>{(()=>{const fp=fechaPautada(r);if(!fp)return<span style={{color:'var(--text-muted)',fontSize:11}}>—</span>;const isLate=fp<new Date();return<span style={{fontWeight:600,color:isLate?'#dc2626':'var(--text)'}}>{fp.toLocaleDateString('es-ES',{day:'numeric',month:'short'})}{isLate?' ⚠':''}</span>})()}</div>
                 <div>{r.preferred_hour!=null ? `${pad(r.preferred_hour)}:00` : 'Cualquiera'}</div>
                 <div style={{minWidth:0}}>
                   {fb ? <span style={fb.status==='cancelled'?{color:'#dc2626'}:{}}>{fDT(fb.starts_at)}</span> : <span style={{color:'#dc2626'}}>Sin cita</span>}
