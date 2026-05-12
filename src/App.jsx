@@ -471,7 +471,7 @@ function Agenda(){
 
   const load=useCallback(async()=>{
     setLoading(true)
-    const from=toK(days[0])+'T00:00:00', to=toK(days[6])+'T23:59:59'
+    const from=toK(days[0])+'T00:00:00', to=toK(days[days.length-1])+'T23:59:59'
     const[appts,profsR,blks,holdsR]=await Promise.all([
       sb.from('appointments').select('id,starts_at,ends_at,status,professional_id,notes,payment_method,reminder_sent_at,proposed_until,patients(id,full_name),services(name,duration_minutes),professionals(name)')
         .gte('starts_at',from).lte('starts_at',to),
