@@ -436,6 +436,7 @@ function Agenda(){
   const[appointments,setAppts]=useState([])
   const[blocks,setBlocks]=useState([])
   const[breaks,setBreaks]=useState([])
+  const[blockedDays,setBlockedDays]=useState([]) // [{professional_id, date}]
   const[patQ,setPatQ]=useState('')
   const[patMatches,setPatMatches]=useState([]) // [{full_name, appts:[{id,starts_at}]}]
   const[patOpen,setPatOpen]=useState(false)
@@ -483,9 +484,12 @@ function Agenda(){
     setAppts(appts.data||[])
     setBlocks(blks.data||[])
     setHeldApptIds(new Set((holdsR.data||[]).map(h=>h.appointment_id)))
-    // Breaks en query separada para no bloquear el load si falla
+    // Breaks y blocked_days en queries separadas para no bloquear el load si fallan
     sb.from('recurring_breaks').select('professional_id,day_of_week,start_time,end_time')
       .then(({data})=>setBreaks(data||[])).catch(()=>{})
+    sb.from('blocked_days').select('professional_id,date')
+      .gte('date', toK(days[0])).lte('date', toK(days[days.length-1]))
+      .then(({data})=>setBlockedDays(data||[])).catch(()=>{})
     const ps=profsR.data||[]
     setProfs(ps)
     setFilterProf(prev=>prev==='all'&&ps.length>0?ps[0].id:prev)
@@ -1034,8 +1038,12 @@ function Agenda(){
             const da=hi===0?dayAppts(d):[]
             const bl=hi===0?dayBlocks(d):[]
             const showDrag=hi===0&&drag&&drag.di===di
-            return<div key={`c-${h}-${di}`}className="ag-col"style={{gridColumn:di+2,gridRow:hi+2,cursor:filterProf!=='all'?'crosshair':'default',touchAction:'none'}}
-              onPointerDown={e=>startDrag(e,hi,di)}>
+            const dateKey=toK(d)
+            const profId=filterProf!=='all'?filterProf:null
+            const isFullDayBlocked = blockedDays.some(bd => bd.date===dateKey && (!profId || bd.professional_id===profId))
+            return<div key={`c-${h}-${di}`}className="ag-col"style={{gridColumn:di+2,gridRow:hi+2,cursor:filterProf!=='all'&&!isFullDayBlocked?'crosshair':'default',touchAction:'none'}}
+              onPointerDown={e=>!isFullDayBlocked&&startDrag(e,hi,di)}>
+              {hi===0&&isFullDayBlocked&&<div style={{position:'absolute',top:0,height:(hourTo-hourFrom)*SLOT_H,left:0,right:0,background:'repeating-linear-gradient(45deg,#fee2e2,#fee2e2 8px,#fecaca 8px,#fecaca 16px)',border:'1px solid #dc2626',display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:700,color:'#7f1d1d',zIndex:3,pointerEvents:'none'}}>🚫 Día bloqueado</div>}
               {bl.map(b=>{
                 const[sh,sm]=b.starts_at.slice(11,16).split(':').map(Number)
                 const[eh,em]=b.ends_at.slice(11,16).split(':').map(Number)
