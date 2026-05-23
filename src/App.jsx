@@ -7,6 +7,21 @@ const sb = createClient(
   { auth: { storageKey: 'anantara-admin' } }
 )
 
+// URL del bot WhatsApp (Cloudflare Tunnel / IP fija LAN / localhost en dev).
+// Se configura en Vercel Environment Variables como VITE_BOT_URL.
+// Ejemplo prod: https://bot-anantara.example.com
+// Ejemplo dev:  http://localhost:3002
+const BOT_URL = import.meta.env.VITE_BOT_URL || 'http://localhost:3002'
+const BOT_SECRET = import.meta.env.VITE_BOT_SECRET || ''
+
+// Wrapper de fetch al bot: añade base URL + header Authorization si hay secreto.
+function botFetch(path, init = {}) {
+  const headers = new Headers(init.headers || {})
+  if (BOT_SECRET) headers.set('Authorization', `Bearer ${BOT_SECRET}`)
+  if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+  return fetch(`${BOT_URL}${path}`, { ...init, headers })
+}
+
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const MONTHS  = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic']
@@ -584,9 +599,8 @@ function Agenda(){
     if(error){setFollowupBusy(false);setToast({msg:'Error: '+error.message,type:'error'});return}
     // Disparar al bot inmediatamente; el cron seguirá como respaldo si el bot está caído.
     try {
-      await fetch('http://localhost:3002/trigger-followup-search', {
+      await botFetch('/trigger-followup-search', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ search_id: search.id })
       })
     } catch(e) { console.warn('trigger-followup-search fail:', e.message) }
@@ -679,9 +693,8 @@ function Agenda(){
     // 3. Notificar al paciente por WhatsApp
     let waSent = false
     try {
-      const r = await fetch('http://localhost:3002/notify-wl-assignment', {
+      const r = await botFetch('/notify-wl-assignment', {
         method: 'POST',
-        headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ appointment_id: newAppt.id })
       })
       waSent = r.ok
@@ -795,8 +808,8 @@ function Agenda(){
     // Si se dejó en pending, notificar al paciente por WhatsApp
     if(status==='pending' && newAppt?.id){
       try{
-        const r=await fetch('http://localhost:3002/notify-pending-proposal',{
-          method:'POST',headers:{'Content-Type':'application/json'},
+        const r=await botFetch('/notify-pending-proposal',{
+          method:'POST',
           body:JSON.stringify({appointment_id:newAppt.id})
         })
         setToast({msg: r.ok ? 'Cita creada. WhatsApp enviado al paciente.' : 'Cita creada. ⚠️ WhatsApp no enviado (bot apagado?)',type:r.ok?'ok':'error'})
@@ -1703,9 +1716,8 @@ function Espera(){
     await sb.from('cancellation_holds').update({ current_offer_id: newAppt.id }).eq('appointment_id', cancelledAppt.id)
     // Disparar WhatsApp via endpoint del bot (Brecha 3)
     try {
-      await fetch('http://localhost:3002/notify-wl-assignment', {
+      await botFetch('/notify-wl-assignment', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ appointment_id: newAppt.id })
       })
     } catch(e) {
@@ -2238,7 +2250,7 @@ function BellezaAdmin(){
     if(msgs.length===0){setToast({msg:'Asigna horas antes de enviar',type:'error'});return}
     setSending(s.date+'__'+s.service?.id)
     try{
-      const res=await fetch('http://localhost:3001/send-beauty',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:msgs})})
+      const res=await botFetch('/send-beauty',{method:'POST',body:JSON.stringify({messages:msgs})})
       if(!res.ok)throw new Error(await res.text())
       setToast({msg:`${msgs.length} mensaje${msgs.length!==1?'s':''} enviado${msgs.length!==1?'s':''}`,type:'ok'})
     }catch(e){
