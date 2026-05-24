@@ -1469,9 +1469,9 @@ function Horarios(){
       <Btn onClick={saveReminderTime} disabled={savingReminder}>{savingReminder?'Guardando…':'Guardar hora'}</Btn>
       <Btn variant="ghost" onClick={async()=>{
         try{
-          const r=await fetch('http://localhost:3002/reminders')
+          const r=await botFetch('/reminders')
           setToast({msg: r.ok ? 'Recordatorios enviados (mira logs del bot)' : '⚠️ Bot no respondió',type: r.ok ? 'ok' : 'error'})
-        }catch(e){ setToast({msg:'⚠️ Bot apagado',type:'error'}) }
+        }catch(e){ setToast({msg:'⚠️ Bot inaccesible: '+e.message,type:'error'}) }
       }}>⏰ Enviar ahora (prueba)</Btn>
       <span style={{fontSize:11,color:'var(--text-muted)'}}>El bot manda WhatsApp a los pacientes del día siguiente a esta hora</span>
     </div>
