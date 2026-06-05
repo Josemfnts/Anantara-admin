@@ -471,6 +471,9 @@ function Agenda(){
   const[editNotes,setEditNotes]=useState('')
   const[editProfId,setEditProfId]=useState('')
   const[editPayment,setEditPayment]=useState('')
+  const[editDate,setEditDate]=useState('')
+  const[editTime,setEditTime]=useState('')
+  const[editServiceId,setEditServiceId]=useState('')
   const[followupWeeks,setFollowupWeeks]=useState('')
   const[followupHour,setFollowupHour]=useState('any')
   const[followupBusy,setFollowupBusy]=useState(false)
@@ -552,6 +555,14 @@ function Agenda(){
       const isPast = modal.starts_at && new Date(modal.starts_at.slice(0,19)) < new Date()
       setEditPayment(modal.payment_method || (isPast ? 'efectivo' : ''))
       setFollowupWeeks(''); setFollowupHour('any')
+      // Fecha y hora actuales de la cita para edición
+      if (modal.starts_at) {
+        setEditDate(modal.starts_at.slice(0,10))
+        setEditTime(modal.starts_at.slice(11,16))
+      } else {
+        setEditDate(''); setEditTime('')
+      }
+      setEditServiceId(modal.service_id || services.find(s=>s.name===modal.services?.name)?.id || '')
     }
   },[modal])
 
@@ -708,7 +719,45 @@ function Agenda(){
 
   const saveApptChanges=async()=>{
     setSaving(true)
-    const{error}=await sb.from('appointments').update({notes:editNotes||null,professional_id:editProfId||modal.professional_id,payment_method:editPayment||null}).eq('id',modal.id)
+    // Construir update con fecha/hora/servicio si han cambiado
+    const update = {
+      notes: editNotes || null,
+      professional_id: editProfId || modal.professional_id,
+      payment_method: editPayment || null,
+    }
+    // Si se editó fecha/hora o servicio, recalcular starts_at y ends_at
+    const origDate = modal.starts_at?.slice(0,10) || ''
+    const origTime = modal.starts_at?.slice(11,16) || ''
+    const dateChanged = editDate && editDate !== origDate
+    const timeChanged = editTime && editTime !== origTime
+    const serviceChanged = editServiceId && editServiceId !== modal.service_id
+    if (dateChanged || timeChanged || serviceChanged) {
+      const svc = services.find(s=>s.id===editServiceId) || services.find(s=>s.name===modal.services?.name)
+      const dur = svc?.duration_minutes || 60
+      const dateStr = editDate || origDate
+      const timeStr = editTime || origTime
+      if (!dateStr || !timeStr) {
+        setSaving(false)
+        setToast({msg:'Fecha y hora son obligatorias',type:'error'})
+        return
+      }
+      const startDT = new Date(`${dateStr}T${timeStr}:00`)
+      const endDT = new Date(startDT.getTime() + dur*60000)
+      // Comprobar solape con OTRAS citas del mismo profesional
+      const targetProfId = editProfId || modal.professional_id
+      const { data: overlap } = await sb.from('appointments').select('id')
+        .eq('professional_id', targetProfId).neq('status','cancelled').neq('id', modal.id)
+        .gte('starts_at', localDT(startDT)).lt('starts_at', localDT(endDT))
+      if (overlap?.length) {
+        setSaving(false)
+        setToast({msg:'Ese horario ya está ocupado por otra cita',type:'error'})
+        return
+      }
+      update.starts_at = localDT(startDT)
+      update.ends_at = localDT(endDT)
+      if (serviceChanged) update.service_id = editServiceId
+    }
+    const{error}=await sb.from('appointments').update(update).eq('id',modal.id)
     setSaving(false)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setToast({msg:'Cita actualizada',type:'ok'}); setModal(null); load()
@@ -1154,9 +1203,18 @@ function Agenda(){
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}}>
         <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:2}}>PACIENTE</div><div style={{fontSize:14,fontWeight:700}}>{modal.patients?.full_name||'—'}</div></div>
         <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:2}}>ESTADO</div><Bg variant={STATUS_CLS[modal.status]?.replace('badge-','')||'gray'}>{STATUS_TXT[modal.status]||modal.status}</Bg></div>
-        <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:2}}>SERVICIO</div><div style={{fontSize:13}}>{modal.services?.name||'—'}</div></div>
-        <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:2}}>FECHA Y HORA</div><div style={{fontSize:13}}>{fDT(modal.starts_at)}</div></div>
       </div>
+
+      {/* Fecha y hora editables */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+        <Inp label="Fecha" type="date" value={editDate} onChange={e=>setEditDate(e.target.value)}/>
+        <Sel label="Hora" value={editTime} onChange={e=>setEditTime(e.target.value)}
+          options={[['','--:--'],...Array.from({length:(21-7)*2+2},(_,i)=>{const h=7+Math.floor(i/2),m=(i%2)*30;const v=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;return[v,v]}).filter(([v])=>v<='21:30')]}/>
+      </div>
+
+      {/* Servicio editable */}
+      <Sel label="Servicio" value={editServiceId} onChange={e=>setEditServiceId(e.target.value)}
+        options={[['','Seleccionar…'],...services.filter(s=>!s.professional_id||s.professional_id===(editProfId||modal.professional_id)).map(s=>[s.id,`${s.name} (${s.duration_minutes}min)`])]}/>
 
       {/* Reasignar profesional */}
       <div className="field">
@@ -2050,6 +2108,11 @@ function Pacientes(){
   const[newPhone,setNewPhone]=useState('')
   const[savingNew,setSavingNew]=useState(false)
   const[toast,setToast]=useState(null)
+  // Editar paciente existente
+  const[editModalPat,setEditModalPat]=useState(null) // null o el paciente seleccionado
+  const[editName,setEditName]=useState('')
+  const[editPhone,setEditPhone]=useState('')
+  const[savingEdit,setSavingEdit]=useState(false)
   const PAGE_SIZE=20
 
   useEffect(()=>{const t=setTimeout(()=>fetchPats(query,0),300);return()=>clearTimeout(t)},[query])
@@ -2106,18 +2169,47 @@ function Pacientes(){
     fetchPats(query, 0)
   }
 
+  const openEditPatient = () => {
+    if (!selected) return
+    setEditName(selected.full_name || '')
+    setEditPhone(selected.phone || '')
+    setEditModalPat(selected)
+  }
+
+  const savePatientEdit = async () => {
+    const name = editName.trim()
+    const phone = normalizePhone(editPhone)
+    if (!name) { setToast({msg:'Nombre obligatorio',type:'error'}); return }
+    if (!phone) { setToast({msg:'Teléfono inválido (debe ser español, 9 dígitos)',type:'error'}); return }
+    // Si el teléfono cambió, verificar que no exista otro paciente con él
+    if (phone !== editModalPat.phone) {
+      const { data: ex } = await sb.from('patients').select('id, full_name').ilike('phone', `%${phone}`).neq('id', editModalPat.id).maybeSingle()
+      if (ex) { setToast({msg:`Ese teléfono ya lo tiene ${ex.full_name}`,type:'error'}); return }
+    }
+    setSavingEdit(true)
+    const { error } = await sb.from('patients').update({ full_name: name, phone }).eq('id', editModalPat.id)
+    setSavingEdit(false)
+    if (error) { setToast({msg:'Error: '+error.message,type:'error'}); return }
+    setEditModalPat(null)
+    setToast({msg:'Paciente actualizado',type:'ok'})
+    // Refrescar lista + selección
+    const { data: updated } = await sb.from('patients').select('id,full_name,phone,created_at').eq('id', editModalPat.id).maybeSingle()
+    if (updated) setSelected(updated)
+    fetchPats(query, page)
+  }
+
   return<div className="pac-layout">
     {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
     <div>
-      <div style={{display:'flex',gap:8,marginBottom:10,alignItems:'stretch'}}>
-        <div className="pac-search-bar" style={{margin:0,flex:1}}>
-          <span style={{fontSize:16}}>🔍</span>
-          <input className="pac-search-input"placeholder="Buscar por nombre o teléfono…"value={query}onChange={e=>setQuery(e.target.value)}autoFocus/>
-          {query&&<button style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-muted)',fontSize:14}}onClick={()=>setQuery('')}>✕</button>}
-        </div>
-        <Btn onClick={()=>setShowNewModal(true)} style={{whiteSpace:'nowrap'}}>+ Cliente</Btn>
+      <div className="pac-search-bar" style={{marginBottom:10}}>
+        <span style={{fontSize:16}}>🔍</span>
+        <input className="pac-search-input"placeholder="Buscar paciente…"value={query}onChange={e=>setQuery(e.target.value)}autoFocus/>
+        {query&&<button style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-muted)',fontSize:14}}onClick={()=>setQuery('')}>✕</button>}
       </div>
-      <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:8,paddingLeft:4}}>{total} paciente{total!==1?'s':''}</div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8,paddingLeft:4}}>
+        <div style={{fontSize:12,color:'var(--text-muted)'}}>{total} paciente{total!==1?'s':''}</div>
+        <Btn onClick={()=>setShowNewModal(true)} style={{whiteSpace:'nowrap',padding:'6px 12px',fontSize:12}}>+ Cliente</Btn>
+      </div>
       <div className="card"style={{overflow:'hidden'}}>
         {loading?[1,2,3,4,5].map(i=><div key={i}className="skel"style={{height:56,margin:'6px 12px',borderRadius:10}}/>)
         :patients.length===0?<Em icon="👥"title="Sin resultados"sub="Prueba con otro nombre o teléfono"/>
@@ -2140,11 +2232,12 @@ function Pacientes(){
       {!selected?<Em icon="👆"title="Selecciona un paciente"sub="Haz click en un paciente para ver su historial"/>:<>
         <div className="card"style={{padding:20,marginBottom:20,display:'flex',alignItems:'center',gap:16}}>
           <div className="pac-avatar"style={{width:52,height:52,fontSize:18,fontWeight:900}}>{selected.full_name?.slice(0,2).toUpperCase()}</div>
-          <div>
+          <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:18,fontWeight:800}}>{selected.full_name}</div>
             <div style={{fontSize:14,color:'var(--text-muted)',marginTop:4}}>{selected.phone||'Sin teléfono'}</div>
             <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Paciente desde {fD(selected.created_at)}</div>
           </div>
+          <Btn variant="ghost" onClick={openEditPatient} style={{whiteSpace:'nowrap'}}>✏️ Editar</Btn>
         </div>
         <div className="section-header"style={{marginBottom:12}}>
           <span className="section-title">Historial</span>
@@ -2172,6 +2265,18 @@ function Pacientes(){
       <div style={{display:'flex',gap:10,marginTop:6}}>
         <Btn variant="ghost" onClick={()=>{setShowNewModal(false);setNewName('');setNewPhone('')}} style={{flex:1}}>Cancelar</Btn>
         <Btn onClick={createPatient} disabled={savingNew} style={{flex:1}}>{savingNew?'Guardando…':'Crear cliente'}</Btn>
+      </div>
+    </Modal>}
+
+    {editModalPat && <Modal title="Editar paciente" onClose={()=>setEditModalPat(null)}>
+      <Inp label="Nombre completo" value={editName} onChange={e=>setEditName(e.target.value)} autoFocus/>
+      <Inp label="Teléfono (9 dígitos, sin +34)" value={editPhone} onChange={e=>setEditPhone(e.target.value)} inputMode="tel"/>
+      <div style={{fontSize:11,color:'var(--text-muted)',marginTop:-8,marginBottom:14}}>
+        Sólo móviles o fijos españoles.
+      </div>
+      <div style={{display:'flex',gap:10,marginTop:6}}>
+        <Btn variant="ghost" onClick={()=>setEditModalPat(null)} style={{flex:1}}>Cancelar</Btn>
+        <Btn onClick={savePatientEdit} disabled={savingEdit} style={{flex:1}}>{savingEdit?'Guardando…':'Guardar'}</Btn>
       </div>
     </Modal>}
   </div>
