@@ -474,6 +474,10 @@ function Agenda(){
   const[editDate,setEditDate]=useState('')
   const[editTime,setEditTime]=useState('')
   const[editServiceId,setEditServiceId]=useState('')
+  // Edición del paciente asignado a la cita (independiente del flujo de "crear cita")
+  const[editPatient,setEditPatient]=useState(null) // paciente actualmente asignado o nuevo seleccionado
+  const[editPatSearch,setEditPatSearch]=useState('')
+  const[editPatResults,setEditPatResults]=useState([])
   const[followupWeeks,setFollowupWeeks]=useState('')
   const[followupHour,setFollowupHour]=useState('any')
   const[followupBusy,setFollowupBusy]=useState(false)
@@ -492,7 +496,7 @@ function Agenda(){
     setLoading(true)
     const from=toK(days[0])+'T00:00:00', to=toK(days[days.length-1])+'T23:59:59'
     const[appts,profsR,blks,holdsR]=await Promise.all([
-      sb.from('appointments').select('id,starts_at,ends_at,status,professional_id,notes,payment_method,reminder_sent_at,proposed_until,patients(id,full_name),services(name,duration_minutes),professionals(name)')
+      sb.from('appointments').select('id,starts_at,ends_at,status,patient_id,service_id,professional_id,notes,payment_method,reminder_sent_at,proposed_until,patients(id,full_name,phone),services(name,duration_minutes),professionals(name)')
         .gte('starts_at',from).lte('starts_at',to),
       sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name',{ascending:false}),
       sb.from('blocked_slots').select('id,professional_id,starts_at,ends_at,reason')
@@ -547,6 +551,16 @@ function Agenda(){
     return()=>clearTimeout(t)
   },[patSearch])
 
+  // Buscador independiente para reasignar paciente en el modal de detalle
+  useEffect(()=>{
+    if(!editPatSearch.trim()){setEditPatResults([]);return}
+    const t=setTimeout(async()=>{
+      const{data}=await sb.from('patients').select('id,full_name,phone').or(`full_name.ilike.%${editPatSearch}%,phone.ilike.%${editPatSearch}%`).limit(6)
+      setEditPatResults(data||[])
+    },250)
+    return()=>clearTimeout(t)
+  },[editPatSearch])
+
   // When detail modal opens, populate edit fields
   useEffect(()=>{
     if(modal&&modal!=='create'){
@@ -563,6 +577,10 @@ function Agenda(){
         setEditDate(''); setEditTime('')
       }
       setEditServiceId(modal.service_id || services.find(s=>s.name===modal.services?.name)?.id || '')
+      // Paciente actual de la cita (con phone)
+      setEditPatient(modal.patients || null)
+      setEditPatSearch('')
+      setEditPatResults([])
     }
   },[modal])
 
@@ -719,11 +737,15 @@ function Agenda(){
 
   const saveApptChanges=async()=>{
     setSaving(true)
-    // Construir update con fecha/hora/servicio si han cambiado
+    // Construir update con fecha/hora/servicio/paciente si han cambiado
     const update = {
       notes: editNotes || null,
       professional_id: editProfId || modal.professional_id,
       payment_method: editPayment || null,
+    }
+    // Reasignación de paciente
+    if (editPatient && editPatient.id && editPatient.id !== modal.patient_id) {
+      update.patient_id = editPatient.id
     }
     // Si se editó fecha/hora o servicio, recalcular starts_at y ends_at
     const origDate = modal.starts_at?.slice(0,10) || ''
@@ -1146,7 +1168,8 @@ function Agenda(){
                 }
                 return<div key={a.id} className={`appt-block${isCancelled ? ' cancelled' : ''}`}
                   onClick={ev=>{ev.stopPropagation(); a.status==='cancelled' ? openAssignModal(a) : setModal(a)}}
-                  style={{top:timeToYLocal(t),height:Math.max(durToH(dur)-2,18),...cancelledStyle}}>
+                  style={{top:timeToYLocal(t),height:Math.max(durToH(dur)-2,18),...cancelledStyle}}
+                  title={a.notes || ''}>
                   <div style={{fontWeight:700,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>
                     {isCancelled ? `🚫 ${t} Vacante WL` : `${t} ${a.patients?.full_name||''}`}
                   </div>
@@ -1154,6 +1177,11 @@ function Agenda(){
                     {isCancelled ? a.patients?.full_name : a.services?.name}
                     {filterProf==='all'&&a.professionals?.name?` · ${a.professionals.name}`:''}
                   </div>
+                  {!isCancelled && a.notes && (
+                    <div style={{fontSize:9,opacity:.75,fontStyle:'italic',overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis',marginTop:1}}>
+                      📝 {a.notes}
+                    </div>
+                  )}
                 </div>
               })}
               {showDrag&&(()=>{
@@ -1200,9 +1228,30 @@ function Agenda(){
 
     {/* Detail modal */}
     {modal&&modal!=='create'&&<Modal title="Detalle de cita"onClose={()=>{setModal(null);setCancelConfirm(false)}}>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}}>
-        <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:2}}>PACIENTE</div><div style={{fontSize:14,fontWeight:700}}>{modal.patients?.full_name||'—'}</div></div>
-        <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:2}}>ESTADO</div><Bg variant={STATUS_CLS[modal.status]?.replace('badge-','')||'gray'}>{STATUS_TXT[modal.status]||modal.status}</Bg></div>
+      {/* Estado arriba (badge) */}
+      <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
+        <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700}}>ESTADO</div>
+        <Bg variant={STATUS_CLS[modal.status]?.replace('badge-','')||'gray'}>{STATUS_TXT[modal.status]||modal.status}</Bg>
+      </div>
+
+      {/* Paciente editable + teléfono */}
+      <div className="field" style={{position:'relative'}}>
+        <label className="field-label">Paciente</label>
+        <input className="field-input"
+          placeholder="Buscar otro paciente para reasignar…"
+          value={editPatient ? `${editPatient.full_name}${editPatient.phone ? ' · ' + editPatient.phone : ''}` : editPatSearch}
+          onChange={e=>{setEditPatSearch(e.target.value); setEditPatient(null)}}/>
+        {editPatResults.length>0 && !editPatient && <div style={{position:'absolute',top:'100%',left:0,right:0,background:'var(--white)',border:'1px solid var(--border)',borderRadius:8,zIndex:10,boxShadow:'var(--shadow)',maxHeight:240,overflowY:'auto'}}>
+          {editPatResults.map(p=><div key={p.id} style={{padding:'10px 14px',cursor:'pointer',borderBottom:'1px solid var(--border)',fontSize:13}}
+            onClick={()=>{setEditPatient(p); setEditPatSearch(''); setEditPatResults([])}}>
+            <strong>{p.full_name}</strong> <span style={{color:'var(--text-muted)'}}>{p.phone||'sin teléfono'}</span>
+          </div>)}
+        </div>}
+        {editPatient && editPatient.id !== modal.patient_id && (
+          <div style={{fontSize:11,color:'var(--terra)',marginTop:4,fontWeight:600}}>
+            ⚠ La cita se reasignará a {editPatient.full_name}
+          </div>
+        )}
       </div>
 
       {/* Fecha y hora editables */}
