@@ -100,6 +100,7 @@ const NAV_GROUPS = [
   ]},
   {label:'Administración',items:[
     {id:'facturacion',icon:'🧾',label:'Facturación'},
+    {id:'bot-coach',icon:'🤖',label:'Bot Coach'},
   ]},
 ]
 function Sidebar({page,onNav,open,onClose,onLogout}){
@@ -3365,8 +3366,366 @@ function Facturacion(){
   </>
 }
 
+// ─── Bot Coach ────────────────────────────────────────────────────────────────
+// Pantalla "human-in-the-loop": durante el modo training, el bot WhatsApp NO
+// contesta automáticamente. Crea una "propuesta" en bot_proposals con la
+// respuesta sugerida y la acción (cancelar cita) que aplicaría. La secretaria
+// valida, modifica o rechaza desde esta pantalla.
+//
+// Grid 4x2 = 8 conversaciones visibles. Paginación calendar-style. Orden:
+// pendientes primero por antigüedad del mensaje del paciente.
+
+const BOT_HTTP_URL = (typeof window !== 'undefined' && window.localStorage?.getItem('bot_http_url')) || 'http://localhost:3002'
+const BOTCOACH_PAGE_SIZE = 8
+const INTENT_META = {
+  confirmation: { label:'Confirmación', color:'#16a34a', bg:'#dcfce7', icon:'✅' },
+  cancellation: { label:'Cancelación', color:'#dc2626', bg:'#fee2e2', icon:'🚫' },
+  ambiguous:    { label:'Ambiguo',     color:'#d97706', bg:'#fef3c7', icon:'❓' },
+  other:        { label:'Otro',        color:'#475569', bg:'#f1f5f9', icon:'💬' },
+}
+const DEFAULT_QUICK_REPLIES = [
+  'Perfecto, hasta mañana.',
+  'Ok, gracias.',
+  'Te llamamos en breve.',
+  'Te confirmo en un momento.',
+]
+
+function timeAgo(iso) {
+  if (!iso) return ''
+  const ms = Date.now() - new Date(iso).getTime()
+  const m = Math.floor(ms / 60000)
+  if (m < 1) return 'ahora'
+  if (m < 60) return `${m} min`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h} h`
+  return `${Math.floor(h/24)} d`
+}
+function ageColor(iso) {
+  const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
+  if (m >= 30) return { color:'#fff', bg:'#dc2626', label:`${m} min` }
+  if (m >= 10) return { color:'#fff', bg:'#ea580c', label:`${m} min` }
+  return { color:'#475569', bg:'#f1f5f9', label: timeAgo(iso) }
+}
+
+function BotCoach() {
+  const [proposals, setProposals] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [trainingMode, setTrainingMode] = useState(false)
+  const [togglingMode, setTogglingMode] = useState(false)
+  const [filter, setFilter] = useState('pending')   // pending | all | confirmation | cancellation | ambiguous | other
+  const [page, setPage] = useState(0)
+  const [stats, setStats] = useState({ pending:0, sent:0, rejected:0, modified:0 })
+  const [pendingCount, setPendingCount] = useState(0)
+  const [toast, setToast] = useState(null)
+
+  // Carga inicial + suscripción realtime
+  const loadData = useCallback(async () => {
+    setLoading(true)
+    // Conteo total pending para badge
+    const { count: pCount } = await sb.from('bot_proposals').select('id',{count:'exact',head:true}).eq('status','pending')
+    setPendingCount(pCount || 0)
+    // Stats del día
+    const dayStart = new Date(); dayStart.setHours(0,0,0,0)
+    const { data: dayProps } = await sb.from('bot_proposals')
+      .select('status, reviewed_text_modified')
+      .gte('created_at', dayStart.toISOString())
+    const s = { pending:0, sent:0, rejected:0, modified:0 }
+    for (const p of (dayProps||[])) {
+      if (p.status === 'pending') s.pending++
+      else if (p.status === 'sent') s.sent++
+      else if (p.status === 'rejected') s.rejected++
+      if (p.reviewed_text_modified) s.modified++
+    }
+    setStats(s)
+    // Propuestas (todas las que aplica el filtro)
+    let q = sb.from('bot_proposals')
+      .select('id,patient_id,patient_phone,chat_id,patient_message,patient_message_at,llm_intent,llm_source,proposed_text,proposed_action,proposed_action_payload,status,final_text_sent,action_applied,reviewed_by,reviewed_at,reviewed_text_modified,created_at,patients(id,full_name,phone)')
+      .order('patient_message_at', { ascending: true })
+      .limit(200)
+    if (filter === 'pending') q = q.eq('status','pending')
+    else if (filter !== 'all') q = q.eq('llm_intent', filter)
+    const { data } = await q
+    setProposals(data || [])
+    setLoading(false)
+  }, [filter])
+
+  useEffect(() => { loadData() }, [loadData])
+
+  useEffect(() => {
+    const ch = sb.channel('bot_proposals_changes')
+      .on('postgres_changes', { event:'*', schema:'public', table:'bot_proposals' }, () => { loadData() })
+      .subscribe()
+    return () => { sb.removeChannel(ch) }
+  }, [loadData])
+
+  // Cargar el estado de training_mode
+  useEffect(() => {
+    (async () => {
+      const { data } = await sb.from('app_config').select('value').eq('key','bot_training_mode').maybeSingle()
+      const raw = (data?.value || 'false').toString().toLowerCase()
+      setTrainingMode(raw === 'true' || raw === '1')
+    })()
+  }, [])
+
+  const toggleTrainingMode = async () => {
+    setTogglingMode(true)
+    const newVal = !trainingMode
+    const { error } = await sb.from('app_config').upsert({ key:'bot_training_mode', value: String(newVal) })
+    if (error) { setToast({msg:'Error: '+error.message, type:'error'}); setTogglingMode(false); return }
+    setTrainingMode(newVal)
+    // Avisar al bot para refrescar cache (sin esperar 30s)
+    try {
+      await fetch(`${BOT_HTTP_URL}/training-mode-refresh`, { method:'POST' })
+    } catch (e) { console.warn('bot HTTP refresh fail:', e.message) }
+    setToast({msg: newVal ? '🤖 Modo training ACTIVADO — propuestas se acumulan en esta pantalla' : '⚡ Modo training DESACTIVADO — bot vuelve a respuestas automáticas', type:'ok'})
+    setTogglingMode(false)
+  }
+
+  // Orden: pendientes primero por patient_message_at asc; luego resueltas por reviewed_at desc
+  const sorted = [...proposals].sort((a,b) => {
+    if (a.status === 'pending' && b.status !== 'pending') return -1
+    if (a.status !== 'pending' && b.status === 'pending') return 1
+    if (a.status === 'pending') return new Date(a.patient_message_at) - new Date(b.patient_message_at)
+    return new Date(b.reviewed_at||b.created_at) - new Date(a.reviewed_at||a.created_at)
+  })
+
+  const totalPages = Math.max(1, Math.ceil(sorted.length / BOTCOACH_PAGE_SIZE))
+  const pageProps = sorted.slice(page*BOTCOACH_PAGE_SIZE, (page+1)*BOTCOACH_PAGE_SIZE)
+
+  const exportCsv = () => {
+    const cols = ['created_at','status','llm_intent','patient_phone','patient_message','proposed_text','final_text_sent','action_applied','reviewed_text_modified','reviewed_by','reviewed_at']
+    const lines = [cols.join(',')]
+    for (const p of sorted) {
+      const row = cols.map(c => `"${String(p[c]??'').replace(/"/g,'""').replace(/\n/g,' ').slice(0,500)}"`).join(',')
+      lines.push(row)
+    }
+    const blob = new Blob([lines.join('\n')], { type:'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = `bot-proposals-${new Date().toISOString().slice(0,10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return<div>
+    {toast && <Toast msg={toast.msg} type={toast.type} onDone={()=>setToast(null)}/>}
+
+    {/* Cabecera: toggle modo training + filtros */}
+    <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:16,flexWrap:'wrap'}}>
+      <div className="card" style={{padding:'12px 16px',display:'flex',alignItems:'center',gap:12}}>
+        <div style={{fontSize:13,fontWeight:700}}>Modo training</div>
+        <Toggle on={trainingMode} onChange={toggleTrainingMode}/>
+        {togglingMode && <span style={{fontSize:11,color:'var(--text-muted)'}}>actualizando…</span>}
+        <div style={{fontSize:11,color:'var(--text-muted)',marginLeft:8}}>
+          {trainingMode ? 'Bot propone, tú validas' : 'Bot responde automático'}
+        </div>
+      </div>
+
+      {/* Filtros por estado/intent */}
+      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+        {[
+          ['pending', `Pendientes (${pendingCount})`],
+          ['all', 'Todas'],
+          ['confirmation', '✅ Confirmaciones'],
+          ['cancellation', '🚫 Cancelaciones'],
+          ['ambiguous', '❓ Ambiguas'],
+          ['other', '💬 Otras'],
+        ].map(([id, lbl]) => (
+          <button key={id} onClick={()=>{setFilter(id);setPage(0)}}
+            style={{
+              padding:'6px 12px',borderRadius:999,fontSize:12,fontWeight:600,cursor:'pointer',
+              border: filter===id ? '1.5px solid var(--green)' : '1px solid var(--stone)',
+              background: filter===id ? 'var(--sage-mist)' : '#fff',
+              color: filter===id ? 'var(--green)' : 'var(--body)',
+            }}>{lbl}</button>
+        ))}
+      </div>
+
+      <div style={{flex:1}}/>
+      <Btn variant="ghost" onClick={exportCsv}>📥 Exportar CSV</Btn>
+    </div>
+
+    {/* Grid 4x2 */}
+    {loading ? (
+      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12}}>
+        {Array.from({length:8}).map((_,i)=><div key={i} className="skel" style={{height:280,borderRadius:12}}/>)}
+      </div>
+    ) : pageProps.length === 0 ? (
+      <Em icon="🤖" title="Sin conversaciones" sub={filter==='pending' ? 'No hay propuestas pendientes ahora mismo' : 'No hay propuestas con este filtro'}/>
+    ) : (
+      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12}}>
+        {pageProps.map(p => <ProposalCard key={p.id} proposal={p} onAfter={loadData} setToast={setToast}/>)}
+      </div>
+    )}
+
+    {/* Paginación */}
+    {totalPages > 1 && (
+      <div style={{display:'flex',justifyContent:'center',gap:12,marginTop:16,alignItems:'center'}}>
+        <Btn variant="ghost" disabled={page===0} onClick={()=>setPage(page-1)}>← Anterior</Btn>
+        <div style={{fontSize:13,color:'var(--text-muted)'}}>Página {page+1} / {totalPages}</div>
+        <Btn variant="ghost" disabled={page>=totalPages-1} onClick={()=>setPage(page+1)}>Siguiente →</Btn>
+      </div>
+    )}
+
+    {/* Banda de stats al pie */}
+    <div className="card" style={{marginTop:24,padding:16,display:'flex',gap:24,justifyContent:'center',flexWrap:'wrap'}}>
+      <div><span style={{fontSize:11,color:'var(--text-muted)',textTransform:'uppercase',fontWeight:700}}>Hoy</span></div>
+      <div><strong style={{fontSize:18}}>{stats.pending}</strong> <span style={{fontSize:12,color:'var(--text-muted)'}}>pendientes</span></div>
+      <div><strong style={{fontSize:18,color:'var(--green)'}}>{stats.sent}</strong> <span style={{fontSize:12,color:'var(--text-muted)'}}>enviadas</span></div>
+      <div><strong style={{fontSize:18,color:'#d97706'}}>{stats.modified}</strong> <span style={{fontSize:12,color:'var(--text-muted)'}}>modificadas</span></div>
+      <div><strong style={{fontSize:18,color:'#dc2626'}}>{stats.rejected}</strong> <span style={{fontSize:12,color:'var(--text-muted)'}}>rechazadas</span></div>
+    </div>
+  </div>
+}
+
+// Tarjeta individual de una propuesta
+function ProposalCard({ proposal, onAfter, setToast }) {
+  const p = proposal
+  const meta = INTENT_META[p.llm_intent] || INTENT_META.other
+  const [draftText, setDraftText] = useState(p.proposed_text || '')
+  const [applyAction, setApplyAction] = useState(true)
+  const [history, setHistory] = useState([])
+  const [busy, setBusy] = useState(false)
+  const [confirmAction, setConfirmAction] = useState(false)
+  const age = ageColor(p.patient_message_at)
+  const isPending = p.status === 'pending'
+
+  // Carga mini-historial: últimas 4 propuestas del mismo paciente, anteriores a ésta
+  useEffect(() => {
+    if (!p.patient_id) return
+    sb.from('bot_proposals')
+      .select('patient_message,proposed_text,final_text_sent,status,created_at,llm_intent')
+      .eq('patient_id', p.patient_id)
+      .lt('created_at', p.created_at)
+      .order('created_at', { ascending: false })
+      .limit(4)
+      .then(({data}) => setHistory((data||[]).reverse()))
+  }, [p.patient_id, p.created_at])
+
+  const send = async (opts={}) => {
+    setBusy(true)
+    try {
+      const body = {
+        proposal_id: p.id,
+        text_to_send: opts.textOnly !== undefined ? opts.textOnly : draftText,
+        apply_action: opts.actionOverride !== undefined ? opts.actionOverride : applyAction,
+        reviewed_by: 'admin',
+      }
+      const r = await fetch(`${BOT_HTTP_URL}/send-validated`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
+      })
+      const out = await r.json()
+      if (!out.ok) throw new Error(out.error || 'fail')
+      setToast({msg: out.action_applied ? '✓ Mensaje enviado y acción aplicada' : (out.sent ? '✓ Mensaje enviado' : 'Acción aplicada'), type:'ok'})
+      onAfter()
+    } catch (e) {
+      setToast({msg:'Error: '+e.message, type:'error'})
+    }
+    setBusy(false)
+  }
+
+  const reject = async () => {
+    setBusy(true)
+    try {
+      await fetch(`${BOT_HTTP_URL}/reject-proposal`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ proposal_id: p.id, reviewed_by: 'admin' }),
+      })
+      setToast({msg:'Rechazada — no se mandó nada', type:'ok'})
+      onAfter()
+    } catch (e) { setToast({msg:'Error: '+e.message, type:'error'}) }
+    setBusy(false)
+  }
+
+  const isModified = draftText.trim() !== (p.proposed_text || '').trim()
+
+  return<div className="card" style={{padding:14,display:'flex',flexDirection:'column',gap:8,minHeight:280,borderLeft:isPending?`3px solid ${meta.color}`:'3px solid var(--border)'}}>
+    {/* Header */}
+    <div style={{display:'flex',alignItems:'center',gap:8}}>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:13,fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
+          {p.patients?.full_name || `${meta.icon} (${p.patient_phone || '?'})`}
+        </div>
+        <div style={{fontSize:10,color:'var(--text-muted)'}}>{p.patient_phone || ''}</div>
+      </div>
+      <span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:999,background:age.bg,color:age.color}}>{age.label}</span>
+    </div>
+
+    {/* Intent chip */}
+    <div style={{display:'flex',gap:6,alignItems:'center'}}>
+      <span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:999,background:meta.bg,color:meta.color}}>{meta.icon} {meta.label}</span>
+      {p.status === 'sent' && <span style={{fontSize:10,padding:'2px 6px',background:'#dcfce7',color:'#15803d',borderRadius:6}}>enviada</span>}
+      {p.status === 'rejected' && <span style={{fontSize:10,padding:'2px 6px',background:'#fee2e2',color:'#991b1b',borderRadius:6}}>rechazada</span>}
+      {p.reviewed_text_modified && <span style={{fontSize:10,padding:'2px 6px',background:'#fef3c7',color:'#92400e',borderRadius:6}}>modificada</span>}
+    </div>
+
+    {/* Mini chat */}
+    <div style={{background:'#f8fafc',borderRadius:8,padding:8,fontSize:11,maxHeight:80,overflowY:'auto',display:'flex',flexDirection:'column',gap:4}}>
+      {history.map((h, i) => <div key={i}>
+        <div style={{color:'#0f172a'}}>👤 {h.patient_message?.slice(0,100)}</div>
+        {h.final_text_sent && <div style={{color:'var(--green)',marginLeft:12}}>🤖 {h.final_text_sent.slice(0,100)}</div>}
+      </div>)}
+      <div style={{borderTop:history.length?'1px dashed #cbd5e1':'none',paddingTop:history.length?4:0}}>
+        <div style={{color:'#0f172a',fontWeight:600}}>👤 {p.patient_message}</div>
+      </div>
+    </div>
+
+    {/* Acción propuesta */}
+    {p.proposed_action && (
+      <div style={{padding:'6px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,fontSize:11,display:'flex',alignItems:'center',gap:8}}>
+        <Toggle on={applyAction} onChange={setApplyAction}/>
+        <div style={{flex:1}}>
+          <strong>Acción:</strong> {p.proposed_action === 'cancel_appt' ? 'Cancelar cita' : p.proposed_action}
+          {p.proposed_action_payload?.dia && (
+            <div style={{fontSize:10,color:'var(--text-muted)'}}>{p.proposed_action_payload.dia} {p.proposed_action_payload.hora} con {p.proposed_action_payload.prof}</div>
+          )}
+        </div>
+      </div>
+    )}
+
+    {/* Input de respuesta */}
+    {isPending ? <>
+      <textarea value={draftText} onChange={e=>setDraftText(e.target.value)}
+        placeholder={p.proposed_text ? '' : 'Escribe respuesta o deja vacío para no responder'}
+        style={{width:'100%',minHeight:60,resize:'vertical',padding:8,fontSize:12,border:'1.5px solid var(--stone)',borderRadius:8,fontFamily:'inherit'}}/>
+
+      {/* Quick replies */}
+      <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+        {DEFAULT_QUICK_REPLIES.map(q => (
+          <button key={q} onClick={()=>setDraftText(q)}
+            style={{fontSize:10,padding:'2px 6px',borderRadius:6,border:'1px solid var(--stone)',background:'#fff',cursor:'pointer',color:'var(--text-muted)'}}>{q}</button>
+        ))}
+      </div>
+
+      {/* Botones de acción */}
+      {confirmAction ? (
+        <div style={{display:'flex',gap:6,padding:8,background:'#fef3c7',borderRadius:8,fontSize:11,flexDirection:'column'}}>
+          <div style={{fontWeight:600}}>¿Confirmar?</div>
+          <div style={{display:'flex',gap:6}}>
+            <Btn variant="ghost" onClick={()=>setConfirmAction(false)} style={{flex:1,padding:'4px 8px',fontSize:11}}>Atrás</Btn>
+            <Btn variant="primary" onClick={()=>{setConfirmAction(false);send()}} disabled={busy} style={{flex:1,padding:'4px 8px',fontSize:11}}>Sí, enviar</Btn>
+          </div>
+        </div>
+      ) : (
+        <div style={{display:'flex',gap:4,marginTop:'auto'}}>
+          {/* Enviar tal cual (texto+acción si toca) */}
+          <Btn onClick={()=>(p.proposed_action ? setConfirmAction(true) : send())} disabled={busy || (!draftText.trim() && !p.proposed_action)} style={{flex:1,padding:'6px 8px',fontSize:11}}>
+            ✓ {isModified ? 'Enviar mod.' : 'Enviar'}
+          </Btn>
+          <Btn variant="ghost" onClick={reject} disabled={busy} style={{padding:'6px 8px',fontSize:11}}>❌</Btn>
+        </div>
+      )}
+    </> : (
+      <div style={{padding:'8px 10px',background:'#f1f5f9',borderRadius:8,fontSize:11,marginTop:'auto'}}>
+        {p.final_text_sent ? <><strong>Enviado:</strong> {p.final_text_sent}</> : <em>Sin mensaje enviado</em>}
+        <div style={{fontSize:10,color:'var(--text-muted)',marginTop:4}}>{p.reviewed_at && new Date(p.reviewed_at).toLocaleString('es-ES')}</div>
+      </div>
+    )}
+  </div>
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
-const PAGE_TITLES={dashboard:'Dashboard',agenda:'Agenda',horarios:'Horarios',bloqueados:'Días bloqueados',espera:'Lista de espera',yoga:'Yoga',escalada:'Escalada',belleza:'Belleza',pacientes:'Pacientes',servicios:'Servicios',profesionales:'Profesionales',facturacion:'Facturación'}
+const PAGE_TITLES={dashboard:'Dashboard',agenda:'Agenda',horarios:'Horarios',bloqueados:'Días bloqueados',espera:'Lista de espera',yoga:'Yoga',escalada:'Escalada',belleza:'Belleza',pacientes:'Pacientes',servicios:'Servicios',profesionales:'Profesionales',facturacion:'Facturación','bot-coach':'Bot Coach'}
 
 export default function App(){
   const[user,setUser]=useState(null)
@@ -3407,6 +3766,7 @@ export default function App(){
       case 'profesionales': return<Profesionales/>
       case 'servicios':     return<Servicios/>
       case 'facturacion':   return<Facturacion/>
+      case 'bot-coach':     return<BotCoach/>
       default:              return<Dashboard onNav={setPage}/>
     }
   }
