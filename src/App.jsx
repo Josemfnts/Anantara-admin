@@ -3377,11 +3377,19 @@ function Facturacion(){
 
 const BOT_HTTP_URL = (typeof window !== 'undefined' && window.localStorage?.getItem('bot_http_url')) || 'http://localhost:3002'
 const BOTCOACH_PAGE_SIZE = 8
-const INTENT_META = {
-  confirmation: { label:'Confirmación', color:'#16a34a', bg:'#dcfce7', icon:'✅' },
-  cancellation: { label:'Cancelación', color:'#dc2626', bg:'#fee2e2', icon:'🚫' },
-  ambiguous:    { label:'Ambiguo',     color:'#d97706', bg:'#fef3c7', icon:'❓' },
-  other:        { label:'Otro',        color:'#475569', bg:'#f1f5f9', icon:'💬' },
+// Esquema v5: usamos `category` en español (spec) en lugar de `intent` en inglés.
+const CATEGORY_META = {
+  confirmacion: { label:'Confirmación', color:'#16a34a', bg:'#dcfce7', icon:'✅' },
+  cancelacion:  { label:'Cancelación',  color:'#dc2626', bg:'#fee2e2', icon:'🚫' },
+  ambigua:      { label:'Ambigua',      color:'#d97706', bg:'#fef3c7', icon:'❓' },
+  otra:         { label:'Otra',         color:'#475569', bg:'#f1f5f9', icon:'💬' },
+}
+const VERDICT_META = {
+  pending:   { label:'pendiente',   color:'#475569', bg:'#f1f5f9' },
+  sent:      { label:'enviada',     color:'#15803d', bg:'#dcfce7' },
+  modified:  { label:'modificada',  color:'#92400e', bg:'#fef3c7' },
+  rejected:  { label:'rechazada',   color:'#991b1b', bg:'#fee2e2' },
+  auto_sent: { label:'auto-enviada',color:'#1e3a8a', bg:'#dbeafe' },
 }
 const DEFAULT_QUICK_REPLIES = [
   'Perfecto, hasta mañana.',
@@ -3408,11 +3416,12 @@ function ageColor(iso) {
 }
 
 function BotCoach() {
-  const [proposals, setProposals] = useState([])
+  const [reviews, setReviews] = useState([])
   const [loading, setLoading] = useState(true)
-  const [trainingMode, setTrainingMode] = useState(false)
+  const [botCfg, setBotCfg] = useState({ paused_all:false, modo_training:true })
   const [togglingMode, setTogglingMode] = useState(false)
-  const [filter, setFilter] = useState('pending')   // pending | all | confirmation | cancellation | ambiguous | other
+  const [togglingPause, setTogglingPause] = useState(false)
+  const [filter, setFilter] = useState('pending')   // pending | all | confirmacion | cancelacion | ambigua | otra
   const [page, setPage] = useState(0)
   const [stats, setStats] = useState({ pending:0, sent:0, rejected:0, modified:0 })
   const [pendingCount, setPendingCount] = useState(0)
@@ -3421,79 +3430,95 @@ function BotCoach() {
   // Carga inicial + suscripción realtime
   const loadData = useCallback(async () => {
     setLoading(true)
-    // Conteo total pending para badge
-    const { count: pCount } = await sb.from('bot_proposals').select('id',{count:'exact',head:true}).eq('status','pending')
+    // Conteo total pending
+    const { count: pCount } = await sb.from('bot_coach_reviews').select('id',{count:'exact',head:true}).eq('verdict','pending')
     setPendingCount(pCount || 0)
-    // Stats del día
+    // Stats del día (todos los verdicts no-pending agrupados)
     const dayStart = new Date(); dayStart.setHours(0,0,0,0)
-    const { data: dayProps } = await sb.from('bot_proposals')
-      .select('status, reviewed_text_modified')
+    const { data: dayProps } = await sb.from('bot_coach_reviews')
+      .select('verdict')
       .gte('created_at', dayStart.toISOString())
     const s = { pending:0, sent:0, rejected:0, modified:0 }
     for (const p of (dayProps||[])) {
-      if (p.status === 'pending') s.pending++
-      else if (p.status === 'sent') s.sent++
-      else if (p.status === 'rejected') s.rejected++
-      if (p.reviewed_text_modified) s.modified++
+      if (p.verdict === 'pending') s.pending++
+      else if (p.verdict === 'sent' || p.verdict === 'auto_sent') s.sent++
+      else if (p.verdict === 'modified') { s.sent++; s.modified++ }
+      else if (p.verdict === 'rejected') s.rejected++
     }
     setStats(s)
-    // Propuestas (todas las que aplica el filtro)
-    let q = sb.from('bot_proposals')
-      .select('id,patient_id,patient_phone,chat_id,patient_message,patient_message_at,llm_intent,llm_source,proposed_text,proposed_action,proposed_action_payload,status,final_text_sent,action_applied,reviewed_by,reviewed_at,reviewed_text_modified,created_at,patients(id,full_name,phone)')
-      .order('patient_message_at', { ascending: true })
+    // Reviews con filtros + join con patients vía conversation_id
+    let q = sb.from('bot_coach_reviews')
+      .select('id,conversation_id,patient_phone,patient_message,context_snapshot,intent_detected,nlu_source,category,proposed_text,proposed_action,final_text,final_action,action_approved,action_executed,verdict,rejection_reason,quick_reply_used,flagged,created_at,reviewed_at,reviewed_by,conversations(patient_id,patients(id,full_name,phone))')
+      .order('created_at', { ascending: true })
       .limit(200)
-    if (filter === 'pending') q = q.eq('status','pending')
-    else if (filter !== 'all') q = q.eq('llm_intent', filter)
+    if (filter === 'pending') q = q.eq('verdict','pending')
+    else if (filter !== 'all') q = q.eq('category', filter)
     const { data } = await q
-    setProposals(data || [])
+    setReviews(data || [])
     setLoading(false)
   }, [filter])
 
   useEffect(() => { loadData() }, [loadData])
 
+  // Realtime: bot_coach_reviews + bot_config (para que el toggle se sincronice entre pestañas)
   useEffect(() => {
-    const ch = sb.channel('bot_proposals_changes')
-      .on('postgres_changes', { event:'*', schema:'public', table:'bot_proposals' }, () => { loadData() })
+    const ch = sb.channel('bot_coach_v5')
+      .on('postgres_changes', { event:'*', schema:'public', table:'bot_coach_reviews' }, () => { loadData() })
+      .on('postgres_changes', { event:'*', schema:'public', table:'bot_config' }, (p) => {
+        if (p.new) setBotCfg(p.new)
+      })
       .subscribe()
     return () => { sb.removeChannel(ch) }
   }, [loadData])
 
-  // Cargar el estado de training_mode
+  // Cargar bot_config inicial
   useEffect(() => {
     (async () => {
-      const { data } = await sb.from('app_config').select('value').eq('key','bot_training_mode').maybeSingle()
-      const raw = (data?.value || 'false').toString().toLowerCase()
-      setTrainingMode(raw === 'true' || raw === '1')
+      const { data } = await sb.from('bot_config').select('*').eq('id', 1).maybeSingle()
+      if (data) setBotCfg(data)
     })()
   }, [])
 
-  const toggleTrainingMode = async () => {
-    setTogglingMode(true)
-    const newVal = !trainingMode
-    const { error } = await sb.from('app_config').upsert({ key:'bot_training_mode', value: String(newVal) })
-    if (error) { setToast({msg:'Error: '+error.message, type:'error'}); setTogglingMode(false); return }
-    setTrainingMode(newVal)
-    // Avisar al bot para refrescar cache (sin esperar 30s)
-    try {
-      await fetch(`${BOT_HTTP_URL}/training-mode-refresh`, { method:'POST' })
-    } catch (e) { console.warn('bot HTTP refresh fail:', e.message) }
-    setToast({msg: newVal ? '🤖 Modo training ACTIVADO — propuestas se acumulan en esta pantalla' : '⚡ Modo training DESACTIVADO — bot vuelve a respuestas automáticas', type:'ok'})
-    setTogglingMode(false)
+  const notifyBotRefresh = async () => {
+    try { await fetch(`${BOT_HTTP_URL}/training-mode-refresh`, { method:'POST' }) }
+    catch (e) { console.warn('bot HTTP refresh fail:', e.message) }
   }
 
-  // Orden: pendientes primero por patient_message_at asc; luego resueltas por reviewed_at desc
-  const sorted = [...proposals].sort((a,b) => {
-    if (a.status === 'pending' && b.status !== 'pending') return -1
-    if (a.status !== 'pending' && b.status === 'pending') return 1
-    if (a.status === 'pending') return new Date(a.patient_message_at) - new Date(b.patient_message_at)
+  const toggleTrainingMode = async () => {
+    setTogglingMode(true)
+    const newVal = !botCfg.modo_training
+    const { error } = await sb.from('bot_config').update({ modo_training: newVal, updated_at: new Date().toISOString() }).eq('id', 1)
+    setTogglingMode(false)
+    if (error) { setToast({msg:'Error: '+error.message, type:'error'}); return }
+    setBotCfg(c => ({ ...c, modo_training: newVal }))
+    notifyBotRefresh()
+    setToast({msg: newVal ? '🤖 Modo training ACTIVADO — bot propone, tú validas' : '⚡ Modo training DESACTIVADO — bot responde automático (Fase 3)', type:'ok'})
+  }
+
+  const togglePausedAll = async () => {
+    setTogglingPause(true)
+    const newVal = !botCfg.paused_all
+    const { error } = await sb.from('bot_config').update({ paused_all: newVal, updated_at: new Date().toISOString() }).eq('id', 1)
+    setTogglingPause(false)
+    if (error) { setToast({msg:'Error: '+error.message, type:'error'}); return }
+    setBotCfg(c => ({ ...c, paused_all: newVal }))
+    notifyBotRefresh()
+    setToast({msg: newVal ? '🚨 BOT PAUSADO — no responde a nadie' : '✅ Bot reactivado', type: newVal ? 'error' : 'ok'})
+  }
+
+  // Orden: pendientes primero por created_at asc; resueltas por reviewed_at desc
+  const sorted = [...reviews].sort((a,b) => {
+    if (a.verdict === 'pending' && b.verdict !== 'pending') return -1
+    if (a.verdict !== 'pending' && b.verdict === 'pending') return 1
+    if (a.verdict === 'pending') return new Date(a.created_at) - new Date(b.created_at)
     return new Date(b.reviewed_at||b.created_at) - new Date(a.reviewed_at||a.created_at)
   })
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / BOTCOACH_PAGE_SIZE))
-  const pageProps = sorted.slice(page*BOTCOACH_PAGE_SIZE, (page+1)*BOTCOACH_PAGE_SIZE)
+  const pageReviews = sorted.slice(page*BOTCOACH_PAGE_SIZE, (page+1)*BOTCOACH_PAGE_SIZE)
 
   const exportCsv = () => {
-    const cols = ['created_at','status','llm_intent','patient_phone','patient_message','proposed_text','final_text_sent','action_applied','reviewed_text_modified','reviewed_by','reviewed_at']
+    const cols = ['created_at','verdict','category','intent_detected','nlu_source','patient_phone','patient_message','proposed_text','final_text','action_approved','action_executed','quick_reply_used','rejection_reason','flagged','reviewed_by','reviewed_at']
     const lines = [cols.join(',')]
     for (const p of sorted) {
       const row = cols.map(c => `"${String(p[c]??'').replace(/"/g,'""').replace(/\n/g,' ').slice(0,500)}"`).join(',')
@@ -3502,7 +3527,7 @@ function BotCoach() {
     const blob = new Blob([lines.join('\n')], { type:'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.href = url; a.download = `bot-proposals-${new Date().toISOString().slice(0,10)}.csv`
+    a.href = url; a.download = `bot-coach-reviews-${new Date().toISOString().slice(0,10)}.csv`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -3510,26 +3535,46 @@ function BotCoach() {
   return<div>
     {toast && <Toast msg={toast.msg} type={toast.type} onDone={()=>setToast(null)}/>}
 
-    {/* Cabecera: toggle modo training + filtros */}
+    {/* Banner si paused_all activo */}
+    {botCfg.paused_all && (
+      <div className="card" style={{padding:'12px 16px',background:'#fee2e2',border:'2px solid #dc2626',marginBottom:16,display:'flex',alignItems:'center',gap:12}}>
+        <span style={{fontSize:20}}>🚨</span>
+        <div style={{flex:1}}>
+          <strong style={{color:'#991b1b'}}>BOT PAUSADO</strong>
+          <div style={{fontSize:12,color:'#7f1d1d'}}>No responde a ningún mensaje. Activar el botón para reanudar.</div>
+        </div>
+        <Btn onClick={togglePausedAll} disabled={togglingPause}>{togglingPause?'…':'Reactivar bot'}</Btn>
+      </div>
+    )}
+
+    {/* Cabecera: toggles + filtros */}
     <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:16,flexWrap:'wrap'}}>
       <div className="card" style={{padding:'12px 16px',display:'flex',alignItems:'center',gap:12}}>
         <div style={{fontSize:13,fontWeight:700}}>Modo training</div>
-        <Toggle on={trainingMode} onChange={toggleTrainingMode}/>
-        {togglingMode && <span style={{fontSize:11,color:'var(--text-muted)'}}>actualizando…</span>}
+        <Toggle on={botCfg.modo_training} onChange={toggleTrainingMode}/>
+        {togglingMode && <span style={{fontSize:11,color:'var(--text-muted)'}}>…</span>}
         <div style={{fontSize:11,color:'var(--text-muted)',marginLeft:8}}>
-          {trainingMode ? 'Bot propone, tú validas' : 'Bot responde automático'}
+          {botCfg.modo_training ? 'Bot propone, tú validas' : 'Bot responde automático (Fase 3)'}
         </div>
       </div>
 
-      {/* Filtros por estado/intent */}
+      {!botCfg.paused_all && (
+        <div className="card" style={{padding:'12px 16px',display:'flex',alignItems:'center',gap:12}}>
+          <div style={{fontSize:13,fontWeight:700,color:'#991b1b'}}>Pausa global</div>
+          <Toggle on={botCfg.paused_all} onChange={togglePausedAll}/>
+          {togglingPause && <span style={{fontSize:11,color:'var(--text-muted)'}}>…</span>}
+        </div>
+      )}
+
+      {/* Filtros */}
       <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
         {[
           ['pending', `Pendientes (${pendingCount})`],
           ['all', 'Todas'],
-          ['confirmation', '✅ Confirmaciones'],
-          ['cancellation', '🚫 Cancelaciones'],
-          ['ambiguous', '❓ Ambiguas'],
-          ['other', '💬 Otras'],
+          ['confirmacion', '✅ Confirmaciones'],
+          ['cancelacion', '🚫 Cancelaciones'],
+          ['ambigua', '❓ Ambiguas'],
+          ['otra', '💬 Otras'],
         ].map(([id, lbl]) => (
           <button key={id} onClick={()=>{setFilter(id);setPage(0)}}
             style={{
@@ -3548,13 +3593,13 @@ function BotCoach() {
     {/* Grid 4x2 */}
     {loading ? (
       <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12}}>
-        {Array.from({length:8}).map((_,i)=><div key={i} className="skel" style={{height:280,borderRadius:12}}/>)}
+        {Array.from({length:8}).map((_,i)=><div key={i} className="skel" style={{height:300,borderRadius:12}}/>)}
       </div>
-    ) : pageProps.length === 0 ? (
+    ) : pageReviews.length === 0 ? (
       <Em icon="🤖" title="Sin conversaciones" sub={filter==='pending' ? 'No hay propuestas pendientes ahora mismo' : 'No hay propuestas con este filtro'}/>
     ) : (
       <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12}}>
-        {pageProps.map(p => <ProposalCard key={p.id} proposal={p} onAfter={loadData} setToast={setToast}/>)}
+        {pageReviews.map(r => <ProposalCard key={r.id} review={r} onAfter={loadData} setToast={setToast}/>)}
       </div>
     )}
 
@@ -3567,7 +3612,7 @@ function BotCoach() {
       </div>
     )}
 
-    {/* Banda de stats al pie */}
+    {/* Banda de stats */}
     <div className="card" style={{marginTop:24,padding:16,display:'flex',gap:24,justifyContent:'center',flexWrap:'wrap'}}>
       <div><span style={{fontSize:11,color:'var(--text-muted)',textTransform:'uppercase',fontWeight:700}}>Hoy</span></div>
       <div><strong style={{fontSize:18}}>{stats.pending}</strong> <span style={{fontSize:12,color:'var(--text-muted)'}}>pendientes</span></div>
@@ -3578,45 +3623,39 @@ function BotCoach() {
   </div>
 }
 
-// Tarjeta individual de una propuesta
-function ProposalCard({ proposal, onAfter, setToast }) {
-  const p = proposal
-  const meta = INTENT_META[p.llm_intent] || INTENT_META.other
-  const [draftText, setDraftText] = useState(p.proposed_text || '')
-  const [applyAction, setApplyAction] = useState(true)
-  const [history, setHistory] = useState([])
+// Tarjeta individual de una review (esquema v5: bot_coach_reviews).
+function ProposalCard({ review, onAfter, setToast }) {
+  const r = review
+  const meta = CATEGORY_META[r.category] || CATEGORY_META.otra
+  const verdictMeta = VERDICT_META[r.verdict] || VERDICT_META.pending
+  const patientName = r.conversations?.patients?.full_name || null
+  const action = r.proposed_action  // jsonb {type, appointment_id, dia, hora, prof, ...}
+
+  const [draftText, setDraftText] = useState(r.proposed_text || '')
+  const [actionApproved, setActionApproved] = useState(!!action)  // si hay acción propuesta, por defecto aprobada
+  const [showContext, setShowContext] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [confirmAction, setConfirmAction] = useState(false)
-  const age = ageColor(p.patient_message_at)
-  const isPending = p.status === 'pending'
+  const [confirmStep, setConfirmStep] = useState(false)
+  const age = ageColor(r.created_at)
+  const isPending = r.verdict === 'pending'
 
-  // Carga mini-historial: últimas 4 propuestas del mismo paciente, anteriores a ésta
-  useEffect(() => {
-    if (!p.patient_id) return
-    sb.from('bot_proposals')
-      .select('patient_message,proposed_text,final_text_sent,status,created_at,llm_intent')
-      .eq('patient_id', p.patient_id)
-      .lt('created_at', p.created_at)
-      .order('created_at', { ascending: false })
-      .limit(4)
-      .then(({data}) => setHistory((data||[]).reverse()))
-  }, [p.patient_id, p.created_at])
-
-  const send = async (opts={}) => {
+  const send = async (verdict) => {
     setBusy(true)
     try {
       const body = {
-        proposal_id: p.id,
-        text_to_send: opts.textOnly !== undefined ? opts.textOnly : draftText,
-        apply_action: opts.actionOverride !== undefined ? opts.actionOverride : applyAction,
-        reviewed_by: 'admin',
+        review_id: r.id,
+        verdict,                                 // 'sent' | 'modified'
+        final_text: draftText?.trim() || null,
+        final_action: actionApproved ? action : null,
+        action_approved: actionApproved,
+        reviewed_by: 'secretaria',
       }
-      const r = await fetch(`${BOT_HTTP_URL}/send-validated`, {
+      const resp = await fetch(`${BOT_HTTP_URL}/send-validated`, {
         method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
       })
-      const out = await r.json()
+      const out = await resp.json()
       if (!out.ok) throw new Error(out.error || 'fail')
-      setToast({msg: out.action_applied ? '✓ Mensaje enviado y acción aplicada' : (out.sent ? '✓ Mensaje enviado' : 'Acción aplicada'), type:'ok'})
+      setToast({msg: '✓ Enviada a cola — el bot ya manda', type:'ok'})
       onAfter()
     } catch (e) {
       setToast({msg:'Error: '+e.message, type:'error'})
@@ -3627,69 +3666,77 @@ function ProposalCard({ proposal, onAfter, setToast }) {
   const reject = async () => {
     setBusy(true)
     try {
-      await fetch(`${BOT_HTTP_URL}/reject-proposal`, {
+      const resp = await fetch(`${BOT_HTTP_URL}/reject-proposal`, {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ proposal_id: p.id, reviewed_by: 'admin' }),
+        body: JSON.stringify({ review_id: r.id, reviewed_by: 'secretaria' }),
       })
+      const out = await resp.json()
+      if (!out.ok) throw new Error(out.error || 'fail')
       setToast({msg:'Rechazada — no se mandó nada', type:'ok'})
       onAfter()
     } catch (e) { setToast({msg:'Error: '+e.message, type:'error'}) }
     setBusy(false)
   }
 
-  const isModified = draftText.trim() !== (p.proposed_text || '').trim()
+  const isModified = (draftText || '').trim() !== (r.proposed_text || '').trim()
+  const wantsToSend = (draftText || '').trim().length > 0
+  const verdict = isModified ? 'modified' : 'sent'
 
-  return<div className="card" style={{padding:14,display:'flex',flexDirection:'column',gap:8,minHeight:280,borderLeft:isPending?`3px solid ${meta.color}`:'3px solid var(--border)'}}>
+  // Mini chat desde context_snapshot
+  const history = r.context_snapshot?.last_messages || []
+
+  return<div className="card" style={{padding:14,display:'flex',flexDirection:'column',gap:8,minHeight:300,borderLeft:isPending?`3px solid ${meta.color}`:'3px solid var(--border)'}}>
     {/* Header */}
     <div style={{display:'flex',alignItems:'center',gap:8}}>
       <div style={{flex:1,minWidth:0}}>
         <div style={{fontSize:13,fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
-          {p.patients?.full_name || `${meta.icon} (${p.patient_phone || '?'})`}
+          {patientName || `${meta.icon} (${r.patient_phone || '?'})`}
         </div>
-        <div style={{fontSize:10,color:'var(--text-muted)'}}>{p.patient_phone || ''}</div>
+        <div style={{fontSize:10,color:'var(--text-muted)'}}>{r.patient_phone || ''}</div>
       </div>
       <span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:999,background:age.bg,color:age.color}}>{age.label}</span>
     </div>
 
-    {/* Intent chip */}
-    <div style={{display:'flex',gap:6,alignItems:'center'}}>
+    {/* Chips: categoría + verdict + nlu_source */}
+    <div style={{display:'flex',gap:4,alignItems:'center',flexWrap:'wrap'}}>
       <span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:999,background:meta.bg,color:meta.color}}>{meta.icon} {meta.label}</span>
-      {p.status === 'sent' && <span style={{fontSize:10,padding:'2px 6px',background:'#dcfce7',color:'#15803d',borderRadius:6}}>enviada</span>}
-      {p.status === 'rejected' && <span style={{fontSize:10,padding:'2px 6px',background:'#fee2e2',color:'#991b1b',borderRadius:6}}>rechazada</span>}
-      {p.reviewed_text_modified && <span style={{fontSize:10,padding:'2px 6px',background:'#fef3c7',color:'#92400e',borderRadius:6}}>modificada</span>}
+      {!isPending && (
+        <span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:999,background:verdictMeta.bg,color:verdictMeta.color}}>{verdictMeta.label}</span>
+      )}
+      {r.nlu_source === 'deterministic' && <span style={{fontSize:9,padding:'1px 6px',background:'#e0e7ff',color:'#4338ca',borderRadius:6}}>regex</span>}
+      {r.nlu_source === 'llm' && <span style={{fontSize:9,padding:'1px 6px',background:'#fef3c7',color:'#92400e',borderRadius:6}}>llm</span>}
+      {r.flagged && <span style={{fontSize:10,padding:'1px 6px',background:'#fee2e2',color:'#991b1b',borderRadius:6,fontWeight:700}}>⚠ flagged</span>}
     </div>
 
-    {/* Mini chat */}
-    <div style={{background:'#f8fafc',borderRadius:8,padding:8,fontSize:11,maxHeight:80,overflowY:'auto',display:'flex',flexDirection:'column',gap:4}}>
-      {history.map((h, i) => <div key={i}>
-        <div style={{color:'#0f172a'}}>👤 {h.patient_message?.slice(0,100)}</div>
-        {h.final_text_sent && <div style={{color:'var(--green)',marginLeft:12}}>🤖 {h.final_text_sent.slice(0,100)}</div>}
-      </div>)}
-      <div style={{borderTop:history.length?'1px dashed #cbd5e1':'none',paddingTop:history.length?4:0}}>
-        <div style={{color:'#0f172a',fontWeight:600}}>👤 {p.patient_message}</div>
+    {/* Mini chat (desde context_snapshot.last_messages + mensaje actual) */}
+    <div style={{background:'#f8fafc',borderRadius:8,padding:8,fontSize:11,maxHeight:90,overflowY:'auto',display:'flex',flexDirection:'column',gap:3}}>
+      {history.slice(-4).map((h, i) => (
+        <div key={i} style={{color: h.direction === 'in' ? '#0f172a' : 'var(--green)', marginLeft: h.direction === 'in' ? 0 : 12}}>
+          {h.direction === 'in' ? '👤' : '🤖'} {h.text?.slice(0,90)}
+        </div>
+      ))}
+      <div style={{borderTop: history.length ? '1px dashed #cbd5e1' : 'none', paddingTop: history.length ? 4 : 0}}>
+        <div style={{color:'#0f172a',fontWeight:600}}>👤 {r.patient_message}</div>
       </div>
     </div>
 
-    {/* Acción propuesta */}
-    {p.proposed_action && (
+    {/* Acción propuesta — toggle SEPARADO del texto */}
+    {action && (
       <div style={{padding:'6px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,fontSize:11,display:'flex',alignItems:'center',gap:8}}>
-        <Toggle on={applyAction} onChange={setApplyAction}/>
+        <Toggle on={actionApproved} onChange={setActionApproved}/>
         <div style={{flex:1}}>
-          <strong>Acción:</strong> {p.proposed_action === 'cancel_appt' ? 'Cancelar cita' : p.proposed_action}
-          {p.proposed_action_payload?.dia && (
-            <div style={{fontSize:10,color:'var(--text-muted)'}}>{p.proposed_action_payload.dia} {p.proposed_action_payload.hora} con {p.proposed_action_payload.prof}</div>
-          )}
+          <strong>{action.type === 'cancelar_cita' ? '🗑 Cancelar cita' : action.type}</strong>
+          {action.dia && <div style={{fontSize:10,color:'var(--text-muted)'}}>{action.dia} {action.hora} con {action.prof}</div>}
         </div>
       </div>
     )}
 
-    {/* Input de respuesta */}
+    {/* Body editable solo si pending */}
     {isPending ? <>
       <textarea value={draftText} onChange={e=>setDraftText(e.target.value)}
-        placeholder={p.proposed_text ? '' : 'Escribe respuesta o deja vacío para no responder'}
-        style={{width:'100%',minHeight:60,resize:'vertical',padding:8,fontSize:12,border:'1.5px solid var(--stone)',borderRadius:8,fontFamily:'inherit'}}/>
+        placeholder={r.proposed_text ? '' : 'Escribe respuesta (o deja vacío para no enviar)'}
+        style={{width:'100%',minHeight:50,resize:'vertical',padding:8,fontSize:12,border:'1.5px solid var(--stone)',borderRadius:8,fontFamily:'inherit'}}/>
 
-      {/* Quick replies */}
       <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
         {DEFAULT_QUICK_REPLIES.map(q => (
           <button key={q} onClick={()=>setDraftText(q)}
@@ -3697,19 +3744,23 @@ function ProposalCard({ proposal, onAfter, setToast }) {
         ))}
       </div>
 
-      {/* Botones de acción */}
-      {confirmAction ? (
+      {confirmStep ? (
         <div style={{display:'flex',gap:6,padding:8,background:'#fef3c7',borderRadius:8,fontSize:11,flexDirection:'column'}}>
-          <div style={{fontWeight:600}}>¿Confirmar?</div>
+          <div style={{fontWeight:600}}>¿Confirmar envío + acción?</div>
+          <div style={{fontSize:10,color:'var(--text-muted)'}}>
+            {wantsToSend && '📤 "' + (draftText || '').slice(0,50) + '"'}
+            {actionApproved && action && (wantsToSend ? ' + ' : '') + '🗑 ' + (action.type === 'cancelar_cita' ? 'cancelar cita' : action.type)}
+          </div>
           <div style={{display:'flex',gap:6}}>
-            <Btn variant="ghost" onClick={()=>setConfirmAction(false)} style={{flex:1,padding:'4px 8px',fontSize:11}}>Atrás</Btn>
-            <Btn variant="primary" onClick={()=>{setConfirmAction(false);send()}} disabled={busy} style={{flex:1,padding:'4px 8px',fontSize:11}}>Sí, enviar</Btn>
+            <Btn variant="ghost" onClick={()=>setConfirmStep(false)} style={{flex:1,padding:'4px 8px',fontSize:11}}>Atrás</Btn>
+            <Btn variant="primary" onClick={()=>{setConfirmStep(false);send(verdict)}} disabled={busy} style={{flex:1,padding:'4px 8px',fontSize:11}}>Sí, ejecutar</Btn>
           </div>
         </div>
       ) : (
         <div style={{display:'flex',gap:4,marginTop:'auto'}}>
-          {/* Enviar tal cual (texto+acción si toca) */}
-          <Btn onClick={()=>(p.proposed_action ? setConfirmAction(true) : send())} disabled={busy || (!draftText.trim() && !p.proposed_action)} style={{flex:1,padding:'6px 8px',fontSize:11}}>
+          <Btn onClick={()=>(actionApproved && action ? setConfirmStep(true) : send(verdict))}
+               disabled={busy || (!wantsToSend && !actionApproved)}
+               style={{flex:1,padding:'6px 8px',fontSize:11}}>
             ✓ {isModified ? 'Enviar mod.' : 'Enviar'}
           </Btn>
           <Btn variant="ghost" onClick={reject} disabled={busy} style={{padding:'6px 8px',fontSize:11}}>❌</Btn>
@@ -3717,9 +3768,26 @@ function ProposalCard({ proposal, onAfter, setToast }) {
       )}
     </> : (
       <div style={{padding:'8px 10px',background:'#f1f5f9',borderRadius:8,fontSize:11,marginTop:'auto'}}>
-        {p.final_text_sent ? <><strong>Enviado:</strong> {p.final_text_sent}</> : <em>Sin mensaje enviado</em>}
-        <div style={{fontSize:10,color:'var(--text-muted)',marginTop:4}}>{p.reviewed_at && new Date(p.reviewed_at).toLocaleString('es-ES')}</div>
+        {r.final_text ? <><strong>Enviado:</strong> {r.final_text}</> : <em>Sin mensaje enviado</em>}
+        {r.action_executed && <div style={{fontSize:10,color:'var(--green)',marginTop:2}}>✓ Acción ejecutada</div>}
+        {r.rejection_reason && <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>Motivo: {r.rejection_reason}</div>}
+        <div style={{fontSize:10,color:'var(--text-muted)',marginTop:4}}>
+          {r.reviewed_at && new Date(r.reviewed_at).toLocaleString('es-ES')}
+          {r.reviewed_by && ` · ${r.reviewed_by}`}
+        </div>
       </div>
+    )}
+
+    {/* Context snapshot expandible (debug / análisis) */}
+    {r.context_snapshot && (
+      <details style={{fontSize:10,color:'var(--text-muted)',marginTop:4}}>
+        <summary style={{cursor:'pointer',userSelect:'none'}} onClick={()=>setShowContext(s=>!s)}>
+          📷 contexto congelado ({Object.keys(r.context_snapshot).length} campos)
+        </summary>
+        <pre style={{maxHeight:120,overflow:'auto',background:'#fff',border:'1px solid var(--stone)',borderRadius:6,padding:6,fontSize:9,marginTop:4}}>
+          {JSON.stringify(r.context_snapshot, null, 2)}
+        </pre>
+      </details>
     )}
   </div>
 }
