@@ -101,6 +101,7 @@ const NAV_GROUPS = [
   {label:'Administración',items:[
     {id:'facturacion',icon:'🧾',label:'Facturación'},
     {id:'bot-coach',icon:'🤖',label:'Bot Coach'},
+    {id:'bot-nlu',icon:'🧠',label:'NLU Log'},
   ]},
 ]
 function Sidebar({page,onNav,open,onClose,onLogout}){
@@ -521,6 +522,18 @@ function Agenda(){
 
   useEffect(()=>{load()},[load])
   useEffect(()=>{sb.from('services').select('id,name,duration_minutes,professional_id').eq('is_active',true).eq('section','osteopathy').order('duration_minutes',{ascending:false}).then(({data})=>setServices(data||[]))},[])
+
+  // Realtime: si alguien crea/edita/cancela una cita o un bloqueo desde otra
+  // pestaña o el bot, refrescamos la semana sin recarga manual.
+  useEffect(()=>{
+    const ch = sb.channel('agenda_v5')
+      .on('postgres_changes', { event:'*', schema:'public', table:'appointments' },       () => load())
+      .on('postgres_changes', { event:'*', schema:'public', table:'blocked_slots' },      () => load())
+      .on('postgres_changes', { event:'*', schema:'public', table:'blocked_days' },       () => load())
+      .on('postgres_changes', { event:'*', schema:'public', table:'cancellation_holds' }, () => load())
+      .subscribe()
+    return () => { sb.removeChannel(ch) }
+  },[load])
 
   // Auto-seleccionar primera fecha libre al cambiar profesional
   useEffect(()=>{
@@ -3418,9 +3431,10 @@ function ageColor(iso) {
 function BotCoach() {
   const [reviews, setReviews] = useState([])
   const [loading, setLoading] = useState(true)
-  const [botCfg, setBotCfg] = useState({ paused_all:false, modo_training:true })
+  const [botCfg, setBotCfg] = useState({ paused_all:false, modo_training:true, use_legacy_pipeline:false })
   const [togglingMode, setTogglingMode] = useState(false)
   const [togglingPause, setTogglingPause] = useState(false)
+  const [togglingLegacy, setTogglingLegacy] = useState(false)
   const [filter, setFilter] = useState('pending')   // pending | all | confirmacion | cancelacion | ambigua | otra
   const [page, setPage] = useState(0)
   const [stats, setStats] = useState({ pending:0, sent:0, rejected:0, modified:0 })
@@ -3495,6 +3509,17 @@ function BotCoach() {
     setToast({msg: newVal ? '🤖 Modo training ACTIVADO — bot propone, tú validas' : '⚡ Modo training DESACTIVADO — bot responde automático (Fase 3)', type:'ok'})
   }
 
+  const toggleLegacyPipeline = async () => {
+    setTogglingLegacy(true)
+    const newVal = !botCfg.use_legacy_pipeline
+    const { error } = await sb.from('bot_config').update({ use_legacy_pipeline: newVal, updated_at: new Date().toISOString() }).eq('id', 1)
+    setTogglingLegacy(false)
+    if (error) { setToast({msg:'Error: '+error.message, type:'error'}); return }
+    setBotCfg(c => ({ ...c, use_legacy_pipeline: newVal }))
+    notifyBotRefresh()
+    setToast({msg: newVal ? '⚠ Pipeline LEGACY activa (Fase 2 — sin FSM)' : '✓ Pipeline Fase 3 activa (NLU+FSM)', type:'ok'})
+  }
+
   const togglePausedAll = async () => {
     setTogglingPause(true)
     const newVal = !botCfg.paused_all
@@ -3565,6 +3590,15 @@ function BotCoach() {
           {togglingPause && <span style={{fontSize:11,color:'var(--text-muted)'}}>…</span>}
         </div>
       )}
+
+      <div className="card" style={{padding:'12px 16px',display:'flex',alignItems:'center',gap:12}} title="Forzar pipeline antigua Fase 2 (sin NLU+FSM) — solo para rollback rápido">
+        <div style={{fontSize:13,fontWeight:700}}>Pipeline</div>
+        <Toggle on={!botCfg.use_legacy_pipeline} onChange={toggleLegacyPipeline}/>
+        {togglingLegacy && <span style={{fontSize:11,color:'var(--text-muted)'}}>…</span>}
+        <div style={{fontSize:11,color:'var(--text-muted)',marginLeft:8}}>
+          {botCfg.use_legacy_pipeline ? '⚠ Fase 2 (legacy)' : 'Fase 3 (NLU+FSM)'}
+        </div>
+      </div>
 
       {/* Filtros */}
       <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
@@ -3792,8 +3826,191 @@ function ProposalCard({ review, onAfter, setToast }) {
   </div>
 }
 
+// ─── BotNlu (Fase 4 spec — observabilidad NLU) ────────────────────────────────
+// Lista las clasificaciones recientes de nlu_log con filtros por source/reason.
+// Permite marcar entradas como "correct/incorrect" (was_correct) y promoverlas
+// al nlu_golden_set para tests de regresión.
+function BotNlu() {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [sourceFilter, setSourceFilter] = useState('all')   // all | deterministic | llm
+  const [reasonFilter, setReasonFilter] = useState('all')   // all | unknown | conflict | date_unparsed | weak
+  const [toast, setToast] = useState(null)
+  const [stats, setStats] = useState({ total:0, det:0, llm:0, byReason:{} })
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    let q = sb.from('nlu_log')
+      .select('id, patient_phone, raw_message, normalized, intent, slots, source, escalate_reason, was_correct, review_id, latency_ms, created_at')
+      .order('created_at', { ascending: false })
+      .limit(200)
+    if (sourceFilter !== 'all') q = q.eq('source', sourceFilter)
+    if (reasonFilter !== 'all') q = q.eq('escalate_reason', reasonFilter)
+    const { data } = await q
+    setRows(data || [])
+
+    // Stats últimas 24h
+    const since = new Date(Date.now() - 24*60*60*1000).toISOString()
+    const { data: dayRows } = await sb.from('nlu_log')
+      .select('source, escalate_reason')
+      .gte('created_at', since)
+    const s = { total: dayRows?.length || 0, det:0, llm:0, byReason:{} }
+    for (const r of (dayRows||[])) {
+      if (r.source === 'deterministic') s.det++
+      else if (r.source === 'llm') {
+        s.llm++
+        if (r.escalate_reason) s.byReason[r.escalate_reason] = (s.byReason[r.escalate_reason]||0) + 1
+      }
+    }
+    setStats(s)
+    setLoading(false)
+  }, [sourceFilter, reasonFilter])
+
+  useEffect(() => { load() }, [load])
+
+  // Realtime
+  useEffect(() => {
+    const ch = sb.channel('nlu_log_v5')
+      .on('postgres_changes', { event:'INSERT', schema:'public', table:'nlu_log' }, () => load())
+      .subscribe()
+    return () => { sb.removeChannel(ch) }
+  }, [load])
+
+  const markCorrect = async (id, val) => {
+    const { error } = await sb.from('nlu_log').update({ was_correct: val }).eq('id', id)
+    if (error) { setToast({msg:'Error: '+error.message, type:'error'}); return }
+    setRows(rs => rs.map(r => r.id === id ? { ...r, was_correct: val } : r))
+    setToast({msg: val ? '✓ Marcado como correcto' : '✗ Marcado como incorrecto', type:'ok'})
+  }
+
+  const promoteToGolden = async (row) => {
+    const { error } = await sb.from('nlu_golden_set').insert({
+      source_review_id: row.review_id || null,
+      patient_message: row.raw_message,
+      expected_intent: row.intent,
+      expected_slots: row.slots || {},
+      notes: `Promovido desde nlu_log #${row.id} (${row.source}${row.escalate_reason ? '/'+row.escalate_reason : ''})`,
+    })
+    if (error) { setToast({msg:'Error: '+error.message, type:'error'}); return }
+    setToast({msg:'✨ Añadido al golden set', type:'ok'})
+  }
+
+  const pctDet = stats.total ? Math.round(100 * stats.det / stats.total) : 0
+
+  return <div>
+    {toast && <Toast msg={toast.msg} type={toast.type} onDone={()=>setToast(null)}/>}
+
+    {/* Banda de stats 24h */}
+    <div className="card" style={{padding:16, marginBottom:16, display:'flex', gap:24, flexWrap:'wrap', alignItems:'center'}}>
+      <div>
+        <div style={{fontSize:11,color:'var(--text-muted)',textTransform:'uppercase'}}>Últimas 24h</div>
+        <div style={{fontSize:24,fontWeight:700}}>{stats.total}</div>
+        <div style={{fontSize:11,color:'var(--text-muted)'}}>clasificaciones</div>
+      </div>
+      <div>
+        <div style={{fontSize:11,color:'var(--text-muted)',textTransform:'uppercase'}}>Sin LLM</div>
+        <div style={{fontSize:24,fontWeight:700,color:'var(--green)'}}>{pctDet}%</div>
+        <div style={{fontSize:11,color:'var(--text-muted)'}}>{stats.det} deterministas / {stats.llm} LLM</div>
+      </div>
+      {Object.entries(stats.byReason).map(([reason, n]) => (
+        <div key={reason}>
+          <div style={{fontSize:11,color:'var(--text-muted)',textTransform:'uppercase'}}>{reason}</div>
+          <div style={{fontSize:24,fontWeight:700}}>{n}</div>
+          <div style={{fontSize:11,color:'var(--text-muted)'}}>escalados</div>
+        </div>
+      ))}
+    </div>
+
+    {/* Filtros */}
+    <div style={{display:'flex',gap:12,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
+      <div style={{display:'flex',gap:6}}>
+        {[['all','Todas'],['deterministic','✓ Sin LLM'],['llm','🧠 Con LLM']].map(([id,lbl]) => (
+          <button key={id} onClick={()=>setSourceFilter(id)} style={{
+            padding:'6px 12px',borderRadius:999,fontSize:12,fontWeight:600,cursor:'pointer',
+            border: sourceFilter===id ? '1.5px solid var(--green)' : '1px solid var(--stone)',
+            background: sourceFilter===id ? 'var(--sage-mist)' : '#fff',
+            color: sourceFilter===id ? 'var(--green)' : 'var(--body)',
+          }}>{lbl}</button>
+        ))}
+      </div>
+      {sourceFilter === 'llm' && (
+        <div style={{display:'flex',gap:6}}>
+          {[['all','Todos'],['unknown','unknown'],['conflict','conflict'],['date_unparsed','date_unparsed'],['weak','weak']].map(([id,lbl]) => (
+            <button key={id} onClick={()=>setReasonFilter(id)} style={{
+              padding:'4px 10px',borderRadius:999,fontSize:11,fontWeight:600,cursor:'pointer',
+              border: reasonFilter===id ? '1.5px solid var(--orange)' : '1px solid var(--stone)',
+              background: reasonFilter===id ? '#fff7ed' : '#fff',
+              color: reasonFilter===id ? '#9a3412' : 'var(--text-muted)',
+            }}>{lbl}</button>
+          ))}
+        </div>
+      )}
+    </div>
+
+    {/* Tabla */}
+    {loading ? (
+      <div className="skel" style={{height:400,borderRadius:12}}/>
+    ) : rows.length === 0 ? (
+      <Em icon="🧠" title="Sin clasificaciones" sub="Aún no hay entradas en nlu_log con estos filtros"/>
+    ) : (
+      <div className="card" style={{padding:0,overflow:'auto'}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+          <thead style={{position:'sticky',top:0,background:'#f8fafc',borderBottom:'2px solid var(--stone)'}}>
+            <tr>
+              <th style={{padding:'8px 10px',textAlign:'left'}}>Cuándo</th>
+              <th style={{padding:'8px 10px',textAlign:'left'}}>Tlf</th>
+              <th style={{padding:'8px 10px',textAlign:'left'}}>Mensaje</th>
+              <th style={{padding:'8px 10px',textAlign:'left'}}>Intent</th>
+              <th style={{padding:'8px 10px',textAlign:'left'}}>Slots</th>
+              <th style={{padding:'8px 10px',textAlign:'left'}}>Fuente</th>
+              <th style={{padding:'8px 10px',textAlign:'left'}}>Latencia</th>
+              <th style={{padding:'8px 10px',textAlign:'left'}}>Veredicto</th>
+              <th style={{padding:'8px 10px',textAlign:'left'}}>Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.id} style={{borderBottom:'1px solid var(--stone)'}}>
+                <td style={{padding:'6px 10px',whiteSpace:'nowrap',color:'var(--text-muted)'}}>
+                  {new Date(r.created_at).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}
+                </td>
+                <td style={{padding:'6px 10px',fontFamily:'monospace'}}>{r.patient_phone}</td>
+                <td style={{padding:'6px 10px',maxWidth:280,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={r.raw_message}>
+                  {r.raw_message}
+                </td>
+                <td style={{padding:'6px 10px'}}><strong>{r.intent}</strong></td>
+                <td style={{padding:'6px 10px',fontFamily:'monospace',fontSize:11,color:'var(--text-muted)'}}>
+                  {r.slots && Object.keys(r.slots).length ? JSON.stringify(r.slots) : '—'}
+                </td>
+                <td style={{padding:'6px 10px'}}>
+                  {r.source === 'deterministic'
+                    ? <span style={{color:'var(--green)',fontWeight:600}}>✓ det</span>
+                    : <span style={{color:'#9a3412',fontWeight:600}}>🧠 llm{r.escalate_reason ? ` (${r.escalate_reason})` : ''}</span>}
+                </td>
+                <td style={{padding:'6px 10px',color:'var(--text-muted)',fontFamily:'monospace',fontSize:11}}>
+                  {r.latency_ms != null ? r.latency_ms + 'ms' : '—'}
+                </td>
+                <td style={{padding:'6px 10px'}}>
+                  {r.was_correct === true && <span style={{color:'var(--green)'}}>✓</span>}
+                  {r.was_correct === false && <span style={{color:'#dc2626'}}>✗</span>}
+                  {r.was_correct == null && <span style={{color:'var(--text-muted)'}}>—</span>}
+                </td>
+                <td style={{padding:'6px 10px',whiteSpace:'nowrap',display:'flex',gap:4}}>
+                  <button onClick={()=>markCorrect(r.id, true)} title="Marcar correcto" style={{cursor:'pointer',padding:'2px 6px',fontSize:11,borderRadius:6,border:'1px solid var(--stone)',background:'#fff'}}>✓</button>
+                  <button onClick={()=>markCorrect(r.id, false)} title="Marcar incorrecto" style={{cursor:'pointer',padding:'2px 6px',fontSize:11,borderRadius:6,border:'1px solid var(--stone)',background:'#fff'}}>✗</button>
+                  <button onClick={()=>promoteToGolden(r)} title="Añadir al golden set" style={{cursor:'pointer',padding:'2px 6px',fontSize:11,borderRadius:6,border:'1px solid var(--stone)',background:'#fff'}}>✨</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+  </div>
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
-const PAGE_TITLES={dashboard:'Dashboard',agenda:'Agenda',horarios:'Horarios',bloqueados:'Días bloqueados',espera:'Lista de espera',yoga:'Yoga',escalada:'Escalada',belleza:'Belleza',pacientes:'Pacientes',servicios:'Servicios',profesionales:'Profesionales',facturacion:'Facturación','bot-coach':'Bot Coach'}
+const PAGE_TITLES={dashboard:'Dashboard',agenda:'Agenda',horarios:'Horarios',bloqueados:'Días bloqueados',espera:'Lista de espera',yoga:'Yoga',escalada:'Escalada',belleza:'Belleza',pacientes:'Pacientes',servicios:'Servicios',profesionales:'Profesionales',facturacion:'Facturación','bot-coach':'Bot Coach','bot-nlu':'NLU Log'}
 
 export default function App(){
   const[user,setUser]=useState(null)
@@ -3835,6 +4052,7 @@ export default function App(){
       case 'servicios':     return<Servicios/>
       case 'facturacion':   return<Facturacion/>
       case 'bot-coach':     return<BotCoach/>
+      case 'bot-nlu':       return<BotNlu/>
       default:              return<Dashboard onNav={setPage}/>
     }
   }
