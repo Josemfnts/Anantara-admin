@@ -3431,10 +3431,15 @@ function ageColor(iso) {
 function BotCoach() {
   const [reviews, setReviews] = useState([])
   const [loading, setLoading] = useState(true)
-  const [botCfg, setBotCfg] = useState({ paused_all:false, modo_training:true, use_legacy_pipeline:false })
+  const [botCfg, setBotCfg] = useState({
+    paused_all: false, modo_training: true, use_legacy_pipeline: false,
+    confirmaciones_auto: false, cancelaciones_auto: false,
+    ambiguas_auto: false, otras_auto: false, notify_enabled: true,
+  })
   const [togglingMode, setTogglingMode] = useState(false)
   const [togglingPause, setTogglingPause] = useState(false)
   const [togglingLegacy, setTogglingLegacy] = useState(false)
+  const [metrics, setMetrics] = useState([])
   const [filter, setFilter] = useState('pending')   // pending | all | confirmacion | cancelacion | ambigua | otra
   const [page, setPage] = useState(0)
   const [stats, setStats] = useState({ pending:0, sent:0, rejected:0, modified:0 })
@@ -3485,11 +3490,13 @@ function BotCoach() {
     return () => { sb.removeChannel(ch) }
   }, [loadData])
 
-  // Cargar bot_config inicial
+  // Cargar bot_config inicial + métricas
   useEffect(() => {
     (async () => {
       const { data } = await sb.from('bot_config').select('*').eq('id', 1).maybeSingle()
       if (data) setBotCfg(data)
+      const { data: m } = await sb.from('bot_coach_metrics').select('*')
+      if (m) setMetrics(m)
     })()
   }, [])
 
@@ -3645,6 +3652,85 @@ function BotCoach() {
       <div style={{flex:1}}/>
       <Btn variant="ghost" onClick={exportCsv}>📥 Exportar CSV</Btn>
     </div>
+
+    {/* Panel de métricas Fase 4: ventana móvil últimas 50 reviews no-pending por categoría */}
+    {metrics.length > 0 && (
+      <div className="card" style={{padding:16,marginBottom:16}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+          <div style={{fontSize:13,fontWeight:700}}>📊 Métricas últimas 50 reviews (por categoría)</div>
+          <div style={{fontSize:11,color:'var(--text-muted)'}}>· criterio graduación: ≥95% enviado sin modificar</div>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(230px,1fr))',gap:12}}>
+          {metrics.map(m => {
+            const goodEnough = m.pct_sent_unmodified_human >= 95 && m.total >= 50
+            const autoKey = `${m.category}_auto`
+            const isAuto = !!botCfg[autoKey]
+            const canGraduate = (m.category === 'confirmacion' || m.category === 'cancelacion') && goodEnough && !isAuto
+            const lockedNever = m.category === 'ambigua' || m.category === 'otra'
+            return (
+              <div key={m.category} style={{
+                padding:12, borderRadius:8,
+                border: isAuto ? '2px solid var(--green)' : '1px solid var(--stone)',
+                background: isAuto ? 'var(--sage-mist)' : '#fff',
+              }}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                  <strong style={{fontSize:13}}>{m.category}</strong>
+                  {isAuto && <span style={{fontSize:10,padding:'2px 8px',borderRadius:999,background:'var(--green)',color:'#fff',fontWeight:600}}>AUTO</span>}
+                </div>
+                <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:8}}>
+                  total {m.total} · enviadas {m.sent} · modificadas {m.modified} · rechazadas {m.rejected}
+                  {m.auto_sent > 0 && ` · auto ${m.auto_sent}`}
+                </div>
+                <div style={{height:8,background:'#f1f5f9',borderRadius:4,overflow:'hidden',display:'flex',marginBottom:8}}>
+                  <div style={{width:`${m.pct_sent}%`,background:'#22c55e'}}/>
+                  <div style={{width:`${m.pct_modified}%`,background:'#f59e0b'}}/>
+                  <div style={{width:`${m.pct_rejected}%`,background:'#ef4444'}}/>
+                  <div style={{width:`${m.pct_auto_sent}%`,background:'#3b82f6'}}/>
+                </div>
+                <div style={{fontSize:11,marginBottom:8}}>
+                  <strong>{m.pct_sent_unmodified_human}%</strong> enviadas sin modificar
+                </div>
+                {lockedNever && (
+                  <div style={{fontSize:10,color:'#7f1d1d',background:'#fef2f2',padding:'4px 8px',borderRadius:4}}>
+                    🔒 NUNCA auto (spec §4.3)
+                  </div>
+                )}
+                {!lockedNever && (
+                  <button
+                    disabled={!canGraduate && !isAuto}
+                    onClick={async ()=>{
+                      const newVal = !isAuto
+                      if (newVal && !goodEnough) {
+                        if (!confirm(`Forzar AUTO en ${m.category} sin alcanzar 95% (${m.pct_sent_unmodified_human}% actual). ¿Seguro?`)) return
+                      }
+                      const { error } = await sb.from('bot_config').update({ [autoKey]: newVal, updated_at: new Date().toISOString() }).eq('id', 1)
+                      if (error) { setToast({msg:'Error: '+error.message, type:'error'}); return }
+                      setBotCfg(c => ({ ...c, [autoKey]: newVal }))
+                      notifyBotRefresh()
+                      setToast({msg: newVal ? `✓ ${m.category} pasa a AUTO` : `${m.category} vuelve a training`, type:'ok'})
+                    }}
+                    style={{
+                      width:'100%',padding:'6px 8px',borderRadius:6,fontSize:11,fontWeight:600,
+                      cursor: (canGraduate || isAuto) ? 'pointer' : 'not-allowed',
+                      border: '1px solid var(--stone)',
+                      background: isAuto ? '#fff' : (canGraduate ? 'var(--green)' : '#f1f5f9'),
+                      color: isAuto ? 'var(--green)' : (canGraduate ? '#fff' : 'var(--text-muted)'),
+                    }}>
+                    {isAuto ? '↩ Volver a training' : (canGraduate ? '⚡ Graduar a auto' : 'Aún no califica')}
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+        <div style={{fontSize:10,color:'var(--text-muted)',marginTop:8,display:'flex',gap:12,flexWrap:'wrap'}}>
+          <span><span style={{display:'inline-block',width:8,height:8,background:'#22c55e',marginRight:4}}/>sent</span>
+          <span><span style={{display:'inline-block',width:8,height:8,background:'#f59e0b',marginRight:4}}/>modified</span>
+          <span><span style={{display:'inline-block',width:8,height:8,background:'#ef4444',marginRight:4}}/>rejected</span>
+          <span><span style={{display:'inline-block',width:8,height:8,background:'#3b82f6',marginRight:4}}/>auto_sent</span>
+        </div>
+      </div>
+    )}
 
     {/* Grid 4x2 */}
     {loading ? (
