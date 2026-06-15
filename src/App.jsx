@@ -3531,13 +3531,35 @@ function BotCoach() {
     setToast({msg: newVal ? '🚨 BOT PAUSADO — no responde a nadie' : '✅ Bot reactivado', type: newVal ? 'error' : 'ok'})
   }
 
-  // Orden: pendientes primero por created_at asc; resueltas por reviewed_at desc
-  const sorted = [...reviews].sort((a,b) => {
-    if (a.verdict === 'pending' && b.verdict !== 'pending') return -1
-    if (a.verdict !== 'pending' && b.verdict === 'pending') return 1
-    if (a.verdict === 'pending') return new Date(a.created_at) - new Date(b.created_at)
-    return new Date(b.reviewed_at||b.created_at) - new Date(a.reviewed_at||a.created_at)
-  })
+  // Agrupar por conversación: una sola card por (conversation_id || patient_phone),
+  // mostrando la review MÁS RECIENTE pending de cada conversación. Las anteriores
+  // pending del mismo paciente quedan auto-resueltas (verdict='superseded') al
+  // pulsar enviar/rechazar (gestionado en ProposalCard.handleSend).
+  const groupedSorted = (() => {
+    const byKey = new Map()
+    for (const r of reviews) {
+      const key = r.conversation_id || `phone:${r.patient_phone}`
+      const prev = byKey.get(key)
+      // En filtro 'pending', solo nos quedamos con la más reciente pending por convo.
+      // En el resto de filtros, mostramos cada review tal cual.
+      if (filter === 'pending') {
+        if (!prev || new Date(r.created_at) > new Date(prev.created_at)) {
+          byKey.set(key, r)
+        }
+      } else {
+        // sin agrupar: cada review como tal
+        byKey.set(r.id, r)
+      }
+    }
+    const arr = [...byKey.values()]
+    return arr.sort((a, b) => {
+      if (a.verdict === 'pending' && b.verdict !== 'pending') return -1
+      if (a.verdict !== 'pending' && b.verdict === 'pending') return 1
+      if (a.verdict === 'pending') return new Date(a.created_at) - new Date(b.created_at)
+      return new Date(b.reviewed_at || b.created_at) - new Date(a.reviewed_at || a.created_at)
+    })
+  })()
+  const sorted = groupedSorted
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / BOTCOACH_PAGE_SIZE))
   const pageReviews = sorted.slice(page*BOTCOACH_PAGE_SIZE, (page+1)*BOTCOACH_PAGE_SIZE)
