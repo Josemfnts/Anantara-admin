@@ -107,6 +107,10 @@ function LoginPage({onLogin}){
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 const NAV_GROUPS = [
   {label:'Principal',items:[{id:'dashboard',icon:'📊',label:'Dashboard'}]},
+  {label:'Bot',items:[
+    {id:'bot-coach',icon:'🤖',label:'Bot Coach'},
+    {id:'bot-nlu',icon:'🧠',label:'NLU Log'},
+  ]},
   {label:'Osteopatía',items:[
     {id:'agenda',icon:'📅',label:'Agenda'},
     {id:'horarios',icon:'🕐',label:'Horarios'},
@@ -125,8 +129,6 @@ const NAV_GROUPS = [
   ]},
   {label:'Administración',items:[
     {id:'facturacion',icon:'🧾',label:'Facturación'},
-    {id:'bot-coach',icon:'🤖',label:'Bot Coach'},
-    {id:'bot-nlu',icon:'🧠',label:'NLU Log'},
   ]},
 ]
 function Sidebar({page,onNav,open,onClose,onLogout}){
