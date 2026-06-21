@@ -3569,7 +3569,18 @@ function BotCoach() {
   const [thread, setThread] = useState([])
   const [search, setSearch] = useState('')
   const [colaMode, setColaMode] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [sending, setSending] = useState(false)
+  const QR_DEFAULTS = ['Listo, te apunto','Perfecto, hasta mañana','Te llamamos enseguida','Hecho, cancelada']
+  const [quickReplies, setQuickReplies] = useState(() => {
+    try { const v = JSON.parse(localStorage.getItem('bc_quickreplies')); return Array.isArray(v)&&v.length?v:QR_DEFAULTS } catch { return QR_DEFAULTS }
+  })
+  const [narrow, setNarrow] = useState(() => typeof window!=='undefined' && window.matchMedia('(max-width:1023px)').matches)
   const selConvRef = useRef(selConvId)
+  const convFilteredRef = useRef([])
+  const pendingByConvRef = useRef({})
+  const selPhoneRef = useRef(null)
+  const searchRef = useRef(null)
   useEffect(() => { selConvRef.current = selConvId }, [selConvId])
 
   // Carga inicial + suscripción realtime
@@ -3726,6 +3737,115 @@ function BotCoach() {
   for (const rv of reviews) if (rv.verdict==='pending' && rv.conversation_id) pendingByConv[rv.conversation_id] = (pendingByConv[rv.conversation_id]||0)+1
   const selPending = reviews.find(rv => rv.conversation_id===selConvId && rv.verdict==='pending') || null
   const MIN30 = 30*60*1000
+  const pendingConvs = convFiltered.filter(c => (pendingByConv[c.id]||0) > 0)
+  convFilteredRef.current = convFiltered
+  pendingByConvRef.current = pendingByConv
+  selPhoneRef.current = selConv?.phone || null
+
+  // chat_id de WhatsApp a partir del teléfono (formato 34600123456@c.us)
+  const toChatId = (phone) => { if (!phone) return null; const p = String(phone); return p.includes('@') ? p : `${p.replace(/\D/g,'')}@c.us` }
+
+  // Precargar el borrador con la propuesta pendiente al cambiar de conversación
+  useEffect(() => { setDraft(selPending?.proposed_text || '') }, [selConvId, selPending?.id]) // eslint-disable-line
+
+  // Responsive: una columna a la vez por debajo de 1024px
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width:1023px)')
+    const h = e => setNarrow(e.matches)
+    mq.addEventListener('change', h)
+    return () => mq.removeEventListener('change', h)
+  }, [])
+
+  // Atajos globales: ↑/↓ navega conversaciones, / enfoca búsqueda, Esc = yo me ocupo
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = (e.target.tagName||'').toUpperCase()
+      const typing = tag==='TEXTAREA' || tag==='INPUT' || tag==='SELECT'
+      if (e.key === '/' && !typing) { e.preventDefault(); searchRef.current?.focus() }
+      else if (!typing && (e.key==='ArrowDown' || e.key==='ArrowUp')) {
+        const list = convFilteredRef.current; if (!list.length) return
+        e.preventDefault()
+        const idx = list.findIndex(c=>c.id===selConvRef.current)
+        const ni = e.key==='ArrowDown' ? Math.min(list.length-1, idx+1) : Math.max(0, idx<0?0:idx-1)
+        if (list[ni]) setSelConvId(list[ni].id)
+      } else if (e.key==='Escape' && !typing && selConvRef.current) { takeover() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, []) // eslint-disable-line
+
+  const goNextPending = () => {
+    const list = convFilteredRef.current.filter(c => (pendingByConvRef.current[c.id]||0) > 0 && c.id !== selConvRef.current)
+    setSelConvId(list[0] ? list[0].id : null)
+  }
+
+  const sendProposal = async () => {
+    if (!selPending) return
+    const verdict = (draft.trim() !== (selPending.proposed_text||'').trim()) ? 'modified' : 'sent'
+    const act = selPending.proposed_action
+    let approveAction = false
+    if (act) approveAction = window.confirm(`Esta propuesta ejecuta una acción (${act.type||'acción'}). ¿Aprobarla también?`)
+    setSending(true)
+    try {
+      const resp = await fetch(`${BOT_HTTP_URL}/send-validated`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ review_id: selPending.id, verdict, final_text: draft.trim()||null, final_action: approveAction?act:null, action_approved: approveAction, reviewed_by:'secretaria' }),
+      })
+      const out = await resp.json(); if (!out.ok) throw new Error(out.error||'fail')
+      setToast({msg:'✓ Enviada a cola — el bot ya manda', type:'ok'}); setDraft('')
+      loadData(); reloadThread()
+      if (colaMode) goNextPending()
+    } catch(e) { setToast({msg:'Error: '+e.message, type:'error'}) }
+    setSending(false)
+  }
+
+  const rejectProposal = async () => {
+    if (!selPending) return
+    setSending(true)
+    try {
+      const resp = await fetch(`${BOT_HTTP_URL}/reject-proposal`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ review_id: selPending.id, reviewed_by:'secretaria' }),
+      })
+      const out = await resp.json(); if (!out.ok) throw new Error(out.error||'fail')
+      setToast({msg:'Rechazada — no se mandó nada', type:'ok'}); setDraft('')
+      loadData(); if (colaMode) goNextPending()
+    } catch(e) { setToast({msg:'Error: '+e.message, type:'error'}) }
+    setSending(false)
+  }
+
+  const sendFree = async () => {
+    const chatId = toChatId(selPhoneRef.current)
+    if (!chatId || !draft.trim()) return
+    setSending(true)
+    try {
+      const r = await botFetch('/send-message', { method:'POST', body: JSON.stringify({ chat_id: chatId, text: draft.trim(), by:'secretary' }) })
+      if (!r.ok) throw new Error('endpoint no disponible')
+      setToast({msg:'Mensaje enviado', type:'ok'}); setDraft('')
+      loadData(); reloadThread()
+    } catch(e) { setToast({msg:'Enviar mensaje: '+e.message+' (pendiente en el bot)', type:'error'}) }
+    setSending(false)
+  }
+
+  const takeover = async () => {
+    const chatId = toChatId(selPhoneRef.current)
+    if (!chatId) return
+    try {
+      const r = await botFetch('/secretary-active', { method:'POST', body: JSON.stringify({ chat_id: chatId }) })
+      if (!r.ok) throw new Error('endpoint no disponible')
+      setToast({msg:'📵 Tomas el control — bot en pausa 30 min', type:'ok'}); loadData()
+    } catch(e) { setToast({msg:'Yo me ocupo: '+e.message+' (pendiente en el bot)', type:'error'}) }
+  }
+
+  const primaryAction = () => { if (selPending) sendProposal(); else sendFree() }
+
+  const editQuickReplies = () => {
+    const v = window.prompt('Quick replies (separadas por "|"):', quickReplies.join(' | '))
+    if (v == null) return
+    const arr = v.split('|').map(s=>s.trim()).filter(Boolean)
+    setQuickReplies(arr.length?arr:QR_DEFAULTS)
+    localStorage.setItem('bc_quickreplies', JSON.stringify(arr.length?arr:QR_DEFAULTS))
+  }
 
   const exportCsv = () => {
     const cols = ['created_at','verdict','category','intent_detected','nlu_source','patient_phone','patient_message','proposed_text','final_text','action_approved','action_executed','quick_reply_used','rejection_reason','flagged','reviewed_by','reviewed_at']
@@ -3893,11 +4013,11 @@ function BotCoach() {
     <div style={{display:'flex',height:'calc(100vh - 300px)',minHeight:440,border:'1px solid var(--border)',borderRadius:12,overflow:'hidden',background:'#fff'}}>
 
       {/* Columna izquierda: lista de conversaciones */}
-      {!colaMode && (
-        <div style={{width:320,flexShrink:0,borderRight:'1px solid var(--border)',display:'flex',flexDirection:'column',background:'var(--cream)'}}>
+      {(!colaMode && (!narrow || !selConvId)) && (
+        <div style={{width: narrow?'100%':320, flexShrink:0, borderRight: narrow?'none':'1px solid var(--border)', display:'flex',flexDirection:'column',background:'var(--cream)'}}>
           <div style={{padding:10,borderBottom:'1px solid var(--border)',display:'flex',gap:8,alignItems:'center'}}>
-            <input className="field-input" placeholder="🔍 Buscar paciente…" value={search} onChange={e=>setSearch(e.target.value)} style={{flex:1,minHeight:34,fontSize:13}}/>
-            <button onClick={()=>setColaMode(true)} title="Modo cola (focus)" style={{minWidth:36,minHeight:34,borderRadius:8,border:'1px solid var(--stone)',background:'#fff',cursor:'pointer',fontSize:14}}>⚙</button>
+            <input ref={searchRef} className="field-input" placeholder="🔍 Buscar paciente… (/)" value={search} onChange={e=>setSearch(e.target.value)} style={{flex:1,minHeight:34,fontSize:13}}/>
+            <button onClick={()=>{ setColaMode(true); const first = pendingConvs[0]; if(first) setSelConvId(first.id) }} title="Modo cola (focus)" style={{minWidth:36,minHeight:34,borderRadius:8,border:'1px solid var(--stone)',background:'#fff',cursor:'pointer',fontSize:14}}>⚙</button>
           </div>
           <div style={{flex:1,overflowY:'auto'}}>
             {convFiltered.length===0
@@ -3928,6 +4048,7 @@ function BotCoach() {
       )}
 
       {/* Columna derecha: hilo */}
+      {(!narrow || selConvId) && (
       <div style={{flex:1,display:'flex',flexDirection:'column',minWidth:0}}>
         {!selConv ? (
           <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center'}}>
@@ -3937,12 +4058,13 @@ function BotCoach() {
           <>
             {/* Cabecera de contexto */}
             <div style={{padding:'10px 14px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-              {colaMode && <button onClick={()=>setColaMode(false)} title="Salir de modo cola" style={{border:'none',background:'transparent',cursor:'pointer',fontSize:16}}>←</button>}
+              {(colaMode || (narrow && selConvId)) && <button onClick={()=>{ if (colaMode) setColaMode(false); else setSelConvId(null) }} title="Volver" style={{border:'none',background:'transparent',cursor:'pointer',fontSize:16}}>←</button>}
               <div style={{minWidth:0}}>
                 <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{selConv.patients?.full_name || selConv.phone}</div>
                 <div style={{fontSize:11,color:'var(--text-muted)'}}>{selConv.phone}</div>
               </div>
               <div style={{flex:1}}/>
+              {colaMode && <span style={{fontSize:11,color:'var(--text-muted)'}}>Pendiente {Math.max(1, pendingConvs.findIndex(c=>c.id===selConvId)+1)} / {pendingConvs.length}</span>}
               {selPending
                 ? <span className="badge badge-gold">🟡 propuesta pendiente</span>
                 : selConv.fsm_state ? <span className="badge badge-gray">{selConv.fsm_state}</span> : null}
@@ -3969,13 +4091,36 @@ function BotCoach() {
                   })}
             </div>
 
-            {/* Input + acciones (siguiente checkpoint) */}
-            <div style={{padding:'10px 14px',borderTop:'1px solid var(--border)',fontSize:12,color:'var(--text-muted)',background:'#fff'}}>
-              ✏️ Input, quick replies y botones de acción llegan en el siguiente paso.
+            {/* Quick replies + input + acciones */}
+            <div style={{borderTop:'1px solid var(--border)',background:'#fff',padding:'10px 14px'}}>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8,alignItems:'center'}}>
+                {quickReplies.map((qr,i) => (
+                  <button key={i} onClick={()=>setDraft(qr)} style={{padding:'4px 10px',borderRadius:999,fontSize:11,border:'1px solid var(--stone)',background:'var(--cream)',cursor:'pointer'}}>{qr}</button>
+                ))}
+                <button onClick={editQuickReplies} title="Editar respuestas rápidas" style={{padding:'4px 8px',borderRadius:999,fontSize:11,border:'1px dashed var(--stone)',background:'#fff',cursor:'pointer',color:'var(--text-muted)'}}>✎</button>
+              </div>
+              {selPending && draft.trim()===(selPending.proposed_text||'').trim() && (
+                <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:4}}>🤖 borrador del bot — pulsa Enviar o edita</div>
+              )}
+              <textarea value={draft} onChange={e=>setDraft(e.target.value)}
+                onKeyDown={e=>{
+                  if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); if (e.metaKey||e.ctrlKey) { primaryAction(); goNextPending() } else primaryAction() }
+                  else if (e.key==='Escape') { e.preventDefault(); takeover() }
+                }}
+                placeholder={selPending ? 'Edita la propuesta o envíala tal cual… (Enter envía)' : 'Escribe un mensaje… (Enter envía)'}
+                rows={3} className="field-input" style={{width:'100%',resize:'vertical',fontSize:13,marginBottom:8}}/>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                <Btn onClick={primaryAction} disabled={sending || !draft.trim()} style={{flex:1,minWidth:140}}>
+                  {selPending ? (draft.trim()!==(selPending.proposed_text||'').trim() ? '✏️ Enviar mi versión' : '✅ Enviar tal cual') : '✅ Enviar mensaje'}
+                </Btn>
+                <Btn variant="ghost" onClick={takeover} title="Bot en pausa 30 min" disabled={sending}>📵 Yo me ocupo</Btn>
+                {selPending && <Btn variant="danger" onClick={rejectProposal} disabled={sending}>🗑 Rechazar</Btn>}
+              </div>
             </div>
           </>
         )}
       </div>
+      )}
     </div>
     )}
 
