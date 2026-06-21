@@ -3560,10 +3560,17 @@ function BotCoach() {
   const [togglingLegacy, setTogglingLegacy] = useState(false)
   const [metrics, setMetrics] = useState([])
   const [filter, setFilter] = useState('pending')   // pending | all | confirmacion | cancelacion | ambigua | otra
-  const [page, setPage] = useState(0)
   const [stats, setStats] = useState({ pending:0, sent:0, rejected:0, modified:0 })
   const [pendingCount, setPendingCount] = useState(0)
   const [toast, setToast] = useState(null)
+  // Panel WhatsApp Web (etapa 1: capa de datos)
+  const [conversations, setConversations] = useState([])
+  const [selConvId, setSelConvId] = useState(null)
+  const [thread, setThread] = useState([])
+  const [search, setSearch] = useState('')
+  const [colaMode, setColaMode] = useState(false)
+  const selConvRef = useRef(selConvId)
+  useEffect(() => { selConvRef.current = selConvId }, [selConvId])
 
   // Carga inicial + suscripción realtime
   const loadData = useCallback(async () => {
@@ -3598,16 +3605,39 @@ function BotCoach() {
 
   useEffect(() => { loadData() }, [loadData])
 
-  // Realtime: bot_coach_reviews + bot_config (para que el toggle se sincronice entre pestañas)
+  // Lista de conversaciones (columna izquierda)
+  const loadConversations = useCallback(async () => {
+    const { data } = await sb.from('conversations')
+      .select('id,phone,patient_id,fsm_state,last_message_at,last_intent,patients(id,full_name)')
+      .order('last_message_at', { ascending: false })
+      .limit(100)
+    setConversations(data || [])
+  }, [])
+  useEffect(() => { loadConversations() }, [loadConversations])
+
+  // Hilo de mensajes de la conversación seleccionada
+  const reloadThread = useCallback(async (convId) => {
+    const id = convId ?? selConvRef.current
+    if (!id) { setThread([]); return }
+    const { data } = await sb.from('messages')
+      .select('id,direction,text,metadata,created_at,whatsapp_message_id')
+      .eq('conversation_id', id).order('created_at', { ascending: true }).limit(200)
+    setThread(data || [])
+  }, [])
+  useEffect(() => { reloadThread(selConvId) }, [selConvId, reloadThread])
+
+  // Realtime: bot_coach_reviews + bot_config + messages + conversations
   useEffect(() => {
     const ch = sb.channel('bot_coach_v5')
       .on('postgres_changes', { event:'*', schema:'public', table:'bot_coach_reviews' }, () => { loadData() })
       .on('postgres_changes', { event:'*', schema:'public', table:'bot_config' }, (p) => {
         if (p.new) setBotCfg(p.new)
       })
+      .on('postgres_changes', { event:'*', schema:'public', table:'messages' }, () => { loadConversations(); reloadThread() })
+      .on('postgres_changes', { event:'*', schema:'public', table:'conversations' }, () => { loadConversations() })
       .subscribe()
     return () => { sb.removeChannel(ch) }
-  }, [loadData])
+  }, [loadData, loadConversations, reloadThread])
 
   // Cargar bot_config inicial + métricas
   useEffect(() => {
@@ -3687,8 +3717,15 @@ function BotCoach() {
   })()
   const sorted = groupedSorted
 
-  const totalPages = Math.max(1, Math.ceil(sorted.length / BOTCOACH_PAGE_SIZE))
-  const pageReviews = sorted.slice(page*BOTCOACH_PAGE_SIZE, (page+1)*BOTCOACH_PAGE_SIZE)
+  // ── Derivados del panel WhatsApp Web ──
+  const q = search.trim().toLowerCase()
+  const convFiltered = conversations.filter(c =>
+    !q || (c.patients?.full_name||'').toLowerCase().includes(q) || (c.phone||'').includes(q))
+  const selConv = conversations.find(c => c.id === selConvId) || null
+  const pendingByConv = {}
+  for (const rv of reviews) if (rv.verdict==='pending' && rv.conversation_id) pendingByConv[rv.conversation_id] = (pendingByConv[rv.conversation_id]||0)+1
+  const selPending = reviews.find(rv => rv.conversation_id===selConvId && rv.verdict==='pending') || null
+  const MIN30 = 30*60*1000
 
   const exportCsv = () => {
     const cols = ['created_at','verdict','category','intent_detected','nlu_source','patient_phone','patient_message','proposed_text','final_text','action_approved','action_executed','quick_reply_used','rejection_reason','flagged','reviewed_by','reviewed_at']
@@ -3758,7 +3795,7 @@ function BotCoach() {
           ['ambigua', '❓ Ambiguas'],
           ['otra', '💬 Otras'],
         ].map(([id, lbl]) => (
-          <button key={id} onClick={()=>{setFilter(id);setPage(0)}}
+          <button key={id} onClick={()=>setFilter(id)}
             style={{
               padding:'6px 12px',borderRadius:999,fontSize:12,fontWeight:600,cursor:'pointer',
               border: filter===id ? '1.5px solid var(--green)' : '1px solid var(--stone)',
@@ -3851,26 +3888,95 @@ function BotCoach() {
       </div>
     )}
 
-    {/* Grid 4x2 */}
-    {loading ? (
-      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12}}>
-        {Array.from({length:8}).map((_,i)=><div key={i} className="skel" style={{height:300,borderRadius:12}}/>)}
-      </div>
-    ) : pageReviews.length === 0 ? (
-      <Em icon="🤖" title="Sin conversaciones" sub={filter==='pending' ? 'No hay propuestas pendientes ahora mismo' : 'No hay propuestas con este filtro'}/>
-    ) : (
-      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12}}>
-        {pageReviews.map(r => <ProposalCard key={r.id} review={r} onAfter={loadData} setToast={setToast}/>)}
-      </div>
-    )}
+    {/* Panel WhatsApp Web: lista (izq) + hilo (der) */}
+    {loading ? <Sp/> : (
+    <div style={{display:'flex',height:'calc(100vh - 300px)',minHeight:440,border:'1px solid var(--border)',borderRadius:12,overflow:'hidden',background:'#fff'}}>
 
-    {/* Paginación */}
-    {totalPages > 1 && (
-      <div style={{display:'flex',justifyContent:'center',gap:12,marginTop:16,alignItems:'center'}}>
-        <Btn variant="ghost" disabled={page===0} onClick={()=>setPage(page-1)}>← Anterior</Btn>
-        <div style={{fontSize:13,color:'var(--text-muted)'}}>Página {page+1} / {totalPages}</div>
-        <Btn variant="ghost" disabled={page>=totalPages-1} onClick={()=>setPage(page+1)}>Siguiente →</Btn>
+      {/* Columna izquierda: lista de conversaciones */}
+      {!colaMode && (
+        <div style={{width:320,flexShrink:0,borderRight:'1px solid var(--border)',display:'flex',flexDirection:'column',background:'var(--cream)'}}>
+          <div style={{padding:10,borderBottom:'1px solid var(--border)',display:'flex',gap:8,alignItems:'center'}}>
+            <input className="field-input" placeholder="🔍 Buscar paciente…" value={search} onChange={e=>setSearch(e.target.value)} style={{flex:1,minHeight:34,fontSize:13}}/>
+            <button onClick={()=>setColaMode(true)} title="Modo cola (focus)" style={{minWidth:36,minHeight:34,borderRadius:8,border:'1px solid var(--stone)',background:'#fff',cursor:'pointer',fontSize:14}}>⚙</button>
+          </div>
+          <div style={{flex:1,overflowY:'auto'}}>
+            {convFiltered.length===0
+              ? <div style={{padding:24,fontSize:12,color:'var(--text-muted)',textAlign:'center'}}>Sin conversaciones</div>
+              : convFiltered.map(c => {
+                  const name = c.patients?.full_name || c.phone || '—'
+                  const np = pendingByConv[c.id] || 0
+                  const stale = c.last_message_at && (Date.now() - new Date(c.last_message_at).getTime()) > MIN30
+                  const active = c.id === selConvId
+                  return (
+                    <button key={c.id} onClick={()=>setSelConvId(c.id)} style={{
+                      width:'100%',textAlign:'left',padding:'10px 12px',border:'none',borderBottom:'1px solid var(--border)',
+                      background: active ? 'var(--sage-mist)' : 'transparent', cursor:'pointer', display:'flex',gap:8,alignItems:'center'}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{display:'flex',justifyContent:'space-between',gap:6}}>
+                          <span style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</span>
+                          <span style={{fontSize:10,color:'var(--text-muted)',flexShrink:0,fontVariantNumeric:'tabular-nums'}}>{c.last_message_at?fTime(c.last_message_at):''}</span>
+                        </div>
+                        <div style={{fontSize:11,color:'var(--text-muted)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.last_intent||'—'}</div>
+                      </div>
+                      {np>0 && <span style={{flexShrink:0,minWidth:18,height:18,borderRadius:999,background:'var(--green)',color:'#fff',fontSize:10,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',padding:'0 5px'}}>{np}</span>}
+                      {np>0 && stale && <span title="Sin responder >30 min" style={{flexShrink:0,width:8,height:8,borderRadius:999,background:'#dc2626'}}/>}
+                    </button>
+                  )
+                })}
+          </div>
+        </div>
+      )}
+
+      {/* Columna derecha: hilo */}
+      <div style={{flex:1,display:'flex',flexDirection:'column',minWidth:0}}>
+        {!selConv ? (
+          <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center'}}>
+            <Em icon="💬" title="Selecciona una conversación" sub="Elige un paciente de la lista para ver el historial"/>
+          </div>
+        ) : (
+          <>
+            {/* Cabecera de contexto */}
+            <div style={{padding:'10px 14px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+              {colaMode && <button onClick={()=>setColaMode(false)} title="Salir de modo cola" style={{border:'none',background:'transparent',cursor:'pointer',fontSize:16}}>←</button>}
+              <div style={{minWidth:0}}>
+                <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{selConv.patients?.full_name || selConv.phone}</div>
+                <div style={{fontSize:11,color:'var(--text-muted)'}}>{selConv.phone}</div>
+              </div>
+              <div style={{flex:1}}/>
+              {selPending
+                ? <span className="badge badge-gold">🟡 propuesta pendiente</span>
+                : selConv.fsm_state ? <span className="badge badge-gray">{selConv.fsm_state}</span> : null}
+            </div>
+
+            {/* Hilo de mensajes */}
+            <div style={{flex:1,overflowY:'auto',padding:16,background:'var(--cream)',display:'flex',flexDirection:'column',gap:8}}>
+              {thread.length===0
+                ? <div style={{margin:'auto',fontSize:12,color:'var(--text-muted)'}}>Sin mensajes guardados todavía</div>
+                : thread.map(m => {
+                    const out = m.direction === 'out'
+                    const who = m.metadata?.sent_by
+                    return (
+                      <div key={m.id} style={{alignSelf: out?'flex-end':'flex-start', maxWidth:'72%'}}>
+                        <div style={{
+                          padding:'8px 12px',borderRadius:12,fontSize:13,whiteSpace:'pre-wrap',wordBreak:'break-word',
+                          background: out?'var(--green)':'#fff', color: out?'#fff':'var(--body)',
+                          border: out?'none':'1px solid var(--border)'}}>{m.text}</div>
+                        <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2,textAlign: out?'right':'left'}}>
+                          {fTime(m.created_at)}{who?` · ${who}`:''}
+                        </div>
+                      </div>
+                    )
+                  })}
+            </div>
+
+            {/* Input + acciones (siguiente checkpoint) */}
+            <div style={{padding:'10px 14px',borderTop:'1px solid var(--border)',fontSize:12,color:'var(--text-muted)',background:'#fff'}}>
+              ✏️ Input, quick replies y botones de acción llegan en el siguiente paso.
+            </div>
+          </>
+        )}
       </div>
+    </div>
     )}
 
     {/* Banda de stats */}
