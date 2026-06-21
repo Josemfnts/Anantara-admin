@@ -62,6 +62,21 @@ function loadProfHours(profId){
   return{from:f!=null?Number(f):8,to:t!=null?Number(t):20}
 }
 
+// Inserta un paciente en la lista de espera SIN cita asociada (fallback_appointment_id=null).
+// Calcula priority_order = max+1 de la cola 'waiting'. Usado desde la página Listas y
+// desde el modal "+ Cita" de la Agenda. Devuelve {error} de Supabase.
+async function addToWaitlist({patient_id,professional_id,service_id,target_date=null,preferred_hour=null,weeks_pautadas=null}){
+  const{data:max}=await sb.from('wait_queue').select('priority_order').eq('queue_type','waiting').order('priority_order',{ascending:false}).limit(1).maybeSingle()
+  const priority_order=(max?.priority_order||0)+1
+  return sb.from('wait_queue').insert({
+    queue_type:'waiting',
+    patient_id,professional_id,service_id,
+    priority_order,
+    target_date,preferred_hour,weeks_pautadas,
+    fallback_appointment_id:null,
+  })
+}
+
 // ─── Atoms ───────────────────────────────────────────────────────────────────
 function Btn({variant='primary',children,style,...p}){return<button className={`btn btn-${variant}`}style={style}{...p}>{children}</button>}
 function Inp({label,style,...p}){return<div className="field"style={style}>{label&&<label className="field-label">{label}</label>}<input className="field-input"{...p}/></div>}
@@ -925,6 +940,15 @@ function Agenda(){
     load()
   }
 
+  // Alta en lista de espera desde el modal "+ Cita" (sin crear cita, sin hueco).
+  const enqueueWaitlist=async()=>{
+    if(!selPat||!form.prof_id||!form.svc_id)return
+    const{error}=await addToWaitlist({patient_id:selPat.id,professional_id:form.prof_id,service_id:form.svc_id})
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:'',leave_pending:true})
+    setToast({msg:'Añadido a lista de espera',type:'ok'})
+  }
+
   // ── Drag-to-block / click-to-create ─────────────────────────────────────────
   // Convierte un clientY (px en pantalla) → minutos absolutos del día,
   // usando el primer .ag-time como ancla del minuto (hourFrom*60).
@@ -1256,6 +1280,8 @@ function Agenda(){
         <Btn variant="ghost"onClick={()=>setModal(null)}style={{flex:1}}>Cancelar</Btn>
         <Btn onClick={createAppt}disabled={!selPat||!form.prof_id||!form.svc_id||!form.date||!form.time}style={{flex:1}}>Guardar</Btn>
       </div>
+      <Btn variant="ghost" onClick={enqueueWaitlist} disabled={!selPat||!form.prof_id||!form.svc_id} style={{width:'100%',marginTop:10}}
+        title="Sin hueco: encolar al paciente en la lista de espera (no crea cita)">→ Lista de espera (sin hueco)</Btn>
     </Modal>}
 
     {/* Detail modal */}
@@ -1772,6 +1798,15 @@ function Espera(){
   const[assignModal,setAssignModal]=useState(null) // {row, candidates: [{appt, fits}]}
   const[editModal,setEditModal]=useState(null) // {row}
   const[editForm,setEditForm]=useState({target_date:'',weeks_pautadas:'',preferred_hour:''})
+  // Alta manual de paciente sin cita
+  const[profs,setProfs]=useState([])
+  const[services,setServices]=useState([])
+  const[addModal,setAddModal]=useState(false)
+  const[addForm,setAddForm]=useState({prof_id:'',svc_id:'',target_date:'',preferred_hour:'',weeks_pautadas:''})
+  const[addPat,setAddPat]=useState(null)
+  const[addPatSearch,setAddPatSearch]=useState('')
+  const[addPatResults,setAddPatResults]=useState([])
+  const[addSaving,setAddSaving]=useState(false)
 
   const load=useCallback(async()=>{
     setLoading(true)
@@ -1790,6 +1825,42 @@ function Espera(){
     setRows(items); setFbMap(map); setLoading(false)
   },[tab])
   useEffect(()=>{load()},[load])
+
+  // Catálogos para el alta manual (osteopatía activos)
+  useEffect(()=>{
+    sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name',{ascending:false}).then(({data})=>setProfs(data||[]))
+    sb.from('services').select('id,name,duration_minutes,professional_id').eq('is_active',true).eq('section','osteopathy').order('duration_minutes',{ascending:false}).then(({data})=>setServices(data||[]))
+  },[])
+  // Buscador de pacientes para el alta manual
+  useEffect(()=>{
+    if(!addPatSearch.trim()){setAddPatResults([]);return}
+    const t=setTimeout(async()=>{
+      const{data}=await sb.from('patients').select('id,full_name,phone').or(`full_name.ilike.%${addPatSearch}%,phone.ilike.%${addPatSearch}%`).limit(6)
+      setAddPatResults(data||[])
+    },250)
+    return()=>clearTimeout(t)
+  },[addPatSearch])
+
+  const saveAdd = async () => {
+    if(!addPat||!addForm.prof_id||!addForm.svc_id)return
+    setAddSaving(true)
+    const{error}=await addToWaitlist({
+      patient_id:addPat.id,
+      professional_id:addForm.prof_id,
+      service_id:addForm.svc_id,
+      target_date:addForm.target_date||null,
+      preferred_hour:addForm.preferred_hour!==''?Number(addForm.preferred_hour):null,
+      weeks_pautadas:addForm.weeks_pautadas!==''?Number(addForm.weeks_pautadas):null,
+    })
+    setAddSaving(false)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setAddModal(false)
+    setAddForm({prof_id:'',svc_id:'',target_date:'',preferred_hour:'',weeks_pautadas:''})
+    setAddPat(null);setAddPatSearch('');setAddPatResults([])
+    setTab('waiting')
+    setToast({msg:'Añadido a lista de espera',type:'ok'})
+    if(tab==='waiting')load()
+  }
 
   const moveUp = async (row, idx) => {
     if (idx === 0) return
@@ -1914,7 +1985,8 @@ function Espera(){
     {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
     <div className="section-header">
       <span className="section-title">Listas</span>
-      <div style={{display:'flex',gap:8,alignItems:'center'}}>
+      <div style={{display:'flex',gap:12,alignItems:'center'}}>
+        <Btn onClick={()=>setAddModal(true)}>+ Añadir paciente</Btn>
         <span style={{fontSize:11,color:'var(--text-muted)'}} title="Próximamente">Auto-asignación</span>
         <Toggle on={false} onChange={()=>setToast({msg:'Próximamente. Habilita tras validar el bot.',type:'ok'})}/>
       </div>
@@ -2028,6 +2100,33 @@ function Espera(){
       <div style={{display:'flex',gap:10,marginTop:4}}>
         <Btn variant="ghost" onClick={()=>setEditModal(null)} style={{flex:1}}>Cancelar</Btn>
         <Btn onClick={saveEdit} style={{flex:1}}>Guardar</Btn>
+      </div>
+    </Modal>}
+
+    {addModal&&<Modal title="Añadir a lista de espera" onClose={()=>setAddModal(false)}>
+      <div style={{position:'relative',marginBottom:14}}>
+        <label className="field-label">Paciente</label>
+        <input className="field-input" placeholder="Buscar…" value={addPat?addPat.full_name:addPatSearch}
+          onChange={e=>{setAddPatSearch(e.target.value);setAddPat(null)}}/>
+        {addPatResults.length>0&&!addPat&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'var(--white)',border:'1px solid var(--border)',borderRadius:8,zIndex:10,boxShadow:'var(--shadow)'}}>
+          {addPatResults.map(p=><div key={p.id} style={{padding:'10px 14px',cursor:'pointer',borderBottom:'1px solid var(--border)',fontSize:13}}
+            onClick={()=>{setAddPat(p);setAddPatSearch('');setAddPatResults([])}}><strong>{p.full_name}</strong> <span style={{color:'var(--text-muted)'}}>{p.phone}</span></div>)}
+        </div>}
+      </div>
+      <Sel label="Profesional" value={addForm.prof_id} onChange={e=>setAddForm(f=>({...f,prof_id:e.target.value,svc_id:''}))} options={[['','Seleccionar…'],...profs.map(p=>[p.id,p.name])]}/>
+      <Sel label="Servicio" value={addForm.svc_id} onChange={e=>setAddForm(f=>({...f,svc_id:e.target.value}))} options={[['','Seleccionar…'],...services.filter(s=>!s.professional_id||s.professional_id===addForm.prof_id).map(s=>[s.id,`${s.name} (${s.duration_minutes}min)`])]}/>
+      <Inp label="Fecha pautada (opcional — no ofrecer antes)" type="date" value={addForm.target_date} onChange={e=>setAddForm(f=>({...f,target_date:e.target.value}))}/>
+      <div className="field">
+        <label className="field-label">Hora preferida (opcional)</label>
+        <select className="field-input" value={addForm.preferred_hour} onChange={e=>setAddForm(f=>({...f,preferred_hour:e.target.value}))}>
+          <option value="">Cualquier hora</option>
+          {Array.from({length:13},(_,i)=>i+7).map(h=><option key={h} value={h}>{pad(h)}:00</option>)}
+        </select>
+      </div>
+      <Inp label="Semanas pautadas (opcional)" type="number" min={1} max={52} placeholder="Ej: 4" value={addForm.weeks_pautadas} onChange={e=>setAddForm(f=>({...f,weeks_pautadas:e.target.value}))}/>
+      <div style={{display:'flex',gap:10,marginTop:4}}>
+        <Btn variant="ghost" onClick={()=>setAddModal(false)} style={{flex:1}}>Cancelar</Btn>
+        <Btn onClick={saveAdd} disabled={!addPat||!addForm.prof_id||!addForm.svc_id||addSaving} style={{flex:1}}>{addSaving?'Guardando…':'Añadir'}</Btn>
       </div>
     </Modal>}
   </>
