@@ -3742,7 +3742,7 @@ function BotCoach() {
         <Toggle on={!botCfg.use_legacy_pipeline} onChange={toggleLegacyPipeline}/>
         {togglingLegacy && <span style={{fontSize:11,color:'var(--text-muted)'}}>…</span>}
         <div style={{fontSize:11,color:'var(--text-muted)',marginLeft:8}}>
-          {botCfg.use_legacy_pipeline ? '⚠ Fase 2 (legacy)' : 'Fase 3 (NLU+FSM)'}
+          {botCfg.use_legacy_pipeline ? '⚠ Legacy (Fase 2 viejo)' : 'Definitiva (NLU+tools+Haiku)'}
         </div>
       </div>
 
