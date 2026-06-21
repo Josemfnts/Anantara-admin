@@ -52,6 +52,16 @@ function gMD(year,month) {
 const STATUS_TXT = {confirmed:'Confirmada',pending:'Pendiente',cancelled:'Cancelada',completed:'Completada'}
 const STATUS_CLS = {confirmed:'badge-green',pending:'badge-gold',cancelled:'badge-red',completed:'badge-gray'}
 
+// Rango horario visible de la agenda, guardado por profesional en localStorage.
+// Cae al valor global antiguo (ag_from/ag_to) si aún no hay valor por profesional,
+// y a 8–20 por defecto.
+function loadProfHours(profId){
+  const suffix=profId&&profId!=='all'?`_${profId}`:''
+  const f=localStorage.getItem(`ag_from${suffix}`)??localStorage.getItem('ag_from')
+  const t=localStorage.getItem(`ag_to${suffix}`)??localStorage.getItem('ag_to')
+  return{from:f!=null?Number(f):8,to:t!=null?Number(t):20}
+}
+
 // ─── Atoms ───────────────────────────────────────────────────────────────────
 function Btn({variant='primary',children,style,...p}){return<button className={`btn btn-${variant}`}style={style}{...p}>{children}</button>}
 function Inp({label,style,...p}){return<div className="field"style={style}>{label&&<label className="field-label">{label}</label>}<input className="field-input"{...p}/></div>}
@@ -489,8 +499,10 @@ function Agenda(){
   const gridRef=useRef(null)
   // Filters
   const[filterProf,setFilterProf]=useState('all')  // 'all' | professional_id
-  const[hourFrom,setHourFrom]=useState(()=>Number(localStorage.getItem('ag_from')??8))
-  const[hourTo,setHourTo]=useState(()=>Number(localStorage.getItem('ag_to')??20))
+  const[hourFrom,setHourFrom]=useState(()=>loadProfHours('all').from)
+  const[hourTo,setHourTo]=useState(()=>loadProfHours('all').to)
+  // Guarda el rango horario bajo el profesional activo ('ag_from' = which)
+  const saveHour=(which,v)=>localStorage.setItem(`${which}${filterProf&&filterProf!=='all'?`_${filterProf}`:''}`,v)
 
   const days=getWeekDays(weekRef)
 
@@ -521,6 +533,12 @@ function Agenda(){
   },[weekRef]) // eslint-disable-line
 
   useEffect(()=>{load()},[load])
+  // Al cambiar de profesional, recuperar su rango horario guardado.
+  useEffect(()=>{
+    if(filterProf==='all')return
+    const h=loadProfHours(filterProf)
+    setHourFrom(h.from);setHourTo(h.to)
+  },[filterProf])
   useEffect(()=>{sb.from('services').select('id,name,duration_minutes,professional_id').eq('is_active',true).eq('section','osteopathy').order('duration_minutes',{ascending:false}).then(({data})=>setServices(data||[]))},[])
 
   // Realtime: si alguien crea/edita/cancela una cita o un bloqueo desde otra
@@ -1113,12 +1131,12 @@ function Agenda(){
       <div style={{display:'flex',alignItems:'center',gap:8}}>
         <span style={{fontSize:12,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>Desde</span>
         <select className="field-input" style={{width:'auto',padding:'6px 10px',fontSize:13,minHeight:36}}
-          value={hourFrom} onChange={e=>{const v=Number(e.target.value);setHourFrom(v);localStorage.setItem('ag_from',v)}}>
+          value={hourFrom} onChange={e=>{const v=Number(e.target.value);setHourFrom(v);saveHour('ag_from',v)}}>
           {HOUR_OPTIONS.filter(h=>h<hourTo).map(h=><option key={h}value={h}>{pad(h)}:00</option>)}
         </select>
         <span style={{fontSize:12,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em'}}>Hasta</span>
         <select className="field-input" style={{width:'auto',padding:'6px 10px',fontSize:13,minHeight:36}}
-          value={hourTo} onChange={e=>{const v=Number(e.target.value);setHourTo(v);localStorage.setItem('ag_to',v)}}>
+          value={hourTo} onChange={e=>{const v=Number(e.target.value);setHourTo(v);saveHour('ag_to',v)}}>
           {HOUR_OPTIONS.filter(h=>h>hourFrom).map(h=><option key={h}value={h}>{pad(h)}:00</option>)}
         </select>
       </div>
