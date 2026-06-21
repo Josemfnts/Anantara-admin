@@ -3569,6 +3569,7 @@ function BotCoach() {
   const [thread, setThread] = useState([])
   const [search, setSearch] = useState('')
   const [colaMode, setColaMode] = useState(false)
+  const [listCollapsed, setListCollapsed] = useState(false)
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const QR_DEFAULTS = ['Listo, te apunto','Perfecto, hasta mañana','Te llamamos enseguida','Hecho, cancelada']
@@ -4013,11 +4014,12 @@ function BotCoach() {
     <div style={{display:'flex',height:'calc(100vh - 300px)',minHeight:440,border:'1px solid var(--border)',borderRadius:12,overflow:'hidden',background:'#fff'}}>
 
       {/* Columna izquierda: lista de conversaciones */}
-      {(!colaMode && (!narrow || !selConvId)) && (
+      {(!colaMode && !listCollapsed && (!narrow || !selConvId)) && (
         <div style={{width: narrow?'100%':320, flexShrink:0, borderRight: narrow?'none':'1px solid var(--border)', display:'flex',flexDirection:'column',background:'var(--cream)'}}>
           <div style={{padding:10,borderBottom:'1px solid var(--border)',display:'flex',gap:8,alignItems:'center'}}>
             <input ref={searchRef} className="field-input" placeholder="🔍 Buscar paciente… (/)" value={search} onChange={e=>setSearch(e.target.value)} style={{flex:1,minHeight:34,fontSize:13}}/>
             <button onClick={()=>{ setColaMode(true); const first = pendingConvs[0]; if(first) setSelConvId(first.id) }} title="Modo cola (focus)" style={{minWidth:36,minHeight:34,borderRadius:8,border:'1px solid var(--stone)',background:'#fff',cursor:'pointer',fontSize:14}}>⚙</button>
+            {!narrow && <button onClick={()=>setListCollapsed(true)} title="Ocultar lista" style={{minWidth:36,minHeight:34,borderRadius:8,border:'1px solid var(--stone)',background:'#fff',cursor:'pointer',fontSize:14}}>◀</button>}
           </div>
           <div style={{flex:1,overflowY:'auto'}}>
             {convFiltered.length===0
@@ -4044,6 +4046,13 @@ function BotCoach() {
                   )
                 })}
           </div>
+        </div>
+      )}
+
+      {/* Tira plegada: botón para volver a mostrar la lista */}
+      {(!colaMode && !narrow && listCollapsed) && (
+        <div style={{width:40,flexShrink:0,borderRight:'1px solid var(--border)',display:'flex',justifyContent:'center',paddingTop:10,background:'var(--cream)'}}>
+          <button onClick={()=>setListCollapsed(false)} title="Mostrar lista" style={{minWidth:32,minHeight:34,borderRadius:8,border:'1px solid var(--stone)',background:'#fff',cursor:'pointer',fontSize:14}}>▶</button>
         </div>
       )}
 
