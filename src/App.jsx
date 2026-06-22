@@ -3570,6 +3570,8 @@ function BotCoach() {
   const [search, setSearch] = useState('')
   const [colaMode, setColaMode] = useState(false)
   const [listCollapsed, setListCollapsed] = useState(false)
+  const [view, setView] = useState(() => localStorage.getItem('bc_view') || 'chat') // 'chat' | 'grid'
+  const [gridMsgs, setGridMsgs] = useState([])
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const QR_DEFAULTS = ['Listo, te apunto','Perfecto, hasta mañana','Te llamamos enseguida','Hecho, cancelada']
@@ -3581,6 +3583,7 @@ function BotCoach() {
   const convFilteredRef = useRef([])
   const pendingByConvRef = useRef({})
   const selPhoneRef = useRef(null)
+  const viewRef = useRef(view)
   const searchRef = useRef(null)
   useEffect(() => { selConvRef.current = selConvId }, [selConvId])
 
@@ -3638,6 +3641,15 @@ function BotCoach() {
   }, [])
   useEffect(() => { reloadThread(selConvId) }, [selConvId, reloadThread])
 
+  // Mensajes recientes para la vista Monitor (últimos por conversación)
+  const loadGridMsgs = useCallback(async () => {
+    const { data } = await sb.from('messages')
+      .select('id,conversation_id,direction,text,created_at,metadata')
+      .order('created_at', { ascending: false }).limit(300)
+    setGridMsgs(data || [])
+  }, [])
+  useEffect(() => { if (view==='grid') loadGridMsgs() }, [view, loadGridMsgs])
+
   // Realtime: bot_coach_reviews + bot_config + messages + conversations
   useEffect(() => {
     const ch = sb.channel('bot_coach_v5')
@@ -3645,11 +3657,11 @@ function BotCoach() {
       .on('postgres_changes', { event:'*', schema:'public', table:'bot_config' }, (p) => {
         if (p.new) setBotCfg(p.new)
       })
-      .on('postgres_changes', { event:'*', schema:'public', table:'messages' }, () => { loadConversations(); reloadThread() })
+      .on('postgres_changes', { event:'*', schema:'public', table:'messages' }, () => { loadConversations(); reloadThread(); if (viewRef.current==='grid') loadGridMsgs() })
       .on('postgres_changes', { event:'*', schema:'public', table:'conversations' }, () => { loadConversations() })
       .subscribe()
     return () => { sb.removeChannel(ch) }
-  }, [loadData, loadConversations, reloadThread])
+  }, [loadData, loadConversations, reloadThread, loadGridMsgs])
 
   // Cargar bot_config inicial + métricas
   useEffect(() => {
@@ -3742,6 +3754,10 @@ function BotCoach() {
   convFilteredRef.current = convFiltered
   pendingByConvRef.current = pendingByConv
   selPhoneRef.current = selConv?.phone || null
+  viewRef.current = view
+  // Mensajes agrupados por conversación (gridMsgs viene desc: el más nuevo primero)
+  const msgsByConv = {}
+  for (const m of gridMsgs) { if (!msgsByConv[m.conversation_id]) msgsByConv[m.conversation_id] = []; msgsByConv[m.conversation_id].push(m) }
 
   // chat_id de WhatsApp a partir del teléfono (formato 34600123456@c.us)
   const toChatId = (phone) => { if (!phone) return null; const p = String(phone); return p.includes('@') ? p : `${p.replace(/\D/g,'')}@c.us` }
@@ -4009,8 +4025,52 @@ function BotCoach() {
       </div>
     )}
 
-    {/* Panel WhatsApp Web: lista (izq) + hilo (der) */}
-    {loading ? <Sp/> : (
+    {/* Toggle de vista: Chat (intensivo) vs Monitor (mosaico) */}
+    <div style={{display:'flex',gap:8,marginBottom:12}}>
+      {[['chat','💬 Chat'],['grid','▦ Monitor']].map(([id,lbl]) => (
+        <button key={id} onClick={()=>{ setView(id); localStorage.setItem('bc_view', id) }}
+          style={{padding:'7px 16px',borderRadius:10,fontSize:13,fontWeight:700,cursor:'pointer',
+            border: view===id ? '1.5px solid var(--green)' : '1px solid var(--stone)',
+            background: view===id ? 'var(--sage-mist)' : '#fff',
+            color: view===id ? 'var(--green)' : 'var(--body)'}}>{lbl}</button>
+      ))}
+    </div>
+
+    {/* Vista MONITOR: mosaico de conversaciones con sus últimos mensajes */}
+    {loading ? <Sp/> : view==='grid' ? (
+      convFiltered.length===0
+        ? <Em icon="🤖" title="Sin conversaciones"/>
+        : <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',gap:12}}>
+            {convFiltered.map(c => {
+              const name = c.patients?.full_name || c.phone || '—'
+              const np = pendingByConv[c.id] || 0
+              const stale = c.last_message_at && (Date.now()-new Date(c.last_message_at).getTime())>MIN30
+              const last5 = (msgsByConv[c.id]||[]).slice(0,5).reverse()
+              return (
+                <div key={c.id} onClick={()=>{ setSelConvId(c.id); setView('chat'); localStorage.setItem('bc_view','chat') }}
+                  className="card" style={{padding:0,cursor:'pointer',display:'flex',flexDirection:'column',height:280,overflow:'hidden',border: np>0?'1.5px solid var(--green)':'1px solid var(--border)'}}>
+                  <div style={{padding:'8px 12px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',gap:8,background:'var(--cream)'}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</div>
+                      <div style={{fontSize:10,color:'var(--text-muted)'}}>{c.last_message_at?fDT(c.last_message_at):''}</div>
+                    </div>
+                    {np>0 && <span style={{minWidth:18,height:18,borderRadius:999,background:'var(--green)',color:'#fff',fontSize:10,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',padding:'0 5px'}}>{np}</span>}
+                    {np>0 && stale && <span title="Sin responder >30 min" style={{width:8,height:8,borderRadius:999,background:'#dc2626'}}/>}
+                  </div>
+                  <div style={{flex:1,overflowY:'auto',padding:8,display:'flex',flexDirection:'column',gap:4,background:'#fff'}}>
+                    {last5.length===0
+                      ? <div style={{margin:'auto',fontSize:11,color:'var(--text-muted)'}}>Sin mensajes</div>
+                      : last5.map(m => {
+                          const out = m.direction==='out'
+                          return <div key={m.id} style={{alignSelf:out?'flex-end':'flex-start',maxWidth:'85%',fontSize:11,padding:'4px 8px',borderRadius:8,whiteSpace:'pre-wrap',wordBreak:'break-word',
+                            background:out?'var(--green)':'var(--cream)',color:out?'#fff':'var(--body)',border:out?'none':'1px solid var(--border)'}}>{m.text}</div>
+                        })}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+    ) : (
     <div style={{display:'flex',height:'calc(100vh - 300px)',minHeight:440,border:'1px solid var(--border)',borderRadius:12,overflow:'hidden',background:'#fff'}}>
 
       {/* Columna izquierda: lista de conversaciones */}
