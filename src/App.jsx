@@ -3508,7 +3508,7 @@ function Facturacion(){
 // Lee conversations/messages/bot_coach_reviews de Supabase con realtime y
 // manda acciones por HTTP (/send-validated, /reject-proposal, /send-message…).
 
-const BOT_HTTP_URL = (typeof window !== 'undefined' && window.localStorage?.getItem('bot_http_url')) || 'http://localhost:3002'
+const BOT_HTTP_URL = (typeof window !== 'undefined' && window.localStorage?.getItem('bot_http_url')) || import.meta.env.VITE_BOT_URL || 'http://localhost:3002'
 
 function BotCoach() {
   const [reviews, setReviews] = useState([])
