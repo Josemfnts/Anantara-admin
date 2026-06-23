@@ -3509,6 +3509,12 @@ function Facturacion(){
 // manda acciones por HTTP (/send-validated, /reject-proposal, /send-message…).
 
 const BOT_HTTP_URL = (typeof window !== 'undefined' && window.localStorage?.getItem('bot_http_url')) || import.meta.env.VITE_BOT_URL || 'http://localhost:3002'
+const BOT_HTTP_SECRET = (typeof window !== 'undefined' && window.localStorage?.getItem('bot_http_secret')) || import.meta.env.VITE_BOT_SECRET || ''
+const botCoachHeaders = (extra = {}) => ({
+  'Content-Type': 'application/json',
+  ...(BOT_HTTP_SECRET ? { Authorization: `Bearer ${BOT_HTTP_SECRET}` } : {}),
+  ...extra,
+})
 
 function BotCoach() {
   const [reviews, setReviews] = useState([])
@@ -3637,7 +3643,7 @@ function BotCoach() {
   }, [])
 
   const notifyBotRefresh = async () => {
-    try { await fetch(`${BOT_HTTP_URL}/training-mode-refresh`, { method:'POST' }) }
+    try { await fetch(`${BOT_HTTP_URL}/training-mode-refresh`, { method:'POST', headers: botCoachHeaders() }) }
     catch (e) { console.warn('bot HTTP refresh fail:', e.message) }
   }
 
@@ -3768,7 +3774,7 @@ function BotCoach() {
     setSending(true)
     try {
       const resp = await fetch(`${BOT_HTTP_URL}/send-validated`, {
-        method:'POST', headers:{'Content-Type':'application/json'},
+        method:'POST', headers: botCoachHeaders(),
         body: JSON.stringify({ review_id: selPending.id, verdict, final_text: draft.trim()||null, final_action: approveAction?act:null, action_approved: approveAction, reviewed_by:'secretaria' }),
       })
       const out = await resp.json(); if (!out.ok) throw new Error(out.error||'fail')
@@ -3784,7 +3790,7 @@ function BotCoach() {
     setSending(true)
     try {
       const resp = await fetch(`${BOT_HTTP_URL}/reject-proposal`, {
-        method:'POST', headers:{'Content-Type':'application/json'},
+        method:'POST', headers: botCoachHeaders(),
         body: JSON.stringify({ review_id: selPending.id, reviewed_by:'secretaria' }),
       })
       const out = await resp.json(); if (!out.ok) throw new Error(out.error||'fail')
