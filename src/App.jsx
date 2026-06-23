@@ -3504,48 +3504,11 @@ function Facturacion(){
 // respuesta sugerida y la acción (cancelar cita) que aplicaría. La secretaria
 // valida, modifica o rechaza desde esta pantalla.
 //
-// Grid 4x2 = 8 conversaciones visibles. Paginación calendar-style. Orden:
-// pendientes primero por antigüedad del mensaje del paciente.
+// Panel tipo WhatsApp Web: dos vistas (💬 Chat intensivo + ▦ Monitor mosaico).
+// Lee conversations/messages/bot_coach_reviews de Supabase con realtime y
+// manda acciones por HTTP (/send-validated, /reject-proposal, /send-message…).
 
 const BOT_HTTP_URL = (typeof window !== 'undefined' && window.localStorage?.getItem('bot_http_url')) || 'http://localhost:3002'
-const BOTCOACH_PAGE_SIZE = 8
-// Esquema v5: usamos `category` en español (spec) en lugar de `intent` en inglés.
-const CATEGORY_META = {
-  confirmacion: { label:'Confirmación', color:'#16a34a', bg:'#dcfce7', icon:'✅' },
-  cancelacion:  { label:'Cancelación',  color:'#dc2626', bg:'#fee2e2', icon:'🚫' },
-  ambigua:      { label:'Ambigua',      color:'#d97706', bg:'#fef3c7', icon:'❓' },
-  otra:         { label:'Otra',         color:'#475569', bg:'#f1f5f9', icon:'💬' },
-}
-const VERDICT_META = {
-  pending:   { label:'pendiente',   color:'#475569', bg:'#f1f5f9' },
-  sent:      { label:'enviada',     color:'#15803d', bg:'#dcfce7' },
-  modified:  { label:'modificada',  color:'#92400e', bg:'#fef3c7' },
-  rejected:  { label:'rechazada',   color:'#991b1b', bg:'#fee2e2' },
-  auto_sent: { label:'auto-enviada',color:'#1e3a8a', bg:'#dbeafe' },
-}
-const DEFAULT_QUICK_REPLIES = [
-  'Perfecto, hasta mañana.',
-  'Ok, gracias.',
-  'Te llamamos en breve.',
-  'Te confirmo en un momento.',
-]
-
-function timeAgo(iso) {
-  if (!iso) return ''
-  const ms = Date.now() - new Date(iso).getTime()
-  const m = Math.floor(ms / 60000)
-  if (m < 1) return 'ahora'
-  if (m < 60) return `${m} min`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h} h`
-  return `${Math.floor(h/24)} d`
-}
-function ageColor(iso) {
-  const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
-  if (m >= 30) return { color:'#fff', bg:'#dc2626', label:`${m} min` }
-  if (m >= 10) return { color:'#fff', bg:'#ea580c', label:`${m} min` }
-  return { color:'#475569', bg:'#f1f5f9', label: timeAgo(iso) }
-}
 
 function BotCoach() {
   const [reviews, setReviews] = useState([])
@@ -3714,7 +3677,7 @@ function BotCoach() {
   // Agrupar por conversación: una sola card por (conversation_id || patient_phone),
   // mostrando la review MÁS RECIENTE pending de cada conversación. Las anteriores
   // pending del mismo paciente quedan auto-resueltas (verdict='superseded') al
-  // pulsar enviar/rechazar (gestionado en ProposalCard.handleSend).
+  // pulsar enviar/rechazar (lo gestiona el bot al recibir el veredicto).
   const groupedSorted = (() => {
     const byKey = new Map()
     for (const r of reviews) {
@@ -4201,175 +4164,6 @@ function BotCoach() {
       <div><strong style={{fontSize:18,color:'#d97706'}}>{stats.modified}</strong> <span style={{fontSize:12,color:'var(--text-muted)'}}>modificadas</span></div>
       <div><strong style={{fontSize:18,color:'#dc2626'}}>{stats.rejected}</strong> <span style={{fontSize:12,color:'var(--text-muted)'}}>rechazadas</span></div>
     </div>
-  </div>
-}
-
-// Tarjeta individual de una review (esquema v5: bot_coach_reviews).
-function ProposalCard({ review, onAfter, setToast }) {
-  const r = review
-  const meta = CATEGORY_META[r.category] || CATEGORY_META.otra
-  const verdictMeta = VERDICT_META[r.verdict] || VERDICT_META.pending
-  const patientName = r.conversations?.patients?.full_name || null
-  const action = r.proposed_action  // jsonb {type, appointment_id, dia, hora, prof, ...}
-
-  const [draftText, setDraftText] = useState(r.proposed_text || '')
-  const [actionApproved, setActionApproved] = useState(!!action)  // si hay acción propuesta, por defecto aprobada
-  const [showContext, setShowContext] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [confirmStep, setConfirmStep] = useState(false)
-  const age = ageColor(r.created_at)
-  const isPending = r.verdict === 'pending'
-
-  const send = async (verdict) => {
-    setBusy(true)
-    try {
-      const body = {
-        review_id: r.id,
-        verdict,                                 // 'sent' | 'modified'
-        final_text: draftText?.trim() || null,
-        final_action: actionApproved ? action : null,
-        action_approved: actionApproved,
-        reviewed_by: 'secretaria',
-      }
-      const resp = await fetch(`${BOT_HTTP_URL}/send-validated`, {
-        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
-      })
-      const out = await resp.json()
-      if (!out.ok) throw new Error(out.error || 'fail')
-      setToast({msg: '✓ Enviada a cola — el bot ya manda', type:'ok'})
-      onAfter()
-    } catch (e) {
-      setToast({msg:'Error: '+e.message, type:'error'})
-    }
-    setBusy(false)
-  }
-
-  const reject = async () => {
-    setBusy(true)
-    try {
-      const resp = await fetch(`${BOT_HTTP_URL}/reject-proposal`, {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ review_id: r.id, reviewed_by: 'secretaria' }),
-      })
-      const out = await resp.json()
-      if (!out.ok) throw new Error(out.error || 'fail')
-      setToast({msg:'Rechazada — no se mandó nada', type:'ok'})
-      onAfter()
-    } catch (e) { setToast({msg:'Error: '+e.message, type:'error'}) }
-    setBusy(false)
-  }
-
-  const isModified = (draftText || '').trim() !== (r.proposed_text || '').trim()
-  const wantsToSend = (draftText || '').trim().length > 0
-  const verdict = isModified ? 'modified' : 'sent'
-
-  // Mini chat desde context_snapshot
-  const history = r.context_snapshot?.last_messages || []
-
-  return<div className="card" style={{padding:14,display:'flex',flexDirection:'column',gap:8,minHeight:300,borderLeft:isPending?`3px solid ${meta.color}`:'3px solid var(--border)'}}>
-    {/* Header */}
-    <div style={{display:'flex',alignItems:'center',gap:8}}>
-      <div style={{flex:1,minWidth:0}}>
-        <div style={{fontSize:13,fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
-          {patientName || `${meta.icon} (${r.patient_phone || '?'})`}
-        </div>
-        <div style={{fontSize:10,color:'var(--text-muted)'}}>{r.patient_phone || ''}</div>
-      </div>
-      <span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:999,background:age.bg,color:age.color}}>{age.label}</span>
-    </div>
-
-    {/* Chips: categoría + verdict + nlu_source */}
-    <div style={{display:'flex',gap:4,alignItems:'center',flexWrap:'wrap'}}>
-      <span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:999,background:meta.bg,color:meta.color}}>{meta.icon} {meta.label}</span>
-      {!isPending && (
-        <span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:999,background:verdictMeta.bg,color:verdictMeta.color}}>{verdictMeta.label}</span>
-      )}
-      {r.nlu_source === 'deterministic' && <span style={{fontSize:9,padding:'1px 6px',background:'#e0e7ff',color:'#4338ca',borderRadius:6}}>regex</span>}
-      {r.nlu_source === 'llm' && <span style={{fontSize:9,padding:'1px 6px',background:'#fef3c7',color:'#92400e',borderRadius:6}}>llm</span>}
-      {r.flagged && <span style={{fontSize:10,padding:'1px 6px',background:'#fee2e2',color:'#991b1b',borderRadius:6,fontWeight:700}}>⚠ flagged</span>}
-    </div>
-
-    {/* Mini chat (desde context_snapshot.last_messages + mensaje actual) */}
-    <div style={{background:'#f8fafc',borderRadius:8,padding:8,fontSize:11,maxHeight:90,overflowY:'auto',display:'flex',flexDirection:'column',gap:3}}>
-      {history.slice(-4).map((h, i) => (
-        <div key={i} style={{color: h.direction === 'in' ? '#0f172a' : 'var(--green)', marginLeft: h.direction === 'in' ? 0 : 12}}>
-          {h.direction === 'in' ? '👤' : '🤖'} {h.text?.slice(0,90)}
-        </div>
-      ))}
-      <div style={{borderTop: history.length ? '1px dashed #cbd5e1' : 'none', paddingTop: history.length ? 4 : 0}}>
-        <div style={{color:'#0f172a',fontWeight:600}}>👤 {r.patient_message}</div>
-      </div>
-    </div>
-
-    {/* Acción propuesta — toggle SEPARADO del texto */}
-    {action && (
-      <div style={{padding:'6px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,fontSize:11,display:'flex',alignItems:'center',gap:8}}>
-        <Toggle on={actionApproved} onChange={setActionApproved}/>
-        <div style={{flex:1}}>
-          <strong>{action.type === 'cancelar_cita' ? '🗑 Cancelar cita' : action.type}</strong>
-          {action.dia && <div style={{fontSize:10,color:'var(--text-muted)'}}>{action.dia} {action.hora} con {action.prof}</div>}
-        </div>
-      </div>
-    )}
-
-    {/* Body editable solo si pending */}
-    {isPending ? <>
-      <textarea value={draftText} onChange={e=>setDraftText(e.target.value)}
-        placeholder={r.proposed_text ? '' : 'Escribe respuesta (o deja vacío para no enviar)'}
-        style={{width:'100%',minHeight:50,resize:'vertical',padding:8,fontSize:12,border:'1.5px solid var(--stone)',borderRadius:8,fontFamily:'inherit'}}/>
-
-      <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-        {DEFAULT_QUICK_REPLIES.map(q => (
-          <button key={q} onClick={()=>setDraftText(q)}
-            style={{fontSize:10,padding:'2px 6px',borderRadius:6,border:'1px solid var(--stone)',background:'#fff',cursor:'pointer',color:'var(--text-muted)'}}>{q}</button>
-        ))}
-      </div>
-
-      {confirmStep ? (
-        <div style={{display:'flex',gap:6,padding:8,background:'#fef3c7',borderRadius:8,fontSize:11,flexDirection:'column'}}>
-          <div style={{fontWeight:600}}>¿Confirmar envío + acción?</div>
-          <div style={{fontSize:10,color:'var(--text-muted)'}}>
-            {wantsToSend && '📤 "' + (draftText || '').slice(0,50) + '"'}
-            {actionApproved && action && (wantsToSend ? ' + ' : '') + '🗑 ' + (action.type === 'cancelar_cita' ? 'cancelar cita' : action.type)}
-          </div>
-          <div style={{display:'flex',gap:6}}>
-            <Btn variant="ghost" onClick={()=>setConfirmStep(false)} style={{flex:1,padding:'4px 8px',fontSize:11}}>Atrás</Btn>
-            <Btn variant="primary" onClick={()=>{setConfirmStep(false);send(verdict)}} disabled={busy} style={{flex:1,padding:'4px 8px',fontSize:11}}>Sí, ejecutar</Btn>
-          </div>
-        </div>
-      ) : (
-        <div style={{display:'flex',gap:4,marginTop:'auto'}}>
-          <Btn onClick={()=>(actionApproved && action ? setConfirmStep(true) : send(verdict))}
-               disabled={busy || (!wantsToSend && !actionApproved)}
-               style={{flex:1,padding:'6px 8px',fontSize:11}}>
-            ✓ {isModified ? 'Enviar mod.' : 'Enviar'}
-          </Btn>
-          <Btn variant="ghost" onClick={reject} disabled={busy} style={{padding:'6px 8px',fontSize:11}}>❌</Btn>
-        </div>
-      )}
-    </> : (
-      <div style={{padding:'8px 10px',background:'#f1f5f9',borderRadius:8,fontSize:11,marginTop:'auto'}}>
-        {r.final_text ? <><strong>Enviado:</strong> {r.final_text}</> : <em>Sin mensaje enviado</em>}
-        {r.action_executed && <div style={{fontSize:10,color:'var(--green)',marginTop:2}}>✓ Acción ejecutada</div>}
-        {r.rejection_reason && <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>Motivo: {r.rejection_reason}</div>}
-        <div style={{fontSize:10,color:'var(--text-muted)',marginTop:4}}>
-          {r.reviewed_at && new Date(r.reviewed_at).toLocaleString('es-ES')}
-          {r.reviewed_by && ` · ${r.reviewed_by}`}
-        </div>
-      </div>
-    )}
-
-    {/* Context snapshot expandible (debug / análisis) */}
-    {r.context_snapshot && (
-      <details style={{fontSize:10,color:'var(--text-muted)',marginTop:4}}>
-        <summary style={{cursor:'pointer',userSelect:'none'}} onClick={()=>setShowContext(s=>!s)}>
-          📷 contexto congelado ({Object.keys(r.context_snapshot).length} campos)
-        </summary>
-        <pre style={{maxHeight:120,overflow:'auto',background:'#fff',border:'1px solid var(--stone)',borderRadius:6,padding:6,fontSize:9,marginTop:4}}>
-          {JSON.stringify(r.context_snapshot, null, 2)}
-        </pre>
-      </details>
-    )}
   </div>
 }
 
