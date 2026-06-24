@@ -863,6 +863,14 @@ function Agenda(){
     setModal(null)
   }
 
+  // Borrado definitivo de una cita (solo completadas: limpiar histórico).
+  const deleteAppt=async(id)=>{
+    if(!window.confirm('¿Borrar definitivamente esta cita completada? No se puede deshacer.'))return
+    const{error}=await sb.from('appointments').delete().eq('id',id)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setModal(null);setToast({msg:'Cita borrada',type:'ok'});load()
+  }
+
   const cancelAppt=async(id)=>{
     // Pending: DELETE. Confirmed: UPDATE + insertar hold (manual mode notifica desde el bot al recibir webhook;
     // aquí solo escribimos el hold y ya, la secretaria misma recibirá el WhatsApp del bot vía un trigger en el handler de eventos
@@ -1391,7 +1399,8 @@ function Agenda(){
           {modal.status==='pending'&&<Btn variant="secondary"onClick={()=>updateStatus('confirmed')}style={{flex:1}}>✓ Confirmar</Btn>}
           {modal.status==='confirmed'&&!modal.reminder_sent_at&&<Btn variant="ghost"onClick={markReminderSent}style={{flex:1}}>📞 Recordatorio enviado</Btn>}
           {(modal.status==='confirmed'||modal.status==='pending')&&<Btn variant="gold"onClick={()=>updateStatus('completed')}style={{flex:1}}>✓ Completada</Btn>}
-          {modal.status!=='cancelled'&&<Btn variant="danger"onClick={()=>setCancelConfirm(true)}style={{flex:1}}>Cancelar</Btn>}
+          {modal.status!=='cancelled'&&modal.status!=='completed'&&<Btn variant="danger"onClick={()=>setCancelConfirm(true)}style={{flex:1}}>Cancelar</Btn>}
+          {modal.status==='completed'&&<Btn variant="danger"onClick={()=>deleteAppt(modal.id)}style={{flex:1}}>🗑 Borrar</Btn>}
         </div>
       }
 
