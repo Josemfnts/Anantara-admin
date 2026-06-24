@@ -3557,6 +3557,13 @@ function BotCoach() {
     try { const v = JSON.parse(localStorage.getItem('bc_quickreplies')); return Array.isArray(v)&&v.length?v:QR_DEFAULTS } catch { return QR_DEFAULTS }
   })
   const [narrow, setNarrow] = useState(() => typeof window!=='undefined' && window.matchMedia('(max-width:1023px)').matches)
+  // Panel "Procesos del bot": lista pacientes con procesos automáticos activos
+  // (pending_searches, wait_queue, propuestas pending, reviews pending, outbound queued)
+  // para que la secretaria pueda borrar selectivamente y el bot deje de perseguirles.
+  const [pendingsOpen, setPendingsOpen] = useState(false)
+  const [pendingsData, setPendingsData] = useState(null)  // { patients: [...], total_patients }
+  const [pendingsLoading, setPendingsLoading] = useState(false)
+  const [pendingsExpanded, setPendingsExpanded] = useState(() => new Set())
   const selConvRef = useRef(selConvId)
   const convFilteredRef = useRef([])
   const pendingByConvRef = useRef({})
@@ -3899,6 +3906,49 @@ function BotCoach() {
     localStorage.setItem('bc_quickreplies', JSON.stringify(arr.length?arr:QR_DEFAULTS))
   }
 
+  const loadPendings = async () => {
+    setPendingsLoading(true)
+    try {
+      const r = await fetch(`${BOT_HTTP_URL}/pending-processes`, { headers: botCoachHeaders() })
+      if (!r.ok) throw new Error('endpoint no disponible')
+      const data = await r.json()
+      setPendingsData(data)
+    } catch (e) {
+      setToast({ msg: 'Procesos del bot: ' + e.message, type: 'error' })
+      setPendingsData({ patients: [], total_patients: 0 })
+    } finally {
+      setPendingsLoading(false)
+    }
+  }
+
+  const openPendings = async () => {
+    setPendingsOpen(true)
+    await loadPendings()
+  }
+
+  const deleteOnePending = async (table, id) => {
+    try {
+      const r = await fetch(`${BOT_HTTP_URL}/pending-processes/delete-one`, {
+        method:'POST', headers: botCoachHeaders(),
+        body: JSON.stringify({ table, id }),
+      })
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok || !data.ok) throw new Error(data.error || `HTTP ${r.status}`)
+      setToast({ msg: `Eliminado de ${table}`, type: 'ok' })
+      await loadPendings()
+    } catch (e) {
+      setToast({ msg: 'Borrar: ' + e.message, type: 'error' })
+    }
+  }
+
+  const togglePendingPatient = (patientId) => {
+    setPendingsExpanded(prev => {
+      const next = new Set(prev)
+      if (next.has(patientId)) next.delete(patientId); else next.add(patientId)
+      return next
+    })
+  }
+
   const exportCsv = () => {
     const cols = ['created_at','verdict','category','intent_detected','nlu_source','patient_phone','patient_message','proposed_text','final_text','action_approved','action_executed','quick_reply_used','rejection_reason','flagged','reviewed_by','reviewed_at']
     const lines = [cols.join(',')]
@@ -3978,8 +4028,109 @@ function BotCoach() {
       </div>
 
       <div style={{flex:1}}/>
+      <Btn variant="ghost" onClick={openPendings} title="Lista de pacientes con procesos automáticos activos del bot">🤖 Procesos del bot</Btn>
       <Btn variant="ghost" onClick={exportCsv}>📥 Exportar CSV</Btn>
     </div>
+
+    {/* Modal Procesos del bot — listado por paciente con borrado selectivo */}
+    {pendingsOpen && (
+      <div onClick={()=>setPendingsOpen(false)}
+        style={{position:'fixed',inset:0,background:'rgba(0,0,0,.5)',zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+        <div onClick={e=>e.stopPropagation()}
+          style={{background:'#fff',borderRadius:12,maxWidth:900,width:'100%',maxHeight:'90vh',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+          <div style={{padding:'16px 20px',borderBottom:'1px solid var(--stone)',display:'flex',alignItems:'center',gap:12}}>
+            <div style={{fontSize:18,fontWeight:700,flex:1}}>🤖 Procesos automáticos del bot</div>
+            <Btn variant="ghost" onClick={loadPendings} disabled={pendingsLoading}>{pendingsLoading?'…':'↻ Recargar'}</Btn>
+            <Btn variant="ghost" onClick={()=>setPendingsOpen(false)}>Cerrar</Btn>
+          </div>
+          <div style={{padding:'12px 20px',fontSize:12,color:'var(--text-muted)',background:'var(--sage-mist)',borderBottom:'1px solid var(--stone)'}}>
+            Cada fila es un paciente al que el bot está siguiendo de forma automática (búsquedas de cita, lista de espera, propuestas pendientes, mensajes en cola). Borra los procesos que no quieras que continúen.
+          </div>
+          <div style={{flex:1,overflow:'auto',padding:'8px 0'}}>
+            {pendingsLoading && !pendingsData
+              ? <div style={{padding:40,textAlign:'center'}}><Sp/></div>
+              : !pendingsData?.patients?.length
+                ? <Em icon="✨" title="Sin procesos automáticos activos" sub="El bot no está persiguiendo a ningún paciente ahora mismo."/>
+                : <div>
+                    {pendingsData.patients.map(({patient, counts, total, processes}) => {
+                      const expanded = pendingsExpanded.has(patient.id)
+                      return (
+                        <div key={patient.id} style={{borderBottom:'1px solid var(--stone-light)'}}>
+                          <div onClick={()=>togglePendingPatient(patient.id)}
+                            style={{padding:'12px 20px',cursor:'pointer',display:'flex',alignItems:'center',gap:12,background:expanded?'var(--sage-mist)':'#fff'}}>
+                            <div style={{fontSize:14,fontWeight:700,flex:1}}>{patient.full_name}<span style={{fontWeight:400,color:'var(--text-muted)',marginLeft:8,fontSize:12}}>{patient.phone}</span></div>
+                            <div style={{display:'flex',gap:6,fontSize:11}}>
+                              {counts.pending_searches>0 && <span style={{padding:'2px 8px',borderRadius:999,background:'#fef3c7',color:'#92400e'}} title="Búsquedas auto del cron followup">🔍 {counts.pending_searches}</span>}
+                              {counts.wait_queue>0 && <span style={{padding:'2px 8px',borderRadius:999,background:'#dbeafe',color:'#1e40af'}} title="En lista de espera">⏳ {counts.wait_queue}</span>}
+                              {counts.appointments_pending>0 && <span style={{padding:'2px 8px',borderRadius:999,background:'#fce7f3',color:'#9d174d'}} title="Propuestas de cita pending">📅 {counts.appointments_pending}</span>}
+                              {counts.bot_coach_reviews>0 && <span style={{padding:'2px 8px',borderRadius:999,background:'#e0e7ff',color:'#3730a3'}} title="Reviews pending del Bot Coach">🧠 {counts.bot_coach_reviews}</span>}
+                              {counts.outbound_queue>0 && <span style={{padding:'2px 8px',borderRadius:999,background:'#fee2e2',color:'#991b1b'}} title="Mensajes en cola de envío">📤 {counts.outbound_queue}</span>}
+                            </div>
+                            <div style={{fontSize:12,color:'var(--text-muted)',width:60,textAlign:'right'}}>Total: <strong>{total}</strong></div>
+                            <div style={{fontSize:14,color:'var(--text-muted)'}}>{expanded?'▼':'▶'}</div>
+                          </div>
+                          {expanded && (
+                            <div style={{padding:'8px 20px 16px 40px',background:'#fafaf7'}}>
+                              {processes.pending_searches.map(r => (
+                                <div key={'ps'+r.id} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 0',fontSize:12}}>
+                                  <span style={{width:24}}>🔍</span>
+                                  <span style={{flex:1}}>
+                                    Búsqueda auto — target {r.target_date || '?'}
+                                    {r.weeks_pautadas ? ` (${r.weeks_pautadas} sem)` : ''}
+                                    {r.current_offer_id ? ' · con propuesta activa' : ''}
+                                  </span>
+                                  <Btn variant="ghost" onClick={()=>deleteOnePending('pending_searches', r.id)}>🗑</Btn>
+                                </div>
+                              ))}
+                              {processes.wait_queue.map(r => (
+                                <div key={'wq'+r.id} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 0',fontSize:12}}>
+                                  <span style={{width:24}}>⏳</span>
+                                  <span style={{flex:1}}>
+                                    Lista espera {r.queue_type||''} prio={r.priority_order||'-'} · target {r.target_date||'?'} {r.preferred_hour||''}
+                                  </span>
+                                  <Btn variant="ghost" onClick={()=>deleteOnePending('wait_queue', r.id)}>🗑</Btn>
+                                </div>
+                              ))}
+                              {processes.appointments_pending.map(r => (
+                                <div key={'ap'+r.id} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 0',fontSize:12}}>
+                                  <span style={{width:24}}>📅</span>
+                                  <span style={{flex:1}}>
+                                    Propuesta cita — {r.starts_at?.replace('T',' ').slice(0,16)} · {r.professionals?.name || '?'} · {r.services?.name || '?'}
+                                  </span>
+                                  <Btn variant="ghost" onClick={()=>deleteOnePending('appointments', r.id)}>🗑</Btn>
+                                </div>
+                              ))}
+                              {processes.bot_coach_reviews.map(r => (
+                                <div key={'rv'+r.id} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 0',fontSize:12}}>
+                                  <span style={{width:24}}>🧠</span>
+                                  <span style={{flex:1}}>
+                                    Review pending: "{(r.proposed_text||'').slice(0,80)}{r.proposed_text?.length>80?'…':''}"
+                                  </span>
+                                  <Btn variant="ghost" onClick={()=>deleteOnePending('bot_coach_reviews', r.id)} title="Marcar como rechazada">🗑</Btn>
+                                </div>
+                              ))}
+                              {processes.outbound_queue.map(r => (
+                                <div key={'oq'+r.id} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 0',fontSize:12}}>
+                                  <span style={{width:24}}>📤</span>
+                                  <span style={{flex:1}}>
+                                    En cola: "{(r.text||'').slice(0,80)}{r.text?.length>80?'…':''}" [{r.status}]
+                                  </span>
+                                  <Btn variant="ghost" onClick={()=>deleteOnePending('outbound_queue', r.id)}>🗑</Btn>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>}
+          </div>
+          <div style={{padding:'10px 20px',borderTop:'1px solid var(--stone)',fontSize:11,color:'var(--text-muted)'}}>
+            {pendingsData ? `${pendingsData.total_patients} paciente(s) con procesos activos` : ''}
+          </div>
+        </div>
+      </div>
+    )}
 
     {/* Toggle de vista: Chat (intensivo) vs Monitor (mosaico) */}
     <div style={{display:'flex',gap:8,marginBottom:12}}>
