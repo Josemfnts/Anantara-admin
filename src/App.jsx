@@ -3830,13 +3830,52 @@ function BotCoach() {
     setSending(false)
   }
 
+  // "Yo me ocupo" hace DOS cosas:
+  // 1. Pausa el bot 30 min en este chat (cooldown).
+  // 2. BORRA todos los procesos automáticos del paciente: pending_searches
+  //    (búsquedas automáticas que el cron followup ejecuta), wait_queue, propuestas
+  //    pending, outbound queued, reviews pending y rejected_slots. Así el bot
+  //    "olvida" al paciente y no le persigue con ofertas automáticas.
   const takeover = async () => {
     const chatId = toChatId(selPhoneRef.current)
-    if (!chatId) return
+    const phone9 = (selPhoneRef.current || '').replace(/\D/g, '').slice(-9)
+    if (!chatId || !phone9) return
     try {
-      const r = await botFetch('/secretary-active', { method:'POST', body: JSON.stringify({ chat_id: chatId }) })
-      if (!r.ok) throw new Error('endpoint no disponible')
-      setToast({msg:'📵 Tomas el control — bot en pausa 30 min', type:'ok'}); loadData()
+      // 1) Pausa 30 min
+      const r1 = await fetch(`${BOT_HTTP_URL}/secretary-active`, {
+        method:'POST', headers: botCoachHeaders(),
+        body: JSON.stringify({ chat_id: chatId }),
+      })
+      if (!r1.ok) throw new Error('secretary-active no disponible')
+
+      // 2) Borrar todos los procesos automáticos del paciente
+      let summary = ''
+      try {
+        const r2 = await fetch(`${BOT_HTTP_URL}/patient-pendings/clear`, {
+          method:'POST', headers: botCoachHeaders(),
+          body: JSON.stringify({ phone: phone9 }),
+        })
+        if (r2.ok) {
+          const data = await r2.json()
+          const d = data.deleted || {}
+          const total = data.total || 0
+          if (total > 0) {
+            const parts = []
+            if (d.pending_searches) parts.push(`${d.pending_searches} búsqueda(s) auto`)
+            if (d.wait_queue) parts.push(`${d.wait_queue} en lista espera`)
+            if (d.appointments_pending) parts.push(`${d.appointments_pending} propuesta(s)`)
+            if (d.bot_coach_reviews) parts.push(`${d.bot_coach_reviews} review(s)`)
+            if (d.outbound_queue) parts.push(`${d.outbound_queue} en cola envío`)
+            if (d.bot_rejected_slots) parts.push(`${d.bot_rejected_slots} slot(s) rechazados`)
+            summary = ` (eliminados: ${parts.join(', ')})`
+          }
+        }
+      } catch (e) {
+        console.warn('patient-pendings/clear falló:', e.message)
+      }
+
+      setToast({msg:`📵 Tomas el control — bot en pausa 30 min${summary}`, type:'ok'})
+      loadData()
     } catch(e) { setToast({msg:'Yo me ocupo: '+e.message+' (pendiente en el bot)', type:'error'}) }
   }
 
