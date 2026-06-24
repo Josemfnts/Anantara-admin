@@ -3842,6 +3842,16 @@ function BotCoach() {
 
   const primaryAction = () => { if (selPending) sendProposal(); else sendFree() }
 
+  // Borrar conversación + su historial (messages caen por CASCADE; reviews aparte)
+  const deleteConversation = async () => {
+    if (!selConvId) return
+    if (!window.confirm('¿Borrar esta conversación y todo su historial? No se puede deshacer.')) return
+    await sb.from('bot_coach_reviews').delete().eq('conversation_id', selConvId)
+    const { error } = await sb.from('conversations').delete().eq('id', selConvId)
+    if (error) { setToast({msg:'Error al borrar: '+error.message, type:'error'}); return }
+    setSelConvId(null); setToast({msg:'Conversación borrada', type:'ok'}); loadConversations(); loadData()
+  }
+
   const editQuickReplies = () => {
     const v = window.prompt('Quick replies (separadas por "|"):', quickReplies.join(' | '))
     if (v == null) return
@@ -4044,6 +4054,7 @@ function BotCoach() {
               {selPending
                 ? <span className="badge badge-gold">🟡 propuesta pendiente</span>
                 : selConv.fsm_state ? <span className="badge badge-gray">{selConv.fsm_state}</span> : null}
+              <button onClick={deleteConversation} title="Borrar conversación" style={{minWidth:32,minHeight:32,borderRadius:8,border:'1px solid #fecaca',background:'#fef2f2',color:'#dc2626',cursor:'pointer',fontSize:14}}>🗑</button>
             </div>
 
             {/* Hilo de mensajes */}
