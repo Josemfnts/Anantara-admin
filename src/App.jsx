@@ -143,7 +143,7 @@ const NAV_GROUPS = [
     {id:'facturacion',icon:'🧾',label:'Facturación'},
   ]},
 ]
-function Sidebar({page,onNav,open,onClose,onLogout}){
+function Sidebar({page,onNav,open,onClose,onLogout,notifCount=0}){
   return<>
     <div className={`sidebar-overlay ${open?'open':''}`}onClick={onClose}/>
     <nav className={`sidebar ${open?'open':''}`}>
@@ -153,6 +153,7 @@ function Sidebar({page,onNav,open,onClose,onLogout}){
           <div className="sidebar-group-label">{g.label}</div>
           {g.items.map(it=><button key={it.id}className={`nav-btn ${page===it.id?'active':''}`}onClick={()=>{onNav(it.id);onClose()}}>
             <span className="ico">{it.icon}</span>{it.label}
+            {it.id==='bot-coach'&&notifCount>0&&<span style={{marginLeft:'auto',minWidth:18,height:18,borderRadius:999,background:'#dc2626',color:'#fff',fontSize:10,fontWeight:700,display:'inline-flex',alignItems:'center',justifyContent:'center',padding:'0 5px'}}>{notifCount}</span>}
           </button>)}
         </div>)}
       </div>
@@ -164,14 +165,14 @@ function Sidebar({page,onNav,open,onClose,onLogout}){
 // ─── Layout ───────────────────────────────────────────────────────────────────
 function Layout({title,children,sidebarOpen,onToggleSidebar,notifCount,page,onNav,onLogout}){
   return<div className="app-shell">
-    <Sidebar page={page}onNav={onNav}open={sidebarOpen}onClose={()=>onToggleSidebar(false)}onLogout={onLogout}/>
+    <Sidebar page={page}onNav={onNav}open={sidebarOpen}onClose={()=>onToggleSidebar(false)}onLogout={onLogout}notifCount={notifCount}/>
     <div className="main-wrap">
       <header className="topbar">
         <div className="topbar-left">
           <button className="hamburger"onClick={()=>onToggleSidebar(true)}>☰</button>
           <span className="topbar-title">{title}</span>
         </div>
-        <button className="notif-btn">🔔{notifCount>0&&<span className="notif-badge">{notifCount}</span>}</button>
+        <button className="notif-btn"onClick={()=>onNav('bot-coach')}title={notifCount>0?`${notifCount} mensaje(s) nuevo(s) — ir a Bot Coach`:'Sin mensajes nuevos'}>🔔{notifCount>0&&<span className="notif-badge">{notifCount}</span>}</button>
       </header>
       <main className="page-content">{children}</main>
     </div>
@@ -3593,56 +3594,12 @@ function BotCoach() {
   const searchRef = useRef(null)
   useEffect(() => { selConvRef.current = selConvId }, [selConvId])
 
-  // ─── Aviso de mensaje nuevo (sonido + visual in-app) ───────────────────────
-  // Marta valida muchos al día; cuando llega una propuesta nueva y no está
-  // mirando, hay que avisarla. Beep WebAudio + parpadeo del título de pestaña +
-  // realce "nuevo" en la lista. El sonido tiene toggle (🔔) y se silencia con un
-  // clic; recuerda que el navegador no deja sonar audio hasta la 1ª interacción.
+  // ─── Realce "mensaje nuevo" en la lista (visual, dentro de la vista) ────────
+  // El SONIDO + badge en el menú + parpadeo de título son GLOBALES (en App, para
+  // que avisen esté en la vista que esté). Aquí solo el realce por conversación.
+  // El toggle 🔔 persiste en localStorage('bc_sound') y App lo respeta.
   const [soundOn, setSoundOn] = useState(() => localStorage.getItem('bc_sound') !== '0')
-  const [newConvIds, setNewConvIds] = useState(() => new Set())  // conv con propuesta nueva sin ver
-  const [unseen, setUnseen] = useState(0)                         // contador para el título
-  const audioCtxRef = useRef(null)
-  const unseenRef = useRef(0)
-  const baseTitleRef = useRef(typeof document !== 'undefined' ? document.title : '')
-
-  // AudioContext: se crea/reanuda en la 1ª interacción (política de autoplay).
-  useEffect(() => {
-    const init = () => {
-      try {
-        if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
-        if (audioCtxRef.current?.state === 'suspended') audioCtxRef.current.resume()
-      } catch { /* sin audio disponible */ }
-    }
-    window.addEventListener('pointerdown', init)
-    window.addEventListener('keydown', init)
-    return () => { window.removeEventListener('pointerdown', init); window.removeEventListener('keydown', init) }
-  }, [])
-
-  const playBeep = useCallback(() => {
-    const ctx = audioCtxRef.current
-    if (!ctx) return
-    try {
-      const o = ctx.createOscillator(), g = ctx.createGain()
-      o.type = 'sine'; o.frequency.value = 880
-      o.connect(g); g.connect(ctx.destination)
-      const t = ctx.currentTime
-      g.gain.setValueAtTime(0.0001, t)
-      g.gain.exponentialRampToValueAtTime(0.25, t + 0.01)
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3)
-      o.start(t); o.stop(t + 0.31)
-    } catch { /* noop */ }
-  }, [])
-
-  // Título de pestaña: parpadea con el nº de propuestas no vistas; al volver el
-  // foco a la pestaña se resetea.
-  useEffect(() => {
-    document.title = unseen > 0 ? `🔔 (${unseen}) nuevo — Anantara` : baseTitleRef.current
-  }, [unseen])
-  useEffect(() => {
-    const onFocus = () => { unseenRef.current = 0; setUnseen(0) }
-    window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
-  }, [])
+  const [newConvIds, setNewConvIds] = useState(() => new Set())  // conv con mensaje nuevo sin abrir
 
   // Al abrir una conversación, deja de estar "nueva".
   useEffect(() => {
@@ -3650,15 +3607,11 @@ function BotCoach() {
     setNewConvIds(s => { if (!s.has(selConvId)) return s; const n = new Set(s); n.delete(selConvId); return n })
   }, [selConvId])
 
-  // Aviso cuando ESCRIBE un paciente: mensaje entrante nuevo (messages INSERT
-  // direction='in'). Es el canal realtime que ya funciona (el hilo se refresca
-  // solo) y es lo que Marta entiende por "ha escrito". Closure fresca en un ref
-  // porque la suscripción se crea una sola vez.
+  // Mensaje entrante nuevo (messages INSERT direction='in') → realzar su conv en
+  // la lista. Closure fresca en un ref porque la suscripción se crea una vez.
   const notifyIncomingRef = useRef(null)
   notifyIncomingRef.current = (payload) => {
     if (payload?.eventType !== 'INSERT' || payload?.new?.direction !== 'in') return
-    if (soundOn) playBeep()
-    if (document.hidden) { unseenRef.current += 1; setUnseen(unseenRef.current) }
     const cid = payload.new.conversation_id
     if (cid && cid !== selConvRef.current) setNewConvIds(s => new Set(s).add(cid))
   }
@@ -4761,6 +4714,55 @@ export default function App(){
     return()=>sub.subscription.unsubscribe()
   },[])
 
+  // ─── Aviso GLOBAL de mensaje nuevo (suena/avisa esté en la vista que esté) ───
+  // Escucha messages INSERT direction='in' a nivel de app: beep (toggle en
+  // localStorage 'bc_sound'), badge en el menú "Bot Coach" (notifCount) y
+  // parpadeo del título. Se resetea al entrar en la vista Bot Coach.
+  const pageRef=useRef(page)
+  useEffect(()=>{pageRef.current=page},[page])
+  const audioCtxRef=useRef(null)
+  const baseTitleRef=useRef(typeof document!=='undefined'?document.title:'')
+
+  // AudioContext: se crea/reanuda en la 1ª interacción (política de autoplay).
+  useEffect(()=>{
+    const init=()=>{try{if(!audioCtxRef.current)audioCtxRef.current=new(window.AudioContext||window.webkitAudioContext)();if(audioCtxRef.current?.state==='suspended')audioCtxRef.current.resume()}catch{/* sin audio */}}
+    window.addEventListener('pointerdown',init);window.addEventListener('keydown',init)
+    return()=>{window.removeEventListener('pointerdown',init);window.removeEventListener('keydown',init)}
+  },[])
+
+  const playBeep=useCallback(()=>{
+    const ctx=audioCtxRef.current
+    if(!ctx)return
+    try{
+      const o=ctx.createOscillator(),g=ctx.createGain()
+      o.type='sine';o.frequency.value=880
+      o.connect(g);g.connect(ctx.destination)
+      const t=ctx.currentTime
+      g.gain.setValueAtTime(0.0001,t)
+      g.gain.exponentialRampToValueAtTime(0.25,t+0.01)
+      g.gain.exponentialRampToValueAtTime(0.0001,t+0.3)
+      o.start(t);o.stop(t+0.31)
+    }catch{/* noop */}
+  },[])
+
+  // Título parpadea con el nº sin ver. El reset se hace al navegar a Bot Coach
+  // (ver `navigate`), no en un efecto, para no encadenar renders.
+  useEffect(()=>{document.title=notifCount>0?`🔔 (${notifCount}) nuevo — ${baseTitleRef.current}`:baseTitleRef.current},[notifCount])
+  const navigate=useCallback((p)=>{setPage(p);if(p==='bot-coach')setNotifCount(0)},[])
+
+  // Suscripción realtime global (solo con sesión).
+  useEffect(()=>{
+    if(!user)return
+    const ch=sb.channel('global_incoming')
+      .on('postgres_changes',{event:'INSERT',schema:'public',table:'messages'},(p)=>{
+        if(p.new?.direction!=='in')return
+        if(localStorage.getItem('bc_sound')!=='0')playBeep()
+        if(pageRef.current!=='bot-coach')setNotifCount(c=>c+1)
+      })
+      .subscribe()
+    return()=>{sb.removeChannel(ch)}
+  },[user,playBeep])
+
   const logout=async()=>{await sb.auth.signOut();setUser(null)}
 
   if(authLoading)return<div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg)',fontFamily:'sans-serif'}}><div style={{color:'var(--green)'}}>Cargando…</div></div>
@@ -4768,7 +4770,7 @@ export default function App(){
 
   const renderPage=()=>{
     switch(page){
-      case 'dashboard':  return<Dashboard onNav={setPage}/>
+      case 'dashboard':  return<Dashboard onNav={navigate}/>
       case 'agenda':     return<Agenda/>
       case 'horarios':   return<Horarios/>
       case 'bloqueados': return<Bloqueados/>
@@ -4782,11 +4784,11 @@ export default function App(){
       case 'facturacion':   return<Facturacion/>
       case 'bot-coach':     return<BotCoach/>
       case 'bot-nlu':       return<BotNlu/>
-      default:              return<Dashboard onNav={setPage}/>
+      default:              return<Dashboard onNav={navigate}/>
     }
   }
 
-  return<Layout title={PAGE_TITLES[page]||'Panel'}page={page}onNav={setPage}sidebarOpen={sidebarOpen}onToggleSidebar={setSidebarOpen}notifCount={notifCount}onLogout={logout}>
+  return<Layout title={PAGE_TITLES[page]||'Panel'}page={page}onNav={navigate}sidebarOpen={sidebarOpen}onToggleSidebar={setSidebarOpen}notifCount={notifCount}onLogout={logout}>
     {renderPage()}
   </Layout>
 }
