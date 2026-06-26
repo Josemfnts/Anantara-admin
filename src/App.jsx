@@ -27,6 +27,17 @@ function botFetch(path, init = {}) {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const MONTHS  = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic']
 const DAYS_ES = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb']
+const DAYS_ES_LONG = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado']
+
+// Siguiente día laborable a partir de hoy: hoy+1, saltando sábado y domingo.
+// Devuelve { date, skipped } — skipped=true si tuvo que saltar el fin de semana
+// (p. ej. un viernes apunta al lunes), para poder rotular el día real.
+function nextWorkingDay(from = new Date()) {
+  const d = new Date(from.getFullYear(), from.getMonth(), from.getDate() + 1)
+  let skipped = false
+  while (d.getDay() === 0 || d.getDay() === 6) { d.setDate(d.getDate() + 1); skipped = true }
+  return { date: d, skipped }
+}
 
 function pad(n) { return String(n).padStart(2,'0') }
 function toK(d) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}` }
@@ -176,6 +187,9 @@ function Dashboard({onNav}){
   const[lists,setLists]=useState({waiting:0,expedite:0,overdue:0})
   const[tomorrowByProf,setTomorrowByProf]=useState([])
   const[monthly,setMonthly]=useState({completed:0,cancelled:0,revenue:0})
+  // Día que muestra la fila "Citas mañana": normalmente mañana, pero si mañana
+  // cae en fin de semana salta al lunes. { skipped, wd } rotula el día real.
+  const[nextDay,setNextDay]=useState({skipped:false,wd:''})
 
   // Calcula huecos libres de un rango sumando minutos:
   //   working_hours - recurring_breaks - blocked_slots - blocked_days - citas activas
@@ -228,7 +242,9 @@ function Dashboard({onNav}){
   const load=useCallback(async()=>{
     setLoading(true)
     const today = toK(new Date())
-    const tomorrow = toK(new Date(Date.now() + 86400000))
+    const nd = nextWorkingDay(new Date())
+    const tomorrow = toK(nd.date)
+    setNextDay({ skipped: nd.skipped, wd: DAYS_ES_LONG[nd.date.getDay()] })
     const weekStart = today
     const weekEnd = toK(new Date(Date.now() + 6 * 86400000))
     const nextWeekStart = toK(new Date(Date.now() + 7 * 86400000))
@@ -330,7 +346,7 @@ function Dashboard({onNav}){
     {/* Fila 1: KPIs */}
     <div className="stats-grid">
       <div className="card stat-card" style={{cursor:'pointer'}} onClick={()=>onNav('agenda')}>
-        <div className="stat-label">Citas mañana</div>
+        <div className="stat-label">Citas {nextDay.skipped ? `del ${nextDay.wd}` : 'mañana'}</div>
         <div className="stat-value">{kpi.tomorrow.total}</div>
         <div className="stat-sub">
           {kpi.tomorrow.confirmed} confirmada{kpi.tomorrow.confirmed!==1?'s':''}
@@ -366,7 +382,7 @@ function Dashboard({onNav}){
                 </div>)}
               </div>}
               {pending.proposals.length > 0 && <div style={{padding:'10px 14px',background:'#fef3c7',borderBottom:'1px solid var(--border)'}}>
-                <div style={{fontSize:11,fontWeight:700,color:'#92400e',textTransform:'uppercase',marginBottom:4}}>Propuestas pendientes (mañana)</div>
+                <div style={{fontSize:11,fontWeight:700,color:'#92400e',textTransform:'uppercase',marginBottom:4}}>Propuestas pendientes ({nextDay.skipped ? `del ${nextDay.wd}` : 'mañana'})</div>
                 {pending.proposals.slice(0,3).map(a => <div key={a.id} className="dash-row" style={{padding:'4px 0'}}>
                   <span style={{fontSize:12,color:'var(--text-muted)',minWidth:44}}>{fTime(a.starts_at)}</span>
                   <div style={{flex:1,fontSize:13}}>{a.patients?.full_name||'—'}</div>
@@ -418,9 +434,9 @@ function Dashboard({onNav}){
       </div>
     </div>
 
-    {/* Fila 3: Citas mañana por profesional */}
+    {/* Fila 3: Citas del próximo día laborable por profesional */}
     <div className="section-header" style={{marginTop:24}}>
-      <span className="section-title">Agenda de mañana</span>
+      <span className="section-title">Agenda {nextDay.skipped ? `del ${nextDay.wd}` : 'de mañana'}</span>
     </div>
     <div className="dash-grid" style={{gridTemplateColumns:`repeat(${Math.max(tomorrowByProf.length,1)},1fr)`}}>
       {tomorrowByProf.length === 0
@@ -432,7 +448,7 @@ function Dashboard({onNav}){
                 {prof.name} <span style={{color:'var(--text-muted)',fontWeight:400,fontSize:11}}>· {appts.length} cita{appts.length!==1?'s':''}</span>
               </div>
               {appts.length === 0
-                ? <div style={{padding:24,textAlign:'center',fontSize:12,color:'var(--text-muted)'}}>Sin citas mañana</div>
+                ? <div style={{padding:24,textAlign:'center',fontSize:12,color:'var(--text-muted)'}}>Sin citas {nextDay.skipped ? `el ${nextDay.wd}` : 'mañana'}</div>
                 : appts.map(a => <div key={a.id} className="dash-row" style={{padding:'10px 14px'}}>
                   <span style={{fontSize:12,fontWeight:700,color:'var(--green)',minWidth:44}}>{fTime(a.starts_at)}</span>
                   <div style={{flex:1,minWidth:0}}>
@@ -3577,6 +3593,73 @@ function BotCoach() {
   const searchRef = useRef(null)
   useEffect(() => { selConvRef.current = selConvId }, [selConvId])
 
+  // ─── Aviso de mensaje nuevo (sonido + visual in-app) ───────────────────────
+  // Marta valida muchos al día; cuando llega una propuesta nueva y no está
+  // mirando, hay que avisarla. Beep WebAudio + parpadeo del título de pestaña +
+  // realce "nuevo" en la lista. El sonido tiene toggle (🔔) y se silencia con un
+  // clic; recuerda que el navegador no deja sonar audio hasta la 1ª interacción.
+  const [soundOn, setSoundOn] = useState(() => localStorage.getItem('bc_sound') !== '0')
+  const [newConvIds, setNewConvIds] = useState(() => new Set())  // conv con propuesta nueva sin ver
+  const [unseen, setUnseen] = useState(0)                         // contador para el título
+  const audioCtxRef = useRef(null)
+  const unseenRef = useRef(0)
+  const baseTitleRef = useRef(typeof document !== 'undefined' ? document.title : '')
+
+  // AudioContext: se crea/reanuda en la 1ª interacción (política de autoplay).
+  useEffect(() => {
+    const init = () => {
+      try {
+        if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
+        if (audioCtxRef.current?.state === 'suspended') audioCtxRef.current.resume()
+      } catch { /* sin audio disponible */ }
+    }
+    window.addEventListener('pointerdown', init)
+    window.addEventListener('keydown', init)
+    return () => { window.removeEventListener('pointerdown', init); window.removeEventListener('keydown', init) }
+  }, [])
+
+  const playBeep = useCallback(() => {
+    const ctx = audioCtxRef.current
+    if (!ctx) return
+    try {
+      const o = ctx.createOscillator(), g = ctx.createGain()
+      o.type = 'sine'; o.frequency.value = 880
+      o.connect(g); g.connect(ctx.destination)
+      const t = ctx.currentTime
+      g.gain.setValueAtTime(0.0001, t)
+      g.gain.exponentialRampToValueAtTime(0.25, t + 0.01)
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3)
+      o.start(t); o.stop(t + 0.31)
+    } catch { /* noop */ }
+  }, [])
+
+  // Título de pestaña: parpadea con el nº de propuestas no vistas; al volver el
+  // foco a la pestaña se resetea.
+  useEffect(() => {
+    document.title = unseen > 0 ? `🔔 (${unseen}) nuevo — Anantara` : baseTitleRef.current
+  }, [unseen])
+  useEffect(() => {
+    const onFocus = () => { unseenRef.current = 0; setUnseen(0) }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [])
+
+  // Al abrir una conversación, deja de estar "nueva".
+  useEffect(() => {
+    if (!selConvId) return
+    setNewConvIds(s => { if (!s.has(selConvId)) return s; const n = new Set(s); n.delete(selConvId); return n })
+  }, [selConvId])
+
+  // Closure fresca para el handler realtime (la suscripción se crea una vez).
+  const notifyNewProposalRef = useRef(null)
+  notifyNewProposalRef.current = (payload) => {
+    if (payload?.eventType !== 'INSERT' || payload?.new?.verdict !== 'pending') return
+    if (soundOn) playBeep()
+    if (document.hidden) { unseenRef.current += 1; setUnseen(unseenRef.current) }
+    const cid = payload.new.conversation_id
+    if (cid && cid !== selConvRef.current) setNewConvIds(s => new Set(s).add(cid))
+  }
+
   // Carga inicial + suscripción realtime
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -3643,7 +3726,7 @@ function BotCoach() {
   // Realtime: bot_coach_reviews + bot_config + messages + conversations
   useEffect(() => {
     const ch = sb.channel('bot_coach_v5')
-      .on('postgres_changes', { event:'*', schema:'public', table:'bot_coach_reviews' }, () => { loadData() })
+      .on('postgres_changes', { event:'*', schema:'public', table:'bot_coach_reviews' }, (p) => { loadData(); notifyNewProposalRef.current?.(p) })
       .on('postgres_changes', { event:'*', schema:'public', table:'bot_config' }, (p) => {
         if (p.new) setBotCfg(p.new)
       })
@@ -4238,6 +4321,7 @@ function BotCoach() {
           <div style={{padding:10,borderBottom:'1px solid var(--border)',display:'flex',gap:8,alignItems:'center'}}>
             <input ref={searchRef} className="field-input" placeholder="🔍 Buscar paciente… (/)" value={search} onChange={e=>setSearch(e.target.value)} style={{flex:1,minHeight:34,fontSize:13}}/>
             <button onClick={()=>{ setColaMode(true); const first = pendingConvs[0]; if(first) setSelConvId(first.id) }} title="Modo cola (focus)" style={{minWidth:36,minHeight:34,borderRadius:8,border:'1px solid var(--stone)',background:'#fff',cursor:'pointer',fontSize:14}}>⚙</button>
+            <button onClick={()=>{ const v=!soundOn; setSoundOn(v); localStorage.setItem('bc_sound', v?'1':'0') }} title={soundOn?'Sonido de aviso activado':'Sonido de aviso silenciado'} style={{minWidth:36,minHeight:34,borderRadius:8,border:'1px solid var(--stone)',background:'#fff',cursor:'pointer',fontSize:14}}>{soundOn?'🔔':'🔕'}</button>
             {!narrow && <button onClick={()=>setListCollapsed(true)} title="Ocultar lista" style={{minWidth:36,minHeight:34,borderRadius:8,border:'1px solid var(--stone)',background:'#fff',cursor:'pointer',fontSize:14}}>◀</button>}
           </div>
           <div style={{flex:1,overflowY:'auto'}}>
@@ -4248,16 +4332,18 @@ function BotCoach() {
                   const np = pendingByConv[c.id] || 0
                   const stale = c.last_message_at && (Date.now() - new Date(c.last_message_at).getTime()) > MIN30
                   const active = c.id === selConvId
+                  const isNew = newConvIds.has(c.id) && !active   // propuesta nueva sin abrir
                   return (
                     <button key={c.id} onClick={()=>setSelConvId(c.id)} style={{
                       width:'100%',textAlign:'left',padding:'10px 12px',border:'none',borderBottom:'1px solid var(--border)',
-                      background: active ? 'var(--sage-mist)' : 'transparent', cursor:'pointer', display:'flex',gap:8,alignItems:'center'}}>
+                      borderLeft: isNew ? '3px solid var(--green)' : '3px solid transparent',
+                      background: active ? 'var(--sage-mist)' : (isNew ? 'var(--sage-mist)' : 'transparent'), cursor:'pointer', display:'flex',gap:8,alignItems:'center'}}>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{display:'flex',justifyContent:'space-between',gap:6}}>
-                          <span style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</span>
+                          <span style={{fontWeight:isNew?800:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</span>
                           <span style={{fontSize:10,color:'var(--text-muted)',flexShrink:0,fontVariantNumeric:'tabular-nums'}}>{c.last_message_at?fTime(c.last_message_at):''}</span>
                         </div>
-                        <div style={{fontSize:11,color:'var(--text-muted)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.last_intent||'—'}</div>
+                        <div style={{fontSize:11,color: isNew?'var(--green)':'var(--text-muted)',fontWeight:isNew?700:400,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{isNew ? '● mensaje nuevo' : (c.last_intent||'—')}</div>
                       </div>
                       {np>0 && <span style={{flexShrink:0,minWidth:18,height:18,borderRadius:999,background:'var(--green)',color:'#fff',fontSize:10,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',padding:'0 5px'}}>{np}</span>}
                       {np>0 && stale && <span title="Sin responder >30 min" style={{flexShrink:0,width:8,height:8,borderRadius:999,background:'#dc2626'}}/>}
