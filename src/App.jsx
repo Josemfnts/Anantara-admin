@@ -3733,8 +3733,18 @@ function BotCoach() {
 
   // ── Derivados del panel WhatsApp Web ──
   const q = search.trim().toLowerCase()
+  // PALIATIVO DE DISPLAY (no es el arreglo de raíz). El bot crea filas en
+  // `conversations` por teléfono ANTES de persistir ningún mensaje (upsert de
+  // markProcessingStart al recibir, y handoff de números desconocidos que salen
+  // sin guardar entrante) → quedan conversaciones vacías. El bot las sigue
+  // creando; aquí solo evitamos que Marta las vea. La causa se arregla en el bot.
+  // Criterio: ocultar las que no tienen `last_message_at`. Es un proxy fiable de
+  // "tiene mensajes" porque el entrante se persiste en el mismo flujo que setea
+  // last_message_at (findOrCreateConversation), mientras que el upsert que crea
+  // las vacías no lo toca. Cero queries extra.
   const convFiltered = conversations.filter(c =>
-    !q || (c.patients?.full_name||'').toLowerCase().includes(q) || (c.phone||'').includes(q))
+    c.last_message_at &&
+    (!q || (c.patients?.full_name||'').toLowerCase().includes(q) || (c.phone||'').includes(q)))
   const selConv = conversations.find(c => c.id === selConvId) || null
   const pendingByConv = {}
   for (const rv of reviews) if (rv.verdict==='pending' && rv.conversation_id) pendingByConv[rv.conversation_id] = (pendingByConv[rv.conversation_id]||0)+1
