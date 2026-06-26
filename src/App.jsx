@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { actionLookupId, describeProposedAction, isDestructiveAction } from './lib/proposedAction.js'
 
 const sb = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -3552,6 +3553,10 @@ function BotCoach() {
   const [gridMsgs, setGridMsgs] = useState([])
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
+  // Descriptor de la acción de la propuesta pendiente (qué cita aprueba Marta).
+  // Se resuelve al cambiar de propuesta: lee appointments por el id que aplique a
+  // cada tipo y formatea día/hora/prof. Ver src/lib/proposedAction.js.
+  const [actionDesc, setActionDesc] = useState(null)
   const QR_DEFAULTS = ['Listo, te apunto','Perfecto, hasta mañana','Te llamamos enseguida','Hecho, cancelada']
   const [quickReplies, setQuickReplies] = useState(() => {
     try { const v = JSON.parse(localStorage.getItem('bc_quickreplies')); return Array.isArray(v)&&v.length?v:QR_DEFAULTS } catch { return QR_DEFAULTS }
@@ -3758,6 +3763,32 @@ function BotCoach() {
   // Precargar el borrador con la propuesta pendiente al cambiar de conversación
   useEffect(() => { setDraft(selPending?.proposed_text || '') }, [selConvId, selPending?.id]) // eslint-disable-line
 
+  // Resolver el detalle de la acción de la propuesta pendiente.
+  // Tipos autodescritos (cancelar_cita FSM, rechazar_propuesta, proponer/reservar):
+  //   el slot viaja en el propio action → no hace falta lookup para la identidad.
+  // Tipos por id (cancelar_cita Haiku, confirmar_*, aceptar/rechazar oferta,
+  //   descartar): se lee appointments por ese id. Si no hay fila → el descriptor
+  //   marca `unresolved` y NO se inventa la cita (ni future_appt ni patient_name).
+  useEffect(() => {
+    const act = selPending?.proposed_action
+    if (!act) { setActionDesc(null); return }
+    const patientName = selPending?.conversations?.patients?.full_name || act.patient_name || null
+    let cancelled = false
+    ;(async () => {
+      const apptId = actionLookupId(act)
+      let appt = null
+      if (apptId) {
+        const { data } = await sb.from('appointments')
+          .select('id, starts_at, status, professionals(name), services(name, duration_minutes)')
+          .eq('id', apptId).maybeSingle()
+        appt = data || null
+      }
+      if (cancelled) return
+      setActionDesc(describeProposedAction(act, { patientName, appt }))
+    })()
+    return () => { cancelled = true }
+  }, [selPending?.id]) // eslint-disable-line
+
   // Responsive: una columna a la vez por debajo de 1024px
   useEffect(() => {
     const mq = window.matchMedia('(max-width:1023px)')
@@ -3793,8 +3824,19 @@ function BotCoach() {
     if (!selPending) return
     const verdict = (draft.trim() !== (selPending.proposed_text||'').trim()) ? 'modified' : 'sent'
     const act = selPending.proposed_action
-    let approveAction = false
-    if (act) approveAction = window.confirm(`Esta propuesta ejecuta una acción (${act.type||'acción'}). ¿Aprobarla también?`)
+    let approveAction = !!act
+    // Confirm SOLO en acciones destructivas (cancelar/descartar/rechazar). El
+    // resto se aprueba con la tarjeta ya visible. El texto del confirm repite el
+    // detalle ya resuelto; si no se pudo resolver la cita, se avisa de la duda.
+    if (act && isDestructiveAction(act)) {
+      const d = actionDesc && actionDesc.type === act.type ? actionDesc : describeProposedAction(act, {
+        patientName: selPending?.conversations?.patients?.full_name || act.patient_name || null,
+      })
+      const detalle = d.unresolved
+        ? `⚠️ NO se pudo resolver la cita (id ${actionLookupId(act) || '—'}). No la tengo en la agenda. Aprobar a ciegas.`
+        : d.line
+      approveAction = window.confirm(`Vas a ${d.label.toUpperCase()}:\n\n${detalle}\n\n¿Confirmas?`)
+    }
     setSending(true)
     try {
       const resp = await fetch(`${BOT_HTTP_URL}/send-validated`, {
@@ -4276,6 +4318,29 @@ function BotCoach() {
                 ))}
                 <button onClick={editQuickReplies} title="Editar respuestas rápidas" style={{padding:'4px 8px',borderRadius:999,fontSize:11,border:'1px dashed var(--stone)',background:'#fff',cursor:'pointer',color:'var(--text-muted)'}}>✎</button>
               </div>
+              {selPending?.proposed_action && actionDesc && (() => {
+                // Paleta por familia; unresolved fuerza tratamiento rojo de alerta.
+                const PAL = {
+                  destructive: { bg:'#fef2f2', bd:'#fecaca', ac:'#dc2626' },
+                  confirm:     { bg:'#f0fdf4', bd:'#bbf7d0', ac:'var(--green)' },
+                  list:        { bg:'var(--cream)', bd:'var(--border)', ac:'var(--text-muted)' },
+                  neutral:     { bg:'#f9fafb', bd:'var(--border)', ac:'var(--text-muted)' },
+                }
+                const p = actionDesc.unresolved ? { bg:'#fef2f2', bd:'#fecaca', ac:'#dc2626' } : (PAL[actionDesc.family] || PAL.neutral)
+                return (
+                  <div style={{border:`1px solid ${p.bd}`,background:p.bg,borderRadius:'var(--radius-lg)',padding:'8px 12px',marginBottom:8}}>
+                    <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:2}}>
+                      <span style={{fontSize:14}}>{actionDesc.icon}</span>
+                      <span style={{fontSize:11,fontWeight:700,letterSpacing:.3,textTransform:'uppercase',color:p.ac}}>{actionDesc.label}</span>
+                      {actionDesc.destructive && <span style={{fontSize:9,fontWeight:700,color:'#fff',background:p.ac,borderRadius:999,padding:'1px 6px'}}>acción real</span>}
+                    </div>
+                    {actionDesc.unresolved
+                      ? <div style={{fontSize:12,fontWeight:600,color:'#dc2626'}}>⚠️ No se pudo resolver la cita (id {actionLookupId(selPending.proposed_action) || '—'}). No apruebes sin verificar.</div>
+                      : <div style={{fontSize:13,color:'var(--body)'}}>{actionDesc.line}</div>}
+                    {actionDesc.note && <div style={{fontSize:11,color:'#b45309',marginTop:2}}>⚠ {actionDesc.note}</div>}
+                  </div>
+                )
+              })()}
               {selPending && draft.trim()===(selPending.proposed_text||'').trim() && (
                 <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:4}}>🤖 borrador del bot — pulsa Enviar o edita</div>
               )}
