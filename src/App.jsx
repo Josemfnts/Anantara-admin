@@ -3650,10 +3650,13 @@ function BotCoach() {
     setNewConvIds(s => { if (!s.has(selConvId)) return s; const n = new Set(s); n.delete(selConvId); return n })
   }, [selConvId])
 
-  // Closure fresca para el handler realtime (la suscripción se crea una vez).
-  const notifyNewProposalRef = useRef(null)
-  notifyNewProposalRef.current = (payload) => {
-    if (payload?.eventType !== 'INSERT' || payload?.new?.verdict !== 'pending') return
+  // Aviso cuando ESCRIBE un paciente: mensaje entrante nuevo (messages INSERT
+  // direction='in'). Es el canal realtime que ya funciona (el hilo se refresca
+  // solo) y es lo que Marta entiende por "ha escrito". Closure fresca en un ref
+  // porque la suscripción se crea una sola vez.
+  const notifyIncomingRef = useRef(null)
+  notifyIncomingRef.current = (payload) => {
+    if (payload?.eventType !== 'INSERT' || payload?.new?.direction !== 'in') return
     if (soundOn) playBeep()
     if (document.hidden) { unseenRef.current += 1; setUnseen(unseenRef.current) }
     const cid = payload.new.conversation_id
@@ -3726,11 +3729,11 @@ function BotCoach() {
   // Realtime: bot_coach_reviews + bot_config + messages + conversations
   useEffect(() => {
     const ch = sb.channel('bot_coach_v5')
-      .on('postgres_changes', { event:'*', schema:'public', table:'bot_coach_reviews' }, (p) => { loadData(); notifyNewProposalRef.current?.(p) })
+      .on('postgres_changes', { event:'*', schema:'public', table:'bot_coach_reviews' }, () => { loadData() })
       .on('postgres_changes', { event:'*', schema:'public', table:'bot_config' }, (p) => {
         if (p.new) setBotCfg(p.new)
       })
-      .on('postgres_changes', { event:'*', schema:'public', table:'messages' }, () => { loadConversations(); reloadThread(); if (viewRef.current==='grid') loadGridMsgs() })
+      .on('postgres_changes', { event:'*', schema:'public', table:'messages' }, (p) => { loadConversations(); reloadThread(); if (viewRef.current==='grid') loadGridMsgs(); notifyIncomingRef.current?.(p) })
       .on('postgres_changes', { event:'*', schema:'public', table:'conversations' }, () => { loadConversations() })
       .subscribe()
     return () => { sb.removeChannel(ch) }
