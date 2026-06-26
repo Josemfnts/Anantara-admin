@@ -545,7 +545,7 @@ function Agenda(){
     setLoading(true)
     const from=toK(days[0])+'T00:00:00', to=toK(days[days.length-1])+'T23:59:59'
     const[appts,profsR,blks,holdsR]=await Promise.all([
-      sb.from('appointments').select('id,starts_at,ends_at,status,patient_id,service_id,professional_id,notes,payment_method,reminder_sent_at,proposed_until,patients(id,full_name,phone),services(name,duration_minutes),professionals(name)')
+      sb.from('appointments').select('id,starts_at,ends_at,status,patient_id,service_id,professional_id,notes,payment_method,reminder_sent_at,reminder_confirmed_at,proposed_until,patients(id,full_name,phone),services(name,duration_minutes),professionals(name)')
         .gte('starts_at',from).lte('starts_at',to),
       sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name',{ascending:false}),
       sb.from('blocked_slots').select('id,professional_id,starts_at,ends_at,reason')
@@ -669,11 +669,12 @@ function Agenda(){
   }
 
   const markReminderSent=async()=>{
-    // Pone reminder_sent_at = now - 3h para que pase a verde oscuro inmediatamente
-    const ts = new Date(Date.now() - 3*60*60*1000).toISOString().slice(0,19)
-    const{error}=await sb.from('appointments').update({reminder_sent_at:ts}).eq('id',modal.id)
+    // Marca que el paciente CONFIRMÓ el recordatorio D-1 → verde oscuro.
+    // (Antes ponía reminder_sent_at -3h; ahora el verde oscuro = confirmación real.)
+    const ts = new Date().toISOString().slice(0,19)
+    const{error}=await sb.from('appointments').update({reminder_confirmed_at:ts}).eq('id',modal.id)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    setToast({msg:'Recordatorio marcado',type:'ok'})
+    setToast({msg:'Recordatorio confirmado',type:'ok'})
     setModal(null); load()
   }
 
@@ -1079,21 +1080,26 @@ function Agenda(){
   const weekStr=`${fD(days[0])} – ${fD(days[days.length-1])}`
 
   const apptColor=(a)=>{
-    // a puede ser un objeto cita o solo un status
-    const status = typeof a === 'string' ? a : a.status
-    const reminderSentAt = typeof a === 'object' ? a.reminder_sent_at : null
-    if(status==='pending')   return{bg:'#fed7aa',border:'#ea580c',text:'#7c2d12'}  // naranja
-    if(status==='completed') return{bg:'#e0e7ff',border:'#6366f1',text:'#3730a3'}  // índigo
-    if(status==='cancelled') return{bg:'#fee2e2',border:'#dc2626',text:'#7f1d1d'}  // rojo claro
+    // Modelo de estados/colores (2026-06-26). a = objeto cita o solo status.
+    const obj = typeof a === 'object' ? a : null
+    const status = obj ? a.status : a
+    const proposedUntil = obj?.proposed_until
+    const reminderConfirmedAt = obj?.reminder_confirmed_at
+    if(status==='cancelled') return{bg:'#fee2e2',border:'#dc2626',text:'#7f1d1d'}  // rojo: cancelada
+    if(status==='completed') return{bg:'#e9d5ff',border:'#a855f7',text:'#581c87'}  // MORADO CLARO: cita pasada
+    if(status==='pending') {
+      const caducada = !!proposedUntil && new Date(proposedUntil.slice(0,19)) <= new Date()
+      return caducada
+        ? {bg:'#fef08a',border:'#ca8a04',text:'#713f12'}   // AMARILLO: pending caducada (>3d), actúa como confirmada — responsabilidad de la secretaria
+        : {bg:'#fed7aa',border:'#ea580c',text:'#7c2d12'}   // NARANJA: pending en plazo, sin confirmar
+    }
     if(status==='confirmed') {
-      if (reminderSentAt) {
-        const sent = new Date(reminderSentAt.slice(0,19))
-        const hours = (Date.now() - sent.getTime()) / 36e5
-        if (hours >= 3) return {bg:'#a7f3d0',border:'#059669',text:'#064e3b'}  // verde oscuro
-      }
-      return{bg:'#d1fae5',border:'#10b981',text:'#065f46'}  // verde claro
+      return reminderConfirmedAt
+        ? {bg:'#a7f3d0',border:'#059669',text:'#064e3b'}   // VERDE OSCURO: el paciente confirmó el recordatorio D-1
+        : {bg:'#d1fae5',border:'#10b981',text:'#065f46'}   // VERDE CLARO: confirmada por paciente/secretaria (sin confirmar D-1)
     }
     return{bg:'#f1f5f9',border:'#94a3b8',text:'#64748b'}
+    // MORADO OSCURO reservado (acción futura, sin trigger): {bg:'#7e22ce',border:'#581c87',text:'#faf5ff'}
   }
 
   const dayAppts=date=>{
