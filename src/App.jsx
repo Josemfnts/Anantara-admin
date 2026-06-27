@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { actionLookupId, describeProposedAction, isDestructiveAction } from './lib/proposedAction.js'
 import { fClock, fClockDT } from './lib/datetime.js'
 import { moveItem } from './lib/listOrder.js'
+import { quickRepliesFor } from './lib/quickReplies.js'
 
 const sb = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -3682,10 +3683,6 @@ function BotCoach() {
   // Se resuelve al cambiar de propuesta: lee appointments por el id que aplique a
   // cada tipo y formatea día/hora/prof. Ver src/lib/proposedAction.js.
   const [actionDesc, setActionDesc] = useState(null)
-  const QR_DEFAULTS = ['Listo, te apunto','Perfecto, hasta mañana','Te llamamos enseguida','Hecho, cancelada']
-  const [quickReplies, setQuickReplies] = useState(() => {
-    try { const v = JSON.parse(localStorage.getItem('bc_quickreplies')); return Array.isArray(v)&&v.length?v:QR_DEFAULTS } catch { return QR_DEFAULTS }
-  })
   const [narrow, setNarrow] = useState(() => typeof window!=='undefined' && window.matchMedia('(max-width:1023px)').matches)
   // Panel "Procesos del bot": lista pacientes con procesos automáticos activos
   // (pending_searches, wait_queue, propuestas pending, reviews pending, outbound queued)
@@ -4097,14 +4094,6 @@ function BotCoach() {
     setSelConvId(null); setToast({msg:'Conversación borrada', type:'ok'}); loadConversations(); loadData()
   }
 
-  const editQuickReplies = () => {
-    const v = window.prompt('Quick replies (separadas por "|"):', quickReplies.join(' | '))
-    if (v == null) return
-    const arr = v.split('|').map(s=>s.trim()).filter(Boolean)
-    setQuickReplies(arr.length?arr:QR_DEFAULTS)
-    localStorage.setItem('bc_quickreplies', JSON.stringify(arr.length?arr:QR_DEFAULTS))
-  }
-
   const loadPendings = async () => {
     setPendingsLoading(true)
     try {
@@ -4473,10 +4462,9 @@ function BotCoach() {
             {/* Quick replies + input + acciones */}
             <div style={{borderTop:'1px solid var(--border)',background:'#fff',padding:'10px 14px'}}>
               <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8,alignItems:'center'}}>
-                {quickReplies.map((qr,i) => (
+                {(selPending ? quickRepliesFor(selPending.category) : quickRepliesFor(null)).map((qr,i) => (
                   <button key={i} onClick={()=>setDraft(qr)} style={{padding:'4px 10px',borderRadius:999,fontSize:11,border:'1px solid var(--stone)',background:'var(--cream)',cursor:'pointer'}}>{qr}</button>
                 ))}
-                <button onClick={editQuickReplies} title="Editar respuestas rápidas" style={{padding:'4px 8px',borderRadius:999,fontSize:11,border:'1px dashed var(--stone)',background:'#fff',cursor:'pointer',color:'var(--text-muted)'}}>✎</button>
               </div>
               {selPending?.proposed_action && actionDesc && (() => {
                 // Paleta por familia; unresolved fuerza tratamiento rojo de alerta.
