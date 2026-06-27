@@ -1576,6 +1576,7 @@ function Horarios(){
   const[agendaTime,setAgendaTime]=useState('')
   const[reminderTime,setReminderTime]=useState('10:00')
   const[savingReminder,setSavingReminder]=useState(false)
+  const[sendingAgenda,setSendingAgenda]=useState(false)
 
   useEffect(()=>{
     sb.from('app_config').select('value').eq('key','reminder_time').maybeSingle()
@@ -1652,6 +1653,22 @@ function Horarios(){
     }).eq('id', selProf.id)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setToast({msg:'Datos guardados',type:'ok'})
+  }
+
+  // Envío manual de la agenda de mañana al profesional. El envío real lo hace el
+  // bot (endpoint POST /send-agenda — ver prompt de handoff). Guarda antes para
+  // que el bot lea el teléfono/hora actualizados.
+  const sendAgendaNow=async()=>{
+    if(!selProf)return
+    if(!waPhone){setToast({msg:'Configura el WhatsApp del profesional primero',type:'error'});return}
+    setSendingAgenda(true)
+    try{
+      await saveProfNotifs()
+      const r=await botFetch('/send-agenda',{method:'POST',body:JSON.stringify({professional_id:selProf.id})})
+      let sent; try{ const j=await r.json(); sent=j.sent }catch{ /* sin json */ }
+      setToast({msg: r.ok ? `Agenda enviada a ${selProf.name}${sent!=null?` (${sent})`:''}` : '⚠️ El bot no respondió o el endpoint /send-agenda aún no existe', type: r.ok?'ok':'error'})
+    }catch(e){ setToast({msg:'⚠️ Bot inaccesible: '+e.message,type:'error'}) }
+    setSendingAgenda(false)
   }
 
   const save=async()=>{
@@ -1774,7 +1791,11 @@ function Horarios(){
         <Inp label="WhatsApp del profesional" placeholder="34612345678" value={waPhone} onChange={e=>setWaPhone(e.target.value)}/>
         <Inp label="Hora envío agenda" type="time" step="900" value={agendaTime} onChange={e=>setAgendaTime(e.target.value)}/>
       </div>
-      <Btn onClick={saveProfNotifs}>Guardar</Btn>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+        <Btn onClick={saveProfNotifs}>Guardar</Btn>
+        <Btn variant="ghost" onClick={sendAgendaNow} disabled={sendingAgenda||!waPhone} title="Enviar ahora la agenda de mañana a este profesional">{sendingAgenda?'Enviando…':'📲 Enviar agenda ahora'}</Btn>
+      </div>
+      <div style={{fontSize:11,color:'var(--text-muted)',marginTop:8}}>El bot envía esta agenda cada día a la hora indicada. El botón la manda ahora (prueba).</div>
     </div>}
 
   </>
