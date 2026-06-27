@@ -579,6 +579,7 @@ function Agenda(){
   const[editPatSearch,setEditPatSearch]=useState('')
   const[editPatResults,setEditPatResults]=useState([])
   const[followupWeeks,setFollowupWeeks]=useState('')
+  const[followupServiceId,setFollowupServiceId]=useState('')
   const[followupHours,setFollowupHours]=useState([]) // minutos desde medianoche, ej. [480, 510, ...]
   const[followupWaitlist,setFollowupWaitlist]=useState(false)
   const[followupMessage,setFollowupMessage]=useState('')
@@ -696,6 +697,7 @@ function Agenda(){
       const isPast = modal.starts_at && new Date(modal.starts_at.slice(0,19)) < new Date()
       setEditPayment(modal.payment_method || (isPast ? 'efectivo' : ''))
       setFollowupWeeks('')
+      setFollowupServiceId(modal.service_id || '')
       setFollowupHours([])
       setFollowupWaitlist(false)
       setFollowupMessage('')
@@ -725,8 +727,8 @@ function Agenda(){
     const weeks = parseInt(followupWeeks)
     const hasWeeks = !isNaN(weeks) && weeks > 0
     const profName = modal.professionals?.name || 'el equipo'
-    setFollowupMessage(buildFollowupMessage({ weeks: hasWeeks ? weeks : 0, waitlist: followupWaitlist, profName }))
-  },[followupWeeks, followupWaitlist, modal])
+    setFollowupMessage(buildFollowupMessage({ weeks: hasWeeks ? weeks : 0, waitlist: followupWaitlist, hasHours: followupHours.length > 0, profName }))
+  },[followupWeeks, followupWaitlist, followupHours, modal])
 
   // Cualquier cambio de estado guarda también método de pago, notas y profesional asignado.
   // Antes solo se actualizaba `status`, lo que perdía el método de pago si el usuario lo
@@ -763,6 +765,7 @@ function Agenda(){
     const profName = modal.professionals?.name || 'el equipo'
     const patientPhone = (modal.patients?.phone || '').replace(/\D/g, '')
     const chatId = `${patientPhone.startsWith('34') ? patientPhone : `34${patientPhone}`}@c.us`
+    const serviceId = followupServiceId || modal.service_id || (await sb.from('appointments').select('service_id').eq('id',modal.id).maybeSingle()).data?.service_id
 
     if (!hasWeeks && !hasWaitlist) {
       if (!followupMessage.trim()) { setToast({msg:'Escribe el mensaje para el paciente',type:'error'}); return }
@@ -786,7 +789,6 @@ function Agenda(){
 
     setFollowupBusy(true)
     const targetDate = new Date(Date.now() + weeks*7*24*36e5).toISOString().slice(0,10)
-    const serviceId = modal.service_id || (await sb.from('appointments').select('service_id').eq('id',modal.id).maybeSingle()).data?.service_id
 
     try {
       // Caso "solo waitlist + semanas": no buscamos slot, solo encolamos y enviamos mensaje manual
@@ -1553,6 +1555,12 @@ function Agenda(){
               }
             }}
               options={[['','—'],...Array.from({length:12},(_,i)=>[i+1,String(i+1)])]}/>
+          </div>
+
+          {/* Servicio para la próxima cita */}
+          <div style={{marginBottom:10}}>
+            <Sel label="Servicio" value={followupServiceId} onChange={e=>setFollowupServiceId(e.target.value)}
+              options={[['','Seleccionar…'],...services.filter(s=>!s.professional_id||s.professional_id===(modal.professional_id)).map(s=>[s.id,`${s.name} (${s.duration_minutes}min)`])]}/>
           </div>
 
           {/* Horas preferidas (checkboxes) */}
