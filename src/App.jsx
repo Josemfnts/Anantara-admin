@@ -165,7 +165,32 @@ function Sidebar({page,onNav,open,onClose,onLogout,notifCount=0}){
 }
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
-function Layout({title,children,sidebarOpen,onToggleSidebar,notifCount,page,onNav,onLogout}){
+// Marcador de avisos del bot a la secretaria (junto a la campana). Desplegable
+// con la lista; al abrirlo se marcan como vistos (badge a 0).
+const ALERT_ICONS={'secretary.cancellation':'🚫','secretary.no_slot':'🔍','secretary.hold_expired':'⏳'}
+function AlertsMarker({alerts=[],unread=0,onSeen}){
+  const [open,setOpen]=useState(false)
+  const toggle=()=>setOpen(o=>{const n=!o;if(n)onSeen?.();return n})
+  return<div style={{position:'relative'}}>
+    <button className="notif-btn"onClick={toggle}title={unread>0?`${unread} aviso(s) del bot sin ver`:'Avisos del bot a la secretaria'}>⚠️{unread>0&&<span className="notif-badge">{unread}</span>}</button>
+    {open&&<>
+      <div onClick={()=>setOpen(false)}style={{position:'fixed',inset:0,zIndex:90}}/>
+      <div style={{position:'absolute',right:0,top:'100%',marginTop:6,width:340,maxHeight:420,overflowY:'auto',background:'#fff',border:'1px solid var(--border)',borderRadius:12,boxShadow:'0 8px 28px rgba(0,0,0,.16)',zIndex:91}}>
+        <div style={{padding:'10px 14px',borderBottom:'1px solid var(--border)',fontWeight:700,fontSize:13,position:'sticky',top:0,background:'#fff'}}>Avisos del bot</div>
+        {alerts.length===0
+          ? <div style={{padding:24,textAlign:'center',fontSize:12,color:'var(--text-muted)'}}>Sin avisos</div>
+          : alerts.map(a=><div key={a.id}style={{display:'flex',gap:10,padding:'10px 14px',borderBottom:'1px solid var(--border)'}}>
+              <span style={{fontSize:16,lineHeight:1.2}}>{ALERT_ICONS[a.tipo]||'⚠️'}</span>
+              <div style={{minWidth:0,flex:1}}>
+                <div style={{fontSize:13,color:'var(--body)',whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{a.mensaje||a.tipo}</div>
+                <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>{fClockDT(a.created_at)}{a.delivered===false?' · ✗ no entregada':''}</div>
+              </div>
+            </div>)}
+      </div>
+    </>}
+  </div>
+}
+function Layout({title,children,sidebarOpen,onToggleSidebar,notifCount,alerts,alertsUnread,onAlertsSeen,page,onNav,onLogout}){
   return<div className="app-shell">
     <Sidebar page={page}onNav={onNav}open={sidebarOpen}onClose={()=>onToggleSidebar(false)}onLogout={onLogout}notifCount={notifCount}/>
     <div className="main-wrap">
@@ -174,7 +199,10 @@ function Layout({title,children,sidebarOpen,onToggleSidebar,notifCount,page,onNa
           <button className="hamburger"onClick={()=>onToggleSidebar(true)}>☰</button>
           <span className="topbar-title">{title}</span>
         </div>
-        <button className="notif-btn"onClick={()=>onNav('bot-coach')}title={notifCount>0?`${notifCount} mensaje(s) nuevo(s) — ir a Bot Coach`:'Sin mensajes nuevos'}>🔔{notifCount>0&&<span className="notif-badge">{notifCount}</span>}</button>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <AlertsMarker alerts={alerts}unread={alertsUnread}onSeen={onAlertsSeen}/>
+          <button className="notif-btn"onClick={()=>onNav('bot-coach')}title={notifCount>0?`${notifCount} mensaje(s) nuevo(s) — ir a Bot Coach`:'Sin mensajes nuevos'}>🔔{notifCount>0&&<span className="notif-badge">{notifCount}</span>}</button>
+        </div>
       </header>
       <main className="page-content">{children}</main>
     </div>
@@ -4793,6 +4821,39 @@ export default function App(){
     return()=>{sb.removeChannel(ch)}
   },[user,playBeep])
 
+  // ─── Avisos del bot a la secretaria (marcador ⚠️ junto a la campana) ─────────
+  // El bot ya persiste cada aviso en bot_alerts antes de mandarlo por WhatsApp.
+  // Aquí los leemos (RLS permite SELECT a usuarios autenticados) y nos suscribimos
+  // por realtime. Mostramos solo los dirigidos a la secretaria (tipo 'secretary.*')
+  // y excluimos las filas de auditoría anti-spam (canal 'bot_alerts_only').
+  const [alerts,setAlerts]=useState([])
+  const [alertsSeenAt,setAlertsSeenAt]=useState(()=>localStorage.getItem('alerts_seen_at')||'1970-01-01T00:00:00Z')
+  const isSecretaryAlert=(a)=>a&&String(a.tipo||'').startsWith('secretary.')&&a.canal!=='bot_alerts_only'
+  useEffect(()=>{
+    if(!user)return
+    let cancelled=false
+    ;(async()=>{
+      const{data}=await sb.from('bot_alerts')
+        .select('id,tipo,canal,mensaje,delivered,created_at')
+        .like('tipo','secretary.%').neq('canal','bot_alerts_only')
+        .order('created_at',{ascending:false}).limit(40)
+      if(!cancelled)setAlerts(data||[])
+    })()
+    const ch=sb.channel('bot_alerts_feed')
+      .on('postgres_changes',{event:'INSERT',schema:'public',table:'bot_alerts'},(p)=>{
+        if(!isSecretaryAlert(p.new))return
+        setAlerts(prev=>[p.new,...prev.filter(x=>x.id!==p.new.id)].slice(0,40))
+      })
+      .subscribe()
+    return()=>{cancelled=true;sb.removeChannel(ch)}
+  },[user])
+  const seenMs=new Date(alertsSeenAt).getTime()
+  const alertsUnread=alerts.filter(a=>new Date(a.created_at).getTime()>seenMs).length
+  const markAlertsSeen=useCallback(()=>{
+    const now=new Date().toISOString()
+    setAlertsSeenAt(now);localStorage.setItem('alerts_seen_at',now)
+  },[])
+
   const logout=async()=>{await sb.auth.signOut();setUser(null)}
 
   if(authLoading)return<div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg)',fontFamily:'sans-serif'}}><div style={{color:'var(--green)'}}>Cargando…</div></div>
@@ -4818,7 +4879,7 @@ export default function App(){
     }
   }
 
-  return<Layout title={PAGE_TITLES[page]||'Panel'}page={page}onNav={navigate}sidebarOpen={sidebarOpen}onToggleSidebar={setSidebarOpen}notifCount={notifCount}onLogout={logout}>
+  return<Layout title={PAGE_TITLES[page]||'Panel'}page={page}onNav={navigate}sidebarOpen={sidebarOpen}onToggleSidebar={setSidebarOpen}notifCount={notifCount}alerts={alerts}alertsUnread={alertsUnread}onAlertsSeen={markAlertsSeen}onLogout={logout}>
     {renderPage()}
   </Layout>
 }
