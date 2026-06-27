@@ -4128,7 +4128,14 @@ function BotCoach() {
         headers: botCoachHeaders(),
         body: JSON.stringify(body),
       })
-      const data = await r.json()
+      let data
+      const contentType = r.headers.get('content-type') || ''
+      if (contentType.includes('application/json')) {
+        data = await r.json()
+      } else {
+        const text = await r.text()
+        throw new Error(text || `HTTP ${r.status}`)
+      }
       if (!data.ok) throw new Error(data.error || 'fallo al cargar disponibilidad')
       setCalDays(data.days)
     } catch (e) {
@@ -4154,7 +4161,14 @@ function BotCoach() {
         headers: botCoachHeaders(),
         body: JSON.stringify(body),
       })
-      const data = await r.json()
+      let data
+      const contentType = r.headers.get('content-type') || ''
+      if (contentType.includes('application/json')) {
+        data = await r.json()
+      } else {
+        const text = await r.text()
+        throw new Error(text || `HTTP ${r.status}`)
+      }
       if (!data.ok) throw new Error(data.error || 'fallo al previsualizar slot')
       setDraft(data.proposed_text)
       setReviews(rs => rs.map(rv => rv.id === selPending.id ? { ...rv, proposed_action: data.proposed_action } : rv))
