@@ -4,6 +4,7 @@ import { actionLookupId, describeProposedAction, isDestructiveAction } from './l
 import { fClock, fClockDT } from './lib/datetime.js'
 import { moveItem } from './lib/listOrder.js'
 import { quickRepliesFor } from './lib/quickReplies.js'
+import { buildFollowupMessage, weekText } from './lib/followupMessage.js'
 import { ProposalCalendar } from './components/ProposalCalendar.jsx'
 
 const sb = createClient(
@@ -65,6 +66,22 @@ function gMD(year,month) {
   return days
 }
 
+// Helpers para el selector de horas de "Próxima cita" (follow-up).
+function timeToMinutes(t) { const [h,m]=(t||'0:0').split(':').map(Number); return h*60+m }
+function minutesToTime(mins) { return `${pad(Math.floor(mins/60))}:${pad(mins%60)}` }
+function computeHourRange(workingHours, defaultFrom=8, defaultTo=20) {
+  if (!workingHours?.length) return { from: defaultFrom*60, to: defaultTo*60 }
+  const ranges = workingHours.map(wh=>[timeToMinutes(wh.start_time), timeToMinutes(wh.end_time)])
+  const from = Math.min(...ranges.map(r=>r[0]))
+  const to = Math.max(...ranges.map(r=>r[1]))
+  return { from, to }
+}
+function generateHalfHourSlots(range) {
+  const slots=[]
+  for (let m=range.from; m<range.to; m+=30) slots.push({ label: minutesToTime(m), value: m })
+  return slots
+}
+
 const STATUS_TXT = {confirmed:'Confirmada',pending:'Pendiente',cancelled:'Cancelada',completed:'Completada'}
 const STATUS_CLS = {confirmed:'badge-green',pending:'badge-gold',cancelled:'badge-red',completed:'badge-gray'}
 
@@ -81,14 +98,14 @@ function loadProfHours(profId){
 // Inserta un paciente en la lista de espera SIN cita asociada (fallback_appointment_id=null).
 // Calcula priority_order = max+1 de la cola 'waiting'. Usado desde la página Listas y
 // desde el modal "+ Cita" de la Agenda. Devuelve {error} de Supabase.
-async function addToWaitlist({patient_id,professional_id,service_id,target_date=null,preferred_hour=null,weeks_pautadas=null}){
+async function addToWaitlist({patient_id,professional_id,service_id,target_date=null,preferred_hour=null,preferred_hours=null,weeks_pautadas=null}){
   const{data:max}=await sb.from('wait_queue').select('priority_order').eq('queue_type','waiting').order('priority_order',{ascending:false}).limit(1).maybeSingle()
   const priority_order=(max?.priority_order||0)+1
   return sb.from('wait_queue').insert({
     queue_type:'waiting',
     patient_id,professional_id,service_id,
     priority_order,
-    target_date,preferred_hour,weeks_pautadas,
+    target_date,preferred_hour,preferred_hours,weeks_pautadas,
     fallback_appointment_id:null,
   })
 }
@@ -562,8 +579,11 @@ function Agenda(){
   const[editPatSearch,setEditPatSearch]=useState('')
   const[editPatResults,setEditPatResults]=useState([])
   const[followupWeeks,setFollowupWeeks]=useState('')
-  const[followupHour,setFollowupHour]=useState('any')
+  const[followupHours,setFollowupHours]=useState([]) // minutos desde medianoche, ej. [480, 510, ...]
+  const[followupWaitlist,setFollowupWaitlist]=useState(false)
+  const[followupMessage,setFollowupMessage]=useState('')
   const[followupBusy,setFollowupBusy]=useState(false)
+  const[profWorkingHours,setProfWorkingHours]=useState([])
   const[saving,setSaving]=useState(false)
   const[toast,setToast]=useState(null)
   const[drag,setDrag]=useState(null) // {di, startMin, endMin, startY, moved}
@@ -675,7 +695,15 @@ function Agenda(){
       setEditProfId(modal.professional_id||'')
       const isPast = modal.starts_at && new Date(modal.starts_at.slice(0,19)) < new Date()
       setEditPayment(modal.payment_method || (isPast ? 'efectivo' : ''))
-      setFollowupWeeks(''); setFollowupHour('any')
+      setFollowupWeeks('')
+      setFollowupHours([])
+      setFollowupWaitlist(false)
+      setFollowupMessage('')
+      setProfWorkingHours([])
+      if (modal.professional_id) {
+        sb.from('working_hours').select('day_of_week,start_time,end_time').eq('professional_id', modal.professional_id)
+          .then(({data})=>setProfWorkingHours(data||[]))
+      }
       // Fecha y hora actuales de la cita para edición
       if (modal.starts_at) {
         setEditDate(modal.starts_at.slice(0,10))
@@ -690,6 +718,15 @@ function Agenda(){
       setEditPatResults([])
     }
   },[modal])
+
+  // Actualizar mensaje propuesto según selección de follow-up
+  useEffect(()=>{
+    if(!modal || modal==='create') return
+    const weeks = parseInt(followupWeeks)
+    const hasWeeks = !isNaN(weeks) && weeks > 0
+    const profName = modal.professionals?.name || 'el equipo'
+    setFollowupMessage(buildFollowupMessage({ weeks: hasWeeks ? weeks : 0, waitlist: followupWaitlist, profName }))
+  },[followupWeeks, followupWaitlist, modal])
 
   // Cualquier cambio de estado guarda también método de pago, notas y profesional asignado.
   // Antes solo se actualizaba `status`, lo que perdía el método de pago si el usuario lo
@@ -718,32 +755,104 @@ function Agenda(){
     setModal(null); load()
   }
 
-  const assignFollowup = async () => {
+  const handleAcceptFollowup = async () => {
     const weeks = parseInt(followupWeeks)
-    if (!weeks) { setToast({msg:'Indica las semanas',type:'error'}); return }
-    const hour = followupHour === 'any' ? null : parseInt(followupHour)
+    const hasWeeks = !isNaN(weeks) && weeks > 0
+    const hasWaitlist = followupWaitlist
+    const preferredMinutes = followupHours.length ? followupHours : null
+    const profName = modal.professionals?.name || 'el equipo'
+    const patientPhone = (modal.patients?.phone || '').replace(/\D/g, '')
+    const chatId = `${patientPhone.startsWith('34') ? patientPhone : `34${patientPhone}`}@c.us`
+
+    if (!hasWeeks && !hasWaitlist) {
+      if (!followupMessage.trim()) { setToast({msg:'Escribe el mensaje para el paciente',type:'error'}); return }
+      setFollowupBusy(true)
+      try {
+        const r = await botFetch('/send-message', {
+          method: 'POST',
+          body: JSON.stringify({ chat_id: chatId, text: followupMessage.trim(), by: 'secretaria' })
+        })
+        if (!r.ok) throw new Error(await r.text())
+        setToast({msg:'Mensaje enviado',type:'ok'})
+      } catch (e) { setToast({msg:'Error: '+e.message,type:'error'}) }
+      finally { setFollowupBusy(false); setModal(null) }
+      return
+    }
+
+    if (!hasWeeks && hasWaitlist) {
+      setToast({msg:'Indica las semanas para la lista de espera',type:'error'})
+      return
+    }
+
     setFollowupBusy(true)
     const targetDate = new Date(Date.now() + weeks*7*24*36e5).toISOString().slice(0,10)
-    const{data:search,error}=await sb.from('pending_searches').insert({
-      patient_id: modal.patients.id,
-      professional_id: modal.professional_id,
-      service_id: modal.service_id || (await sb.from('appointments').select('service_id').eq('id',modal.id).maybeSingle()).data?.service_id,
-      source_appointment_id: modal.id,
-      target_date: targetDate,
-      preferred_hour: hour,
-      weeks_pautadas: weeks,
-    }).select('id').single()
-    if(error){setFollowupBusy(false);setToast({msg:'Error: '+error.message,type:'error'});return}
-    // Disparar al bot inmediatamente; el cron seguirá como respaldo si el bot está caído.
+    const serviceId = modal.service_id || (await sb.from('appointments').select('service_id').eq('id',modal.id).maybeSingle()).data?.service_id
+
     try {
-      await botFetch('/trigger-followup-search', {
-        method: 'POST',
-        body: JSON.stringify({ search_id: search.id })
-      })
-    } catch(e) { console.warn('trigger-followup-search fail:', e.message) }
-    setFollowupBusy(false)
-    setToast({msg:'Listo. El paciente recibirá el WhatsApp en unos segundos.',type:'ok'})
-    setModal(null)
+      // Caso "solo waitlist + semanas": no buscamos slot, solo encolamos y enviamos mensaje manual
+      if (hasWaitlist && !preferredMinutes) {
+        const { error } = await addToWaitlist({
+          patient_id: modal.patients.id,
+          professional_id: modal.professional_id,
+          service_id: serviceId,
+          target_date: targetDate,
+          preferred_hours: null,
+          weeks_pautadas: weeks,
+        })
+        if (error) throw error
+        if (!followupMessage.trim()) { setToast({msg:'Escribe el mensaje para el paciente',type:'error'}); setFollowupBusy(false); return }
+        const r = await botFetch('/send-message', {
+          method: 'POST',
+          body: JSON.stringify({ chat_id: chatId, text: followupMessage.trim(), by: 'secretaria' })
+        })
+        if (!r.ok) throw new Error(await r.text())
+        setToast({msg:'Añadido a lista de espera y mensaje enviado',type:'ok'})
+        setModal(null)
+        setFollowupBusy(false)
+        return
+      }
+
+      // Si hay waitlist + horas, metemos también en wait_queue para adelantar
+      if (hasWaitlist) {
+        const { error } = await addToWaitlist({
+          patient_id: modal.patients.id,
+          professional_id: modal.professional_id,
+          service_id: serviceId,
+          target_date: targetDate,
+          preferred_hours: preferredMinutes,
+          weeks_pautadas: weeks,
+        })
+        if (error) throw error
+      }
+
+      // pending_search para que el bot busque slot y envíe mensaje
+      const { data: search, error } = await sb.from('pending_searches').insert({
+        patient_id: modal.patients.id,
+        professional_id: modal.professional_id,
+        service_id: serviceId,
+        source_appointment_id: modal.id,
+        target_date: targetDate,
+        preferred_hours: preferredMinutes,
+        preferred_hour: preferredMinutes?.length ? Math.round(preferredMinutes[0] / 60) : null,
+        weeks_pautadas: weeks,
+        also_on_waitlist: hasWaitlist,
+      }).select('id').single()
+      if (error) throw error
+
+      try {
+        await botFetch('/trigger-followup-search', {
+          method: 'POST',
+          body: JSON.stringify({ search_id: search.id })
+        })
+      } catch(e) { console.warn('trigger-followup-search fail:', e.message) }
+
+      setToast({msg:'Listo. El paciente recibirá el WhatsApp en unos segundos.',type:'ok'})
+      setModal(null)
+    } catch (e) {
+      setToast({msg:'Error: '+e.message,type:'error'})
+    } finally {
+      setFollowupBusy(false)
+    }
   }
 
   const openAssignModal = async (appt) => {
@@ -1431,14 +1540,54 @@ function Agenda(){
       {modal.status==='completed' || (modal.starts_at && modal.starts_at < localDT(new Date())) ? (
         <div style={{borderTop:'1px solid var(--border)',paddingTop:14,marginTop:14}}>
           <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Próxima cita</div>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
+
+          {/* Semanas */}
+          <div style={{marginBottom:10}}>
             <Sel label="Semanas" value={followupWeeks} onChange={e=>setFollowupWeeks(e.target.value)}
-              options={[['','—'],['2','2'],['3','3'],['4','4'],['5','5'],['6','6'],['8','8'],['10','10'],['12','12']]}/>
-            <Sel label="Hora preferida" value={followupHour} onChange={e=>setFollowupHour(e.target.value)}
-              options={[['any','Cualquiera'],['7','07:00'],['8','08:00'],['9','09:00'],['10','10:00'],['11','11:00'],['12','12:00'],['13','13:00'],['14','14:00']]}/>
+              options={[['','—'],...Array.from({length:12},(_,i)=>[i+1,String(i+1)])]}/>
           </div>
-          <Btn onClick={assignFollowup} disabled={followupBusy||!followupWeeks} style={{width:'100%'}}>
-            {followupBusy?'Buscando…':'Asignar próxima cita'}
+
+          {/* Horas preferidas (checkboxes) */}
+          {followupWeeks && (
+            <div style={{marginBottom:10}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
+                <span style={{fontSize:12,fontWeight:600,color:'var(--text-muted)'}}>Horas admitidas</span>
+                <div style={{display:'flex',gap:6}}>
+                  <button type="button" onClick={()=>setFollowupHours(generateHalfHourSlots(computeHourRange(profWorkingHours)).map(s=>s.value))}
+                    style={{fontSize:11,padding:'2px 8px',border:'1px solid var(--stone)',borderRadius:999,background:'#fff',cursor:'pointer'}}>Todas</button>
+                  <button type="button" onClick={()=>setFollowupHours([])}
+                    style={{fontSize:11,padding:'2px 8px',border:'1px solid var(--stone)',borderRadius:999,background:'#fff',cursor:'pointer'}}>Limpiar</button>
+                </div>
+              </div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:6,maxHeight:120,overflowY:'auto',padding:8,border:'1px solid var(--border)',borderRadius:8,background:'#fff'}}>
+                {generateHalfHourSlots(computeHourRange(profWorkingHours)).map(s => (
+                  <label key={s.value} style={{display:'flex',alignItems:'center',gap:4,fontSize:12,cursor:'pointer',padding:'2px 6px',border:'1px solid var(--stone)',borderRadius:6,background:followupHours.includes(s.value)?'var(--sage-mist)':'#fff'}}>
+                    <input type="checkbox" checked={followupHours.includes(s.value)} onChange={e=>{
+                      setFollowupHours(prev => e.target.checked ? [...prev, s.value] : prev.filter(v=>v!==s.value))
+                    }} style={{cursor:'pointer'}} />
+                    {s.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Meter en lista de espera */}
+          <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginBottom:10,cursor:'pointer'}}>
+            <input type="checkbox" checked={followupWaitlist} onChange={e=>setFollowupWaitlist(e.target.checked)} style={{cursor:'pointer'}} />
+            Meter en lista de espera
+          </label>
+
+          {/* Mensaje editable */}
+          <div className="field" style={{marginBottom:10}}>
+            <label className="field-label">Mensaje para el paciente</label>
+            <textarea className="notes-area" value={followupMessage} onChange={e=>setFollowupMessage(e.target.value)}
+              placeholder={followupWeeks ? 'El bot enviará su mensaje canónico…' : 'Edita el mensaje que se enviará al paciente…'}
+              rows={3}/>
+          </div>
+
+          <Btn onClick={handleAcceptFollowup} disabled={followupBusy || (!followupWeeks && !followupWaitlist)} style={{width:'100%'}}>
+            {followupBusy ? 'Procesando…' : 'Aceptar'}
           </Btn>
         </div>
       ) : null}
