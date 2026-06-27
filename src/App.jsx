@@ -4,6 +4,7 @@ import { actionLookupId, describeProposedAction, isDestructiveAction } from './l
 import { fClock, fClockDT } from './lib/datetime.js'
 import { moveItem } from './lib/listOrder.js'
 import { quickRepliesFor } from './lib/quickReplies.js'
+import { ProposalCalendar } from './components/ProposalCalendar.jsx'
 
 const sb = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -3679,6 +3680,12 @@ function BotCoach() {
   const [gridMsgs, setGridMsgs] = useState([])
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
+  // Estado para el mini calendario de edición de propuesta
+  const [calOpen, setCalOpen] = useState(false)
+  const [calMonth, setCalMonth] = useState(() => new Date())
+  const [calDays, setCalDays] = useState({})
+  const [calLoading, setCalLoading] = useState(false)
+  const [calSelectedDay, setCalSelectedDay] = useState(null)
   // Descriptor de la acción de la propuesta pendiente (qué cita aprueba Marta).
   // Se resuelve al cambiar de propuesta: lee appointments por el id que aplique a
   // cada tipo y formatea día/hora/prof. Ver src/lib/proposedAction.js.
@@ -3941,7 +3948,7 @@ function BotCoach() {
       setActionDesc(describeProposedAction(act, { patientName, appt }))
     })()
     return () => { cancelled = true }
-  }, [selPending?.id]) // eslint-disable-line
+  }, [selPending?.id, selPending?.proposed_action]) // eslint-disable-line
 
   // Responsive: una columna a la vez por debajo de 1024px
   useEffect(() => {
@@ -4083,6 +4090,80 @@ function BotCoach() {
   }
 
   const primaryAction = () => { if (selPending) sendProposal(); else sendFree() }
+
+  // ─── Mini calendario de edición de propuesta ───────────────────────────────
+  const calendarActionTypes = new Set(['proponer_cita', 'rechazar_propuesta', 'reservar_clase'])
+  const canEditSlot = selPending?.proposed_action && calendarActionTypes.has(selPending.proposed_action.type)
+
+  const openCalendar = () => {
+    if (!canEditSlot) return
+    setCalMonth(new Date())
+    setCalSelectedDay(null)
+    setCalDays({})
+    setCalOpen(true)
+  }
+
+  const loadCalendarMonth = async (date) => {
+    if (!canEditSlot) return
+    setCalLoading(true)
+    try {
+      const action = selPending.proposed_action
+      const profId = action.type === 'rechazar_propuesta'
+        ? action.next?.professional_id
+        : action.professional_id
+      if (!profId) throw new Error('No se pudo resolver el profesional')
+      const monthStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+      const duration = action.type === 'rechazar_propuesta'
+        ? (action.next?.duration_minutes || 60)
+        : (action.duration_minutes || 60)
+      const body = {
+        action_type: action.type,
+        professional_id: profId,
+        month: monthStr,
+        duration_minutes: duration,
+        patient_id: selPending.context_snapshot?.patient?.id || null,
+      }
+      const r = await fetch(`${BOT_HTTP_URL}/proposal-slot-options`, {
+        method: 'POST',
+        headers: botCoachHeaders(),
+        body: JSON.stringify(body),
+      })
+      const data = await r.json()
+      if (!data.ok) throw new Error(data.error || 'fallo al cargar disponibilidad')
+      setCalDays(data.days)
+    } catch (e) {
+      setToast({ msg: 'Calendario: ' + e.message, type: 'error' })
+    } finally {
+      setCalLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (calOpen) loadCalendarMonth(calMonth)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calOpen, calMonth, selPending?.id])
+
+  const selectCalendarHour = async (day, hour, slotId) => {
+    if (!selPending) return
+    const action = selPending.proposed_action
+    const body = { review_id: selPending.id, new_starts_at: `${day}T${hour}:00` }
+    if (action.type === 'reservar_clase') body.new_slot_id = slotId
+    try {
+      const r = await fetch(`${BOT_HTTP_URL}/preview-proposal-slot`, {
+        method: 'POST',
+        headers: botCoachHeaders(),
+        body: JSON.stringify(body),
+      })
+      const data = await r.json()
+      if (!data.ok) throw new Error(data.error || 'fallo al previsualizar slot')
+      setDraft(data.proposed_text)
+      setReviews(rs => rs.map(rv => rv.id === selPending.id ? { ...rv, proposed_action: data.proposed_action } : rv))
+      setCalOpen(false)
+      setToast({ msg: '✓ Fecha/hora actualizada en la propuesta', type: 'ok' })
+    } catch (e) {
+      setToast({ msg: e.message, type: 'error' })
+    }
+  }
 
   // Borrar conversación + su historial (messages caen por CASCADE; reviews aparte)
   const deleteConversation = async () => {
@@ -4475,12 +4556,14 @@ function BotCoach() {
                   neutral:     { bg:'#f9fafb', bd:'var(--border)', ac:'var(--text-muted)' },
                 }
                 const p = actionDesc.unresolved ? { bg:'#fef2f2', bd:'#fecaca', ac:'#dc2626' } : (PAL[actionDesc.family] || PAL.neutral)
+                const showCal = canEditSlot && !actionDesc.unresolved
                 return (
                   <div style={{border:`1px solid ${p.bd}`,background:p.bg,borderRadius:'var(--radius-lg)',padding:'8px 12px',marginBottom:8}}>
                     <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:2}}>
                       <span style={{fontSize:14}}>{actionDesc.icon}</span>
                       <span style={{fontSize:11,fontWeight:700,letterSpacing:.3,textTransform:'uppercase',color:p.ac}}>{actionDesc.label}</span>
                       {actionDesc.destructive && <span style={{fontSize:9,fontWeight:700,color:'#fff',background:p.ac,borderRadius:999,padding:'1px 6px'}}>acción real</span>}
+                      {showCal && <button onClick={openCalendar} title="Cambiar fecha/hora" style={{marginLeft:'auto',fontSize:11,padding:'3px 8px',border:`1px solid ${p.ac}`,background:'#fff',color:p.ac,borderRadius:999,cursor:'pointer'}}>📅 Cambiar</button>}
                     </div>
                     {actionDesc.unresolved
                       ? <div style={{fontSize:12,fontWeight:600,color:'#dc2626'}}>⚠️ No se pudo resolver la cita (id {actionLookupId(selPending.proposed_action) || '—'}). No apruebes sin verificar.</div>
@@ -4602,6 +4685,31 @@ function BotCoach() {
       </div>
     )}
   </div>
+
+  {/* Modal mini calendario para editar la fecha/hora de la propuesta */}
+  {calOpen && (
+    <div onClick={()=>setCalOpen(false)}
+      style={{position:'fixed',inset:0,background:'rgba(0,0,0,.5)',zIndex:9001,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+      <div onClick={e=>e.stopPropagation()}
+        style={{background:'#fff',borderRadius:12,padding:20,boxShadow:'0 8px 28px rgba(0,0,0,.16)',maxWidth:'90vw'}}>
+        <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:12}}>
+          <div style={{fontSize:16,fontWeight:700}}>📅 Cambiar fecha/hora de la propuesta</div>
+          <button onClick={()=>setCalOpen(false)} style={{marginLeft:'auto',border:'none',background:'transparent',cursor:'pointer',fontSize:18}}>×</button>
+        </div>
+        <ProposalCalendar
+          month={calMonth}
+          days={calDays}
+          loading={calLoading}
+          selectedDay={calSelectedDay}
+          onPrev={()=>{ const d=new Date(calMonth); d.setMonth(d.getMonth()-1); setCalMonth(d); setCalSelectedDay(null) }}
+          onNext={()=>{ const d=new Date(calMonth); d.setMonth(d.getMonth()+1); setCalMonth(d); setCalSelectedDay(null) }}
+          onSelectDay={(day)=> setCalSelectedDay(day)}
+          onSelectHour={(day,hour,slotId)=> selectCalendarHour(day,hour,slotId)}
+        />
+      </div>
+    </div>
+  )}
+</div>
 }
 
 // ─── BotNlu (Fase 4 spec — observabilidad NLU) ────────────────────────────────
