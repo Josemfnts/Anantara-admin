@@ -4684,7 +4684,6 @@ function BotCoach() {
         </div>
       </div>
     )}
-  </div>
 
   {/* Modal mini calendario para editar la fecha/hora de la propuesta */}
   {calOpen && (
