@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { actionLookupId, describeProposedAction, isDestructiveAction } from './lib/proposedAction.js'
 import { fClock, fClockDT } from './lib/datetime.js'
+import { moveItem } from './lib/listOrder.js'
 
 const sb = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -1906,26 +1907,40 @@ function Espera(){
     if(tab==='waiting')load()
   }
 
-  const moveUp = async (row, idx) => {
-    if (idx === 0) return
-    const above = rows[idx-1]
-    // Swap priority_order
-    await sb.from('wait_queue').update({priority_order: above.priority_order}).eq('id', row.id)
-    await sb.from('wait_queue').update({priority_order: row.priority_order}).eq('id', above.id)
-    load()
+  // Persiste un nuevo orden renumerando 1..N de forma ANTI-COLISIÓN.
+  // El swap anterior (intercambiar dos priority_order) fallaba en silencio si los
+  // valores estaban duplicados/nulos o si hay un UNIQUE(queue_type,priority_order):
+  // el primer update chocaba con el valor que aún tenía la otra fila. Aquí, fase 1
+  // aparca todas las filas en negativos (no chocan con los positivos existentes) y
+  // fase 2 fija 1..N. Robusto y además normaliza datos sucios. Devuelve error|null.
+  const persistOrder = async (ordered) => {
+    for (let i = 0; i < ordered.length; i++) {
+      const { error } = await sb.from('wait_queue').update({ priority_order: -(i + 1) }).eq('id', ordered[i].id)
+      if (error) return error
+    }
+    for (let i = 0; i < ordered.length; i++) {
+      const { error } = await sb.from('wait_queue').update({ priority_order: i + 1 }).eq('id', ordered[i].id)
+      if (error) return error
+    }
+    return null
   }
-  const moveDown = async (row, idx) => {
-    if (idx === rows.length - 1) return
-    const below = rows[idx+1]
-    await sb.from('wait_queue').update({priority_order: below.priority_order}).eq('id', row.id)
-    await sb.from('wait_queue').update({priority_order: row.priority_order}).eq('id', below.id)
-    load()
+  const move = async (idx, dir) => {
+    const to = idx + dir
+    if (to < 0 || to >= rows.length) return
+    const ordered = moveItem(rows, idx, to)
+    setRows(ordered.map((r, i) => ({ ...r, priority_order: i + 1 })))  // optimista: respuesta inmediata
+    const error = await persistOrder(ordered)
+    if (error) setToast({ msg: 'No se pudo reordenar: ' + error.message, type: 'error' })
+    load()  // resync con el servidor (revierte si falló)
   }
+  const moveUp = (row, idx) => move(idx, -1)
+  const moveDown = (row, idx) => move(idx, +1)
   const moveToOther = async (row) => {
     const other = row.queue_type === 'waiting' ? 'expedite' : 'waiting'
     const{data:max}=await sb.from('wait_queue').select('priority_order').eq('queue_type', other).order('priority_order',{ascending:false}).limit(1).maybeSingle()
     const newPrio = (max?.priority_order || 0) + 1
-    await sb.from('wait_queue').update({queue_type: other, priority_order: newPrio}).eq('id', row.id)
+    const{error}=await sb.from('wait_queue').update({queue_type: other, priority_order: newPrio}).eq('id', row.id)
+    if(error){setToast({msg:'No se pudo mover: '+error.message,type:'error'});return}
     setToast({msg:`Movido a ${other==='waiting'?'lista de espera':'lista de adelantar'}`,type:'ok'}); load()
   }
   const remove = async (id) => {
