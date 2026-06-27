@@ -167,7 +167,10 @@ function Sidebar({page,onNav,open,onClose,onLogout,notifCount=0}){
 // ─── Layout ───────────────────────────────────────────────────────────────────
 // Marcador de avisos del bot a la secretaria (junto a la campana). Desplegable
 // con la lista; al abrirlo se marcan como vistos (badge a 0).
-const ALERT_ICONS={'secretary.cancellation':'🚫','secretary.no_slot':'🔍','secretary.hold_expired':'⏳'}
+const ALERT_ICONS={
+  'secretary.cancellation':'🚫','secretary.no_slot':'🔍','secretary.hold_expired':'⏳',
+  down:'🔴',recovered:'🟢',auth_failure:'🔑',spawn_error:'💥',
+}
 function AlertsMarker({alerts=[],unread=0,onSeen}){
   const [open,setOpen]=useState(false)
   const toggle=()=>setOpen(o=>{const n=!o;if(n)onSeen?.();return n})
@@ -4803,6 +4806,27 @@ export default function App(){
     }catch{/* noop */}
   },[])
 
+  // Sonido de AVISO del bot (problema): dos tonos descendentes con timbre triangle,
+  // claramente distinto del beep agudo de "mensaje nuevo".
+  const playAlert=useCallback(()=>{
+    const ctx=audioCtxRef.current
+    if(!ctx)return
+    try{
+      const tone=(freq,start,dur)=>{
+        const o=ctx.createOscillator(),g=ctx.createGain()
+        o.type='triangle';o.frequency.value=freq
+        o.connect(g);g.connect(ctx.destination)
+        g.gain.setValueAtTime(0.0001,start)
+        g.gain.exponentialRampToValueAtTime(0.3,start+0.02)
+        g.gain.exponentialRampToValueAtTime(0.0001,start+dur)
+        o.start(start);o.stop(start+dur+0.02)
+      }
+      const now=ctx.currentTime
+      tone(660,now,0.18)
+      tone(440,now+0.2,0.3)
+    }catch{/* noop */}
+  },[])
+
   // Título parpadea con el nº sin ver. El reset se hace al navegar a Bot Coach
   // (ver `navigate`), no en un efecto, para no encadenar renders.
   useEffect(()=>{document.title=notifCount>0?`🔔 (${notifCount}) nuevo — ${baseTitleRef.current}`:baseTitleRef.current},[notifCount])
@@ -4821,32 +4845,33 @@ export default function App(){
     return()=>{sb.removeChannel(ch)}
   },[user,playBeep])
 
-  // ─── Avisos del bot a la secretaria (marcador ⚠️ junto a la campana) ─────────
-  // El bot ya persiste cada aviso en bot_alerts antes de mandarlo por WhatsApp.
-  // Aquí los leemos (RLS permite SELECT a usuarios autenticados) y nos suscribimos
-  // por realtime. Mostramos solo los dirigidos a la secretaria (tipo 'secretary.*')
-  // y excluimos las filas de auditoría anti-spam (canal 'bot_alerts_only').
+  // ─── Avisos del bot (marcador ⚠️ junto a la campana) ────────────────────────
+  // El bot ya persiste cada aviso en bot_alerts antes de mandarlo. Mostramos
+  // TODOS los avisos (a la secretaria 'secretary.*' Y operativos: down, recovered,
+  // spawn_error, auth_failure…), excluyendo solo las filas de auditoría anti-spam
+  // (canal 'bot_alerts_only'). RLS permite SELECT a usuarios autenticados.
   const [alerts,setAlerts]=useState([])
   const [alertsSeenAt,setAlertsSeenAt]=useState(()=>localStorage.getItem('alerts_seen_at')||'1970-01-01T00:00:00Z')
-  const isSecretaryAlert=(a)=>a&&String(a.tipo||'').startsWith('secretary.')&&a.canal!=='bot_alerts_only'
+  const isShownAlert=(a)=>a&&a.canal!=='bot_alerts_only'
   useEffect(()=>{
     if(!user)return
     let cancelled=false
     ;(async()=>{
       const{data}=await sb.from('bot_alerts')
         .select('id,tipo,canal,mensaje,delivered,created_at')
-        .like('tipo','secretary.%').neq('canal','bot_alerts_only')
+        .neq('canal','bot_alerts_only')
         .order('created_at',{ascending:false}).limit(40)
       if(!cancelled)setAlerts(data||[])
     })()
     const ch=sb.channel('bot_alerts_feed')
       .on('postgres_changes',{event:'INSERT',schema:'public',table:'bot_alerts'},(p)=>{
-        if(!isSecretaryAlert(p.new))return
+        if(!isShownAlert(p.new))return
         setAlerts(prev=>[p.new,...prev.filter(x=>x.id!==p.new.id)].slice(0,40))
+        if(localStorage.getItem('bc_sound')!=='0')playAlert()
       })
       .subscribe()
     return()=>{cancelled=true;sb.removeChannel(ch)}
-  },[user])
+  },[user,playAlert])
   const seenMs=new Date(alertsSeenAt).getTime()
   const alertsUnread=alerts.filter(a=>new Date(a.created_at).getTime()>seenMs).length
   const markAlertsSeen=useCallback(()=>{
