@@ -132,7 +132,8 @@ const NAV_GROUPS = [
     {id:'espera',icon:'⏳',label:'Listas'},
   ]},
   {label:'Clases',items:[
-    {id:'yoga',icon:'🧘',label:'Yoga'},
+    // Yoga oculto temporalmente: de momento (y para largo) no hay clases de yoga.
+    // La ruta sigue existiendo por si se reactiva; solo se quita del menú.
     {id:'escalada',icon:'🧗',label:'Escalada'},
   ]},
   {label:'Centro',items:[
@@ -3007,7 +3008,7 @@ function Profesionales(){
 }
 
 // ─── Escalada ─────────────────────────────────────────────────────────────────
-function Escalada(){
+function Escalada({onNav}){
   const[tab,setTab]=useState('clases')
   const[slotsTab,setSlotsTab]=useState('upcoming')
   const[slots,setSlots]=useState([])
@@ -3025,7 +3026,7 @@ function Escalada(){
   const QHOURS=Array.from({length:(21-7)*4+1},(_,i)=>{const h=7+Math.floor(i/4),m=(i%4)*15;return`${pad(h)}:${pad(m)}`})
   const EMPTY_TPL={day_of_week:2,start_time:'17:00',end_time:'18:30',max_bookings:10,service_id:'',professional_id:'',is_active:true}
   const[tplForm,setTplForm]=useState(EMPTY_TPL)
-  const[slotForm,setSlotForm]=useState({date:'',start_time:'',end_time:'',max_bookings:10})
+  const[slotForm,setSlotForm]=useState({date:'',start_time:'',end_time:'',max_bookings:10,service_id:'',professional_id:''})
 
   const load=useCallback(async()=>{
     setLoading(true)
@@ -3038,9 +3039,14 @@ function Escalada(){
     setServices(svcs||[])
     setProfessionals(profs||[])
     setTemplates(tpls||[])
+    // Filtrar las clases por los SERVICIOS de escalada (robusto), no por
+    // template_id: así aparecen tanto las generadas por plantilla como las
+    // creadas directamente con "+ Nueva clase". Mismo criterio que yoga.
+    const svcIds=(svcs||[]).map(s=>s.id)
+    if(svcIds.length===0){setSlots([]);setLoading(false);return}
     let q=sb.from('availability_slots')
       .select('id,starts_at,ends_at,max_bookings,is_published,template_id,professionals(id,name),services(id,name),bookings(id,status,patients(full_name,phone))')
-      .not('template_id','is',null)
+      .in('service_id',svcIds)
       .order('starts_at',{ascending:slotsTab==='upcoming'})
     if(slotsTab==='upcoming') q=q.gte('starts_at',now); else q=q.lt('starts_at',now)
     const{data:sl}=await q.limit(40)
@@ -3089,17 +3095,27 @@ function Escalada(){
     setToast({msg:`${toCreate.length} clase${toCreate.length!==1?'s':''} generada${toCreate.length!==1?'s':''}`,type:'ok'});load()
   }
 
-  const saveSlotEdit=async()=>{
+  // Crea (slotModal==='new') o edita una clase individual (availability_slot).
+  const saveSlot=async()=>{
     if(!slotForm.date||!slotForm.start_time||!slotForm.end_time)return
+    const isNew=slotModal==='new'
+    if(isNew&&(!slotForm.service_id||!slotForm.professional_id)){setToast({msg:'Selecciona servicio y profesional',type:'error'});return}
     setSaving(true)
-    const{error}=await sb.from('availability_slots').update({
+    const base={
       starts_at:`${slotForm.date}T${slotForm.start_time}:00`,
       ends_at:`${slotForm.date}T${slotForm.end_time}:00`,
       max_bookings:Number(slotForm.max_bookings),
-    }).eq('id',slotModal.id)
+    }
+    let error
+    if(isNew)({error}=await sb.from('availability_slots').insert({...base,service_id:slotForm.service_id,professional_id:slotForm.professional_id,is_published:false,template_id:null}))
+    else({error}=await sb.from('availability_slots').update(base).eq('id',slotModal.id))
     setSaving(false)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    setSlotModal(null);setToast({msg:'Clase actualizada',type:'ok'});load()
+    setSlotModal(null);setToast({msg:isNew?'Clase creada':'Clase actualizada',type:'ok'});load()
+  }
+  const openNewClass=()=>{
+    setSlotForm({date:'',start_time:'17:00',end_time:'18:30',max_bookings:10,service_id:services[0]?.id||'',professional_id:professionals[0]?.id||''})
+    setSlotModal('new')
   }
 
   const deleteSlot=async id=>{
@@ -3129,6 +3145,11 @@ function Escalada(){
         <button className={`tab-pill${tab==='plantillas'?' active':''}`}onClick={()=>setTab('plantillas')}>Plantillas recurrentes</button>
       </div>
     </div>
+
+    {services.length===0&&<div style={{background:'#fffbeb',border:'1px solid #fde68a',borderRadius:10,padding:'12px 14px',marginBottom:12,fontSize:13,color:'#92400e',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+      <span>⚠ No hay servicios de escalada, así que no se pueden crear clases todavía. Crea uno en <strong>Servicios</strong> (sección Escalada).</span>
+      {onNav&&<Btn variant="ghost"style={{padding:'4px 10px',fontSize:12}}onClick={()=>onNav('servicios')}>Ir a Servicios</Btn>}
+    </div>}
 
     {tab==='plantillas'&&<>
       <div style={{display:'flex',justifyContent:'flex-end',marginBottom:12}}>
@@ -3162,10 +3183,11 @@ function Escalada(){
         <div className="tab-pills"style={{margin:0}}>
           {[['upcoming','Próximas'],['past','Pasadas']].map(([id,l])=><button key={id}className={`tab-pill${slotsTab===id?' active':''}`}onClick={()=>setSlotsTab(id)}>{l}</button>)}
         </div>
+        <Btn onClick={openNewClass}disabled={services.length===0}title={services.length===0?'Primero crea un servicio de escalada':'Crear una clase individual'}>+ Nueva clase</Btn>
       </div>
       <div className="card"style={{overflow:'hidden'}}>
         {slots.length===0
-          ?<Em icon="🧗"title="Sin clases"sub={`No hay clases ${slotsTab==='upcoming'?'próximas':'pasadas'}. Genera desde Plantillas.`}/>
+          ?<Em icon="🧗"title="Sin clases"sub={`No hay clases ${slotsTab==='upcoming'?'próximas':'pasadas'}. Crea una con "+ Nueva clase" o genera varias desde Plantillas.`}/>
           :slots.map(slot=>{
             const pct=slot.max_bookings>0?Math.round(slot.booked/slot.max_bookings*100):0
             return<div key={slot.id}className="slot-card">
@@ -3208,8 +3230,12 @@ function Escalada(){
       </div>
     </Modal>}
 
-    {slotModal&&<Modal title="Editar clase individual"onClose={()=>setSlotModal(null)}>
-      <p style={{fontSize:12,color:'var(--text-muted)',marginBottom:12}}>Solo modifica esta clase. No afecta a la plantilla ni al resto de semanas.</p>
+    {slotModal&&<Modal title={slotModal==='new'?'Nueva clase':'Editar clase individual'}onClose={()=>setSlotModal(null)}>
+      <p style={{fontSize:12,color:'var(--text-muted)',marginBottom:12}}>{slotModal==='new'?'Clase suelta (no recurrente). Para varias semanas, usa Plantillas recurrentes.':'Solo modifica esta clase. No afecta a la plantilla ni al resto de semanas.'}</p>
+      {slotModal==='new'&&<>
+        <Sel label="Servicio"value={slotForm.service_id}onChange={e=>setSlotForm(f=>({...f,service_id:e.target.value}))}options={[['','Seleccionar…'],...services.map(s=>[s.id,s.name])]}/>
+        <Sel label="Profesional / Monitor"value={slotForm.professional_id}onChange={e=>setSlotForm(f=>({...f,professional_id:e.target.value}))}options={[['','Seleccionar…'],...professionals.map(p=>[p.id,p.name])]}/>
+      </>}
       <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr',gap:10}}>
         <Inp label="Fecha"type="date"value={slotForm.date}onChange={e=>setSlotForm(f=>({...f,date:e.target.value}))}/>
         <Sel label="Hora inicio"value={slotForm.start_time}onChange={e=>setSlotForm(f=>({...f,start_time:e.target.value}))}options={[['','--:--'],...QHOURS.map(h=>[h,h])]}/>
@@ -3218,7 +3244,7 @@ function Escalada(){
       <Inp label="Plazas máximas"type="number"min={1}value={slotForm.max_bookings}onChange={e=>setSlotForm(f=>({...f,max_bookings:e.target.value}))}style={{marginTop:10}}/>
       <div style={{display:'flex',gap:10,marginTop:16}}>
         <Btn variant="ghost"onClick={()=>setSlotModal(null)}style={{flex:1}}>Cancelar</Btn>
-        <Btn onClick={saveSlotEdit}disabled={!slotForm.date||!slotForm.start_time||!slotForm.end_time||saving}style={{flex:1}}>{saving?'Guardando…':'Guardar'}</Btn>
+        <Btn onClick={saveSlot}disabled={!slotForm.date||!slotForm.start_time||!slotForm.end_time||(slotModal==='new'&&(!slotForm.service_id||!slotForm.professional_id))||saving}style={{flex:1}}>{saving?'Guardando…':'Guardar'}</Btn>
       </div>
     </Modal>}
 
@@ -4892,7 +4918,7 @@ export default function App(){
       case 'bloqueados': return<Bloqueados/>
       case 'espera':     return<Espera/>
       case 'yoga':       return<SlotsManager section="yoga"/>
-      case 'escalada':   return<Escalada/>
+      case 'escalada':   return<Escalada onNav={navigate}/>
       case 'belleza':    return<BellezaAdmin/>
       case 'pacientes':     return<Pacientes/>
       case 'profesionales': return<Profesionales/>
