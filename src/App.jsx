@@ -796,6 +796,7 @@ function Agenda(){
           professional_id: modal.professional_id,
           service_id: serviceId,
           target_date: targetDate,
+          preferred_hour: null,
           preferred_hours: null,
           weeks_pautadas: weeks,
         })
@@ -819,6 +820,7 @@ function Agenda(){
           professional_id: modal.professional_id,
           service_id: serviceId,
           target_date: targetDate,
+          preferred_hour: preferredMinutes?.length ? Math.round(preferredMinutes[0] / 60) : null,
           preferred_hours: preferredMinutes,
           weeks_pautadas: weeks,
         })
@@ -1543,7 +1545,13 @@ function Agenda(){
 
           {/* Semanas */}
           <div style={{marginBottom:10}}>
-            <Sel label="Semanas" value={followupWeeks} onChange={e=>setFollowupWeeks(e.target.value)}
+            <Sel label="Semanas" value={followupWeeks} onChange={e=>{
+              const v = e.target.value
+              setFollowupWeeks(v)
+              if (v && followupHours.length === 0) {
+                setFollowupHours(generateHalfHourSlots(computeHourRange(profWorkingHours)).map(s=>s.value))
+              }
+            }}
               options={[['','—'],...Array.from({length:12},(_,i)=>[i+1,String(i+1)])]}/>
           </div>
 
