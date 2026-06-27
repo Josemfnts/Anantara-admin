@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { actionLookupId, describeProposedAction, isDestructiveAction } from './lib/proposedAction.js'
+import { fClock, fClockDT } from './lib/datetime.js'
 
 const sb = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -603,7 +604,11 @@ function Agenda(){
       for(let i=1;i<=60;i++){
         const d=new Date(today); d.setDate(today.getDate()+i)
         const ds=toK(d)
-        if(workDOW.has(d.getDay())&&!blocked.has(ds)){setForm(f=>({...f,date:ds}));return}
+        // Solo auto-rellenar si NO hay fecha ya puesta. Al crear desde un hueco,
+        // el click fija prof_id+date a la vez; este efecto (deps [prof_id]) corría
+        // después y pisaba el día del hueco. El guard funcional respeta la fecha
+        // explícita y solo rellena cuando está vacía (botón "+ Cita").
+        if(workDOW.has(d.getDay())&&!blocked.has(ds)){setForm(f=>f.date?f:({...f,date:ds}));return}
       }
     }
     find()
@@ -1118,12 +1123,16 @@ function Agenda(){
   const searchPatient = async (q) => {
     setPatQ(q)
     if (q.trim().length < 2) { setPatMatches([]); setPatOpen(false); return }
+    // patients!inner: sin el inner-join, el filtro por la tabla embebida NO
+    // excluye las citas cuyo paciente no coincide (las devuelve con patients=null)
+    // y el limit se llena de no-coincidentes → algunos pacientes no aparecían.
+    // Orden descendente para priorizar citas recientes/próximas sobre antiguas.
     const { data } = await sb.from('appointments')
-      .select('starts_at, patients(id, full_name)')
+      .select('starts_at, patients!inner(id, full_name)')
       .ilike('patients.full_name', `%${q}%`)
       .neq('status', 'cancelled')
-      .order('starts_at')
-      .limit(50)
+      .order('starts_at', { ascending: false })
+      .limit(200)
     if (!data?.length) { setPatMatches([]); setPatOpen(false); return }
     const map = {}
     for (const a of data) {
@@ -4256,7 +4265,7 @@ function BotCoach() {
                   <div style={{padding:'8px 12px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',gap:8,background:'var(--cream)'}}>
                     <div style={{flex:1,minWidth:0}}>
                       <div style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</div>
-                      <div style={{fontSize:10,color:'var(--text-muted)'}}>{c.last_message_at?fDT(c.last_message_at):''}</div>
+                      <div style={{fontSize:10,color:'var(--text-muted)'}}>{c.last_message_at?fClockDT(c.last_message_at):''}</div>
                     </div>
                     {np>0 && <span style={{minWidth:18,height:18,borderRadius:999,background:'var(--green)',color:'#fff',fontSize:10,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',padding:'0 5px'}}>{np}</span>}
                     {np>0 && stale && <span title="Sin responder >30 min" style={{width:8,height:8,borderRadius:999,background:'#dc2626'}}/>}
@@ -4303,7 +4312,7 @@ function BotCoach() {
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{display:'flex',justifyContent:'space-between',gap:6}}>
                           <span style={{fontWeight:isNew?800:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</span>
-                          <span style={{fontSize:10,color:'var(--text-muted)',flexShrink:0,fontVariantNumeric:'tabular-nums'}}>{c.last_message_at?fTime(c.last_message_at):''}</span>
+                          <span style={{fontSize:10,color:'var(--text-muted)',flexShrink:0,fontVariantNumeric:'tabular-nums'}}>{c.last_message_at?fClock(c.last_message_at):''}</span>
                         </div>
                         <div style={{fontSize:11,color: isNew?'var(--green)':'var(--text-muted)',fontWeight:isNew?700:400,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{isNew ? '● mensaje nuevo' : (c.last_intent||'—')}</div>
                       </div>
@@ -4361,7 +4370,7 @@ function BotCoach() {
                           background: out?'var(--green)':'#fff', color: out?'#fff':'var(--body)',
                           border: out?'none':'1px solid var(--border)'}}>{m.text}</div>
                         <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2,textAlign: out?'right':'left'}}>
-                          {fTime(m.created_at)}{who?` · ${who}`:''}
+                          {fClock(m.created_at)}{who?` · ${who}`:''}
                         </div>
                       </div>
                     )
