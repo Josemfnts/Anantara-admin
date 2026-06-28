@@ -1602,7 +1602,9 @@ function Agenda(){
               rows={3}/>
           </div>
 
-          <Btn onClick={handleAcceptFollowup} disabled={followupBusy || (!followupWeeks && !followupWaitlist)} style={{width:'100%'}}>
+          {/* Habilitado si hay semanas, lista de espera, O un mensaje que enviar.
+              El caso "sin próxima cita" (solo mensaje) lo gestiona handleAcceptFollowup. */}
+          <Btn onClick={handleAcceptFollowup} disabled={followupBusy || (!followupWeeks && !followupWaitlist && !followupMessage.trim())} style={{width:'100%'}}>
             {followupBusy ? 'Procesando…' : 'Aceptar'}
           </Btn>
         </div>
