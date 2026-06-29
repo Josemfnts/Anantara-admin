@@ -5,6 +5,7 @@ import { fClock, fClockDT } from './lib/datetime.js'
 import { moveItem } from './lib/listOrder.js'
 import { quickRepliesFor } from './lib/quickReplies.js'
 import { buildFollowupMessage, weekText } from './lib/followupMessage.js'
+import { conversationPayloadFor } from './lib/newConversation.js'
 import { ProposalCalendar } from './components/ProposalCalendar.jsx'
 
 const sb = createClient(
@@ -602,7 +603,7 @@ function Agenda(){
     setLoading(true)
     const from=toK(days[0])+'T00:00:00', to=toK(days[days.length-1])+'T23:59:59'
     const[appts,profsR,blks,holdsR]=await Promise.all([
-      sb.from('appointments').select('id,starts_at,ends_at,status,patient_id,service_id,professional_id,notes,payment_method,reminder_sent_at,reminder_confirmed_at,proposed_until,patients(id,full_name,phone),services(name,duration_minutes),professionals(name)')
+      sb.from('appointments').select('id,starts_at,ends_at,status,patient_id,service_id,professional_id,notes,payment_method,reminder_sent_at,reminder_confirmed_at,proposed_until,followup_handled_at,patients(id,full_name,phone),services(name,duration_minutes),professionals(name)')
         .gte('starts_at',from).lte('starts_at',to),
       sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name',{ascending:false}),
       sb.from('blocked_slots').select('id,professional_id,starts_at,ends_at,reason')
@@ -767,6 +768,11 @@ function Agenda(){
     const chatId = `${patientPhone.startsWith('34') ? patientPhone : `34${patientPhone}`}@c.us`
     const serviceId = followupServiceId || modal.service_id || (await sb.from('appointments').select('service_id').eq('id',modal.id).maybeSingle()).data?.service_id
 
+    // Marca la cita pasada como "próxima cita gestionada" → la agenda la pinta en
+    // morado OSCURO (vs claro = pasada sin gestionar). Se marca al darle a Aceptar,
+    // en cualquiera de las ramas (con/ sin próxima cita), porque la decisión ya se tomó.
+    const markHandled = () => sb.from('appointments').update({ followup_handled_at: new Date().toISOString() }).eq('id', modal.id)
+
     if (!hasWeeks && !hasWaitlist) {
       if (!followupMessage.trim()) { setToast({msg:'Escribe el mensaje para el paciente',type:'error'}); return }
       setFollowupBusy(true)
@@ -776,6 +782,7 @@ function Agenda(){
           body: JSON.stringify({ chat_id: chatId, text: followupMessage.trim(), by: 'secretaria' })
         })
         if (!r.ok) throw new Error(await r.text())
+        await markHandled()
         setToast({msg:'Mensaje enviado',type:'ok'})
       } catch (e) { setToast({msg:'Error: '+e.message,type:'error'}) }
       finally { setFollowupBusy(false); setModal(null) }
@@ -809,6 +816,7 @@ function Agenda(){
           body: JSON.stringify({ chat_id: chatId, text: followupMessage.trim(), by: 'secretaria' })
         })
         if (!r.ok) throw new Error(await r.text())
+        await markHandled()
         setToast({msg:'Añadido a lista de espera y mensaje enviado',type:'ok'})
         setModal(null)
         setFollowupBusy(false)
@@ -850,6 +858,7 @@ function Agenda(){
         })
       } catch(e) { console.warn('trigger-followup-search fail:', e.message) }
 
+      await markHandled()
       setToast({msg:'Listo. El paciente recibirá el WhatsApp en unos segundos.',type:'ok'})
       setModal(null)
     } catch (e) {
@@ -1239,7 +1248,9 @@ function Agenda(){
     const proposedUntil = obj?.proposed_until
     const reminderConfirmedAt = obj?.reminder_confirmed_at
     if(status==='cancelled') return{bg:'#fee2e2',border:'#dc2626',text:'#7f1d1d'}  // rojo: cancelada
-    if(status==='completed') return{bg:'#e9d5ff',border:'#a855f7',text:'#581c87'}  // MORADO CLARO: cita pasada
+    if(status==='completed') return obj?.followup_handled_at
+      ? {bg:'#7c3aed',border:'#5b21b6',text:'#f5f3ff'}   // MORADO OSCURO: pasada + próxima cita gestionada (se dio a Aceptar)
+      : {bg:'#e9d5ff',border:'#a855f7',text:'#581c87'}   // MORADO CLARO: cita pasada, sin gestionar
     if(status==='pending') {
       const caducada = !!proposedUntil && new Date(proposedUntil.slice(0,19)) <= new Date()
       return caducada
@@ -3840,6 +3851,10 @@ function BotCoach() {
   const [conversations, setConversations] = useState([])
   const [selConvId, setSelConvId] = useState(null)
   const [thread, setThread] = useState([])
+  // "Nueva conversación": arrancar un chat con un paciente existente.
+  const [newConvOpen, setNewConvOpen] = useState(false)
+  const [newConvQuery, setNewConvQuery] = useState('')
+  const [newConvResults, setNewConvResults] = useState([])
   const [search, setSearch] = useState('')
   const [colaMode, setColaMode] = useState(false)
   const [listCollapsed, setListCollapsed] = useState(false)
@@ -3937,6 +3952,17 @@ function BotCoach() {
     setConversations(data || [])
   }, [])
   useEffect(() => { loadConversations() }, [loadConversations])
+
+  // Buscador de pacientes para "Nueva conversación" (debounced).
+  useEffect(() => {
+    if (!newConvQuery.trim()) { setNewConvResults([]); return }
+    const t = setTimeout(async () => {
+      const { data } = await sb.from('patients').select('id,full_name,phone')
+        .or(`full_name.ilike.%${newConvQuery}%,phone.ilike.%${newConvQuery}%`).limit(6)
+      setNewConvResults(data || [])
+    }, 250)
+    return () => clearTimeout(t)
+  }, [newConvQuery])
 
   // Hilo de mensajes de la conversación seleccionada
   const reloadThread = useCallback(async (convId) => {
@@ -4146,6 +4172,19 @@ function BotCoach() {
   const goNextPending = () => {
     const list = convFilteredRef.current.filter(c => (pendingByConvRef.current[c.id]||0) > 0 && c.id !== selConvRef.current)
     setSelConvId(list[0] ? list[0].id : null)
+  }
+
+  // Arranca una conversación con un paciente existente (la crea si no la hay y la abre).
+  const startConversation = async (patient) => {
+    const payload = conversationPayloadFor(patient)
+    if (!payload) { setToast({ msg: 'Ese paciente no tiene teléfono válido', type: 'error' }); return }
+    const { error } = await sb.from('conversations').upsert(payload, { onConflict: 'phone' })
+    if (error) { setToast({ msg: 'Error: ' + error.message, type: 'error' }); return }
+    setNewConvOpen(false); setNewConvQuery(''); setNewConvResults([])
+    await loadConversations()
+    const { data: conv } = await sb.from('conversations').select('id').eq('phone', payload.phone).maybeSingle()
+    if (conv) setSelConvId(conv.id)
+    setToast({ msg: 'Conversación creada', type: 'ok' })
   }
 
   const sendProposal = async () => {
@@ -4630,11 +4669,31 @@ function BotCoach() {
     ) : (
     <div style={{display:'flex',height:'calc(100vh - 300px)',minHeight:440,border:'1px solid var(--border)',borderRadius:12,overflow:'hidden',background:'#fff'}}>
 
+      {newConvOpen && (
+        <Modal title="Nueva conversación" onClose={()=>{ setNewConvOpen(false); setNewConvQuery(''); setNewConvResults([]) }}>
+          <div style={{position:'relative'}}>
+            <input className="field-input" autoFocus placeholder="Buscar paciente…" value={newConvQuery}
+              onChange={e=>setNewConvQuery(e.target.value)} style={{width:'100%'}}/>
+            {newConvResults.length>0 && (
+              <div style={{marginTop:8,border:'1px solid var(--border)',borderRadius:8,overflow:'hidden'}}>
+                {newConvResults.map(p => (
+                  <button key={p.id} onClick={()=>startConversation(p)} style={{display:'block',width:'100%',textAlign:'left',padding:'8px 12px',border:'none',borderBottom:'1px solid var(--border)',background:'#fff',cursor:'pointer'}}>
+                    {p.full_name} {p.phone ? `· ${p.phone}` : '· (sin teléfono)'}
+                  </button>
+                ))}
+              </div>
+            )}
+            <p style={{fontSize:11,color:'var(--text-muted)',marginTop:8}}>Se abre el chat del paciente (con su historial si lo tiene). No se envía nada hasta que escribas.</p>
+          </div>
+        </Modal>
+      )}
+
       {/* Columna izquierda: lista de conversaciones */}
       {(!colaMode && !listCollapsed && (!narrow || !selConvId)) && (
         <div style={{width: narrow?'100%':320, flexShrink:0, borderRight: narrow?'none':'1px solid var(--border)', display:'flex',flexDirection:'column',background:'var(--cream)'}}>
           <div style={{padding:10,borderBottom:'1px solid var(--border)',display:'flex',gap:8,alignItems:'center'}}>
             <input ref={searchRef} className="field-input" placeholder="🔍 Buscar paciente… (/)" value={search} onChange={e=>setSearch(e.target.value)} style={{flex:1,minHeight:34,fontSize:13}}/>
+            <button onClick={()=>setNewConvOpen(true)} title="Nueva conversación" style={{minWidth:36,minHeight:34,borderRadius:8,border:'1px solid var(--stone)',background:'#fff',cursor:'pointer',fontSize:16}}>＋</button>
             <button onClick={()=>{ setColaMode(true); const first = pendingConvs[0]; if(first) setSelConvId(first.id) }} title="Modo cola (focus)" style={{minWidth:36,minHeight:34,borderRadius:8,border:'1px solid var(--stone)',background:'#fff',cursor:'pointer',fontSize:14}}>⚙</button>
             <button onClick={()=>{ const v=!soundOn; setSoundOn(v); localStorage.setItem('bc_sound', v?'1':'0') }} title={soundOn?'Sonido de aviso activado':'Sonido de aviso silenciado'} style={{minWidth:36,minHeight:34,borderRadius:8,border:'1px solid var(--stone)',background:'#fff',cursor:'pointer',fontSize:14}}>{soundOn?'🔔':'🔕'}</button>
             {!narrow && <button onClick={()=>setListCollapsed(true)} title="Ocultar lista" style={{minWidth:36,minHeight:34,borderRadius:8,border:'1px solid var(--stone)',background:'#fff',cursor:'pointer',fontSize:14}}>◀</button>}
