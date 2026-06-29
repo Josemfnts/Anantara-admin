@@ -4175,16 +4175,24 @@ function BotCoach() {
   }
 
   // Arranca una conversación con un paciente existente (la crea si no la hay y la abre).
+  // La crea el BOT (service_role): la admin no puede insertar en conversations por RLS.
   const startConversation = async (patient) => {
     const payload = conversationPayloadFor(patient)
     if (!payload) { setToast({ msg: 'Ese paciente no tiene teléfono válido', type: 'error' }); return }
-    const { error } = await sb.from('conversations').upsert(payload, { onConflict: 'phone' })
-    if (error) { setToast({ msg: 'Error: ' + error.message, type: 'error' }); return }
-    setNewConvOpen(false); setNewConvQuery(''); setNewConvResults([])
-    await loadConversations()
-    const { data: conv } = await sb.from('conversations').select('id').eq('phone', payload.phone).maybeSingle()
-    if (conv) setSelConvId(conv.id)
-    setToast({ msg: 'Conversación creada', type: 'ok' })
+    try {
+      const r = await botFetch('/ensure-conversation', {
+        method: 'POST',
+        body: JSON.stringify({ phone: payload.phone, patient_id: payload.patient_id }),
+      })
+      if (!r.ok) throw new Error(await r.text())
+      const { conversation_id } = await r.json()
+      setNewConvOpen(false); setNewConvQuery(''); setNewConvResults([])
+      await loadConversations()
+      if (conversation_id) setSelConvId(conversation_id)
+      setToast({ msg: 'Conversación creada', type: 'ok' })
+    } catch (e) {
+      setToast({ msg: 'Error: ' + e.message, type: 'error' })
+    }
   }
 
   const sendProposal = async () => {
