@@ -585,6 +585,15 @@ function Agenda(){
   const[followupWaitlist,setFollowupWaitlist]=useState(false)
   const[followupMessage,setFollowupMessage]=useState('')
   const[followupBusy,setFollowupBusy]=useState(false)
+  // Cuadro de oferta "Próxima cita": el bot reserva el candado y aquí Marta revisa/edita/envía.
+  const[offerModal,setOfferModal]=useState(null)
+  const[offerMsg,setOfferMsg]=useState('')
+  const[offerBusy,setOfferBusy]=useState(false)
+  const[offerCalOpen,setOfferCalOpen]=useState(false)
+  const[offerCalMonth,setOfferCalMonth]=useState(()=>new Date())
+  const[offerCalDays,setOfferCalDays]=useState({})
+  const[offerCalLoading,setOfferCalLoading]=useState(false)
+  const[offerSelDay,setOfferSelDay]=useState(null)
   const[profWorkingHours,setProfWorkingHours]=useState([])
   const[saving,setSaving]=useState(false)
   const[toast,setToast]=useState(null)
@@ -823,49 +832,96 @@ function Agenda(){
         return
       }
 
-      // Si hay waitlist + horas, metemos también en wait_queue para adelantar
-      if (hasWaitlist) {
-        const { error } = await addToWaitlist({
+      // Cuadro de oferta: el BOT crea la búsqueda + reserva el candado (sin enviar)
+      // y devuelve el hueco + mensaje. Lo hace server-side (service_role) → sin líos
+      // de RLS. Marta revisa/edita/envía en el cuadro; la conversación vive en Bot Coach.
+      const r = await botFetch('/prepare-offer', {
+        method: 'POST',
+        body: JSON.stringify({
           patient_id: modal.patients.id,
           professional_id: modal.professional_id,
           service_id: serviceId,
-          target_date: targetDate,
-          preferred_hour: preferredMinutes?.length ? Math.round(preferredMinutes[0] / 60) : null,
-          preferred_hours: preferredMinutes,
+          source_appointment_id: modal.id,
           weeks_pautadas: weeks,
-        })
-        if (error) throw error
-      }
-
-      // pending_search para que el bot busque slot y envíe mensaje
-      const { data: search, error } = await sb.from('pending_searches').insert({
-        patient_id: modal.patients.id,
-        professional_id: modal.professional_id,
-        service_id: serviceId,
-        source_appointment_id: modal.id,
-        target_date: targetDate,
-        preferred_hours: preferredMinutes,
-        preferred_hour: preferredMinutes?.length ? Math.round(preferredMinutes[0] / 60) : null,
-        weeks_pautadas: weeks,
-        also_on_waitlist: hasWaitlist,
-      }).select('id').single()
-      if (error) throw error
-
-      try {
-        await botFetch('/trigger-followup-search', {
-          method: 'POST',
-          body: JSON.stringify({ search_id: search.id })
-        })
-      } catch(e) { console.warn('trigger-followup-search fail:', e.message) }
-
+          preferred_hours: preferredMinutes,
+          also_on_waitlist: hasWaitlist,
+        }),
+      })
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok || !data.ok) throw new Error(data.error || `HTTP ${r.status}`)
       await markHandled()
-      setToast({msg:'Listo. El paciente recibirá el WhatsApp en unos segundos.',type:'ok'})
       setModal(null)
+      if (!data.slot) {
+        setToast({ msg: 'No hay hueco disponible ahora; queda en la búsqueda y te avisaré.', type: 'ok' })
+        return
+      }
+      const dur = services.find(s => s.id === serviceId)?.duration_minutes || 60
+      setOfferModal({
+        appointment_id: data.appointment_id,
+        search_id: data.search_id,
+        slot: data.slot,
+        chat_id: chatId,
+        professional_id: modal.professional_id,
+        prof: modal.professionals?.name || 'el equipo',
+        patient_id: modal.patients.id,
+        duration: dur,
+      })
+      setOfferMsg(data.message || '')
     } catch (e) {
       setToast({msg:'Error: '+e.message,type:'error'})
     } finally {
       setFollowupBusy(false)
     }
+  }
+
+  // ─── Cuadro de oferta: calendario (cambiar hueco) + enviar/cancelar ─────────
+  const loadOfferMonth = async (monthDate) => {
+    if (!offerModal) return
+    setOfferCalLoading(true)
+    try {
+      const month = `${monthDate.getFullYear()}-${String(monthDate.getMonth()+1).padStart(2,'0')}`
+      const r = await botFetch('/proposal-slot-options', { method:'POST', body: JSON.stringify({
+        action_type:'proponer_cita', professional_id: offerModal.professional_id,
+        month, duration_minutes: offerModal.duration, patient_id: offerModal.patient_id,
+      })})
+      const data = await r.json().catch(()=>({}))
+      if (data.ok) setOfferCalDays(data.days || {})
+    } catch (e) { setToast({msg:'Calendario: '+e.message, type:'error'}) }
+    finally { setOfferCalLoading(false) }
+  }
+  useEffect(() => { if (offerCalOpen) loadOfferMonth(offerCalMonth) /* eslint-disable-next-line */ }, [offerCalOpen, offerCalMonth, offerModal?.appointment_id])
+
+  const pickOfferHour = async (dayKey, hour) => {
+    const newStartsAt = `${dayKey}T${hour}:00`
+    try {
+      const r = await botFetch('/move-offer', { method:'POST', body: JSON.stringify({ appointment_id: offerModal.appointment_id, new_starts_at: newStartsAt })})
+      const data = await r.json().catch(()=>({}))
+      if (!r.ok || !data.ok) { setToast({msg: data.error==='hueco_ocupado' ? 'Ese hueco ya está ocupado' : ('Error: '+(data.error||'')), type:'error'}); return }
+      setOfferModal(o => ({ ...o, slot: data.slot }))
+      setOfferMsg(data.message || offerMsg)
+      setOfferCalOpen(false); setOfferSelDay(null)
+      setToast({msg:'Hueco cambiado', type:'ok'})
+    } catch (e) { setToast({msg:'Error: '+e.message, type:'error'}) }
+  }
+
+  const sendOffer = async () => {
+    if (!offerMsg.trim()) { setToast({msg:'El mensaje no puede estar vacío', type:'error'}); return }
+    setOfferBusy(true)
+    try {
+      const r = await botFetch('/confirm-offer', { method:'POST', body: JSON.stringify({ chat_id: offerModal.chat_id, text: offerMsg.trim() })})
+      const data = await r.json().catch(()=>({}))
+      if (!r.ok || !data.ok) throw new Error(data.error || `HTTP ${r.status}`)
+      setToast({msg:'Oferta enviada. La conversación está en Bot Coach.', type:'ok'})
+      setOfferModal(null)
+    } catch (e) { setToast({msg:'Error: '+e.message, type:'error'}) }
+    finally { setOfferBusy(false) }
+  }
+
+  const cancelOffer = async () => {
+    if (offerModal) {
+      try { await botFetch('/release-offer', { method:'POST', body: JSON.stringify({ appointment_id: offerModal.appointment_id, search_id: offerModal.search_id })}) } catch { /* noop */ }
+    }
+    setOfferModal(null); setOfferCalOpen(false); setOfferSelDay(null)
   }
 
   const openAssignModal = async (appt) => {
@@ -1484,6 +1540,34 @@ function Agenda(){
       </div>
       <Btn variant="ghost" onClick={enqueueWaitlist} disabled={!selPat||!form.prof_id||!form.svc_id} style={{width:'100%',marginTop:10}}
         title="Sin hueco: encolar al paciente en la lista de espera (no crea cita)">→ Lista de espera (sin hueco)</Btn>
+    </Modal>}
+
+    {/* Cuadro de oferta "Próxima cita" */}
+    {offerModal&&<Modal title="Oferta de próxima cita" onClose={cancelOffer}>
+      <div style={{marginBottom:10,fontSize:14}}>
+        📅 <strong>{fClockDT(offerModal.slot)}</strong> con {offerModal.prof}
+        <button onClick={()=>setOfferCalOpen(o=>!o)} style={{marginLeft:10,fontSize:12,padding:'3px 10px',border:'1px solid var(--stone)',borderRadius:999,background:'#fff',cursor:'pointer'}}>
+          {offerCalOpen?'Cerrar calendario':'🗓 Cambiar hueco'}
+        </button>
+      </div>
+      {offerCalOpen&&<div style={{marginBottom:12,display:'flex',justifyContent:'center'}}>
+        <ProposalCalendar
+          month={offerCalMonth}
+          days={offerCalDays}
+          loading={offerCalLoading}
+          onPrev={()=>setOfferCalMonth(m=>new Date(m.getFullYear(),m.getMonth()-1,1))}
+          onNext={()=>setOfferCalMonth(m=>new Date(m.getFullYear(),m.getMonth()+1,1))}
+          onSelectDay={k=>setOfferSelDay(k)}
+          onSelectHour={(day,hour)=>pickOfferHour(day,hour)}
+          selectedDay={offerSelDay}
+        />
+      </div>}
+      <label className="field-label">Mensaje al paciente</label>
+      <textarea className="notes-area" value={offerMsg} onChange={e=>setOfferMsg(e.target.value)} rows={3} style={{width:'100%'}}/>
+      <div style={{display:'flex',gap:8,marginTop:12}}>
+        <Btn onClick={sendOffer} disabled={offerBusy||!offerMsg.trim()} style={{flex:1}}>{offerBusy?'Enviando…':'✅ Enviar'}</Btn>
+        <Btn variant="ghost" onClick={cancelOffer} disabled={offerBusy}>Cancelar</Btn>
+      </div>
     </Modal>}
 
     {/* Detail modal */}
