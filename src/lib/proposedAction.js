@@ -49,6 +49,9 @@ const META = {
   reservar_clase:              { label: 'Reservar clase',           icon: '📅', family: 'confirm' },
   apuntar_lista_espera:        { label: 'Apuntar a lista de espera', icon: '📝', family: 'list' },
   apuntar_lista_adelantar:     { label: 'Apuntar para adelantar',   icon: '📝', family: 'list' },
+  // Oferta proactiva gateada (follow-up / hueco liberado). El candado ya existe;
+  // aprobar = enviar el texto. NO es destructiva. La cita ofertada se resuelve por id.
+  oferta_proactiva:            { label: 'Oferta de cita',           icon: '📅', family: 'confirm' },
 }
 
 const DESTRUCTIVE = new Set(['cancelar_cita', 'descartar_propuesta', 'rechazar_propuesta'])
@@ -63,6 +66,7 @@ const LOOKUP_ID_FIELD = {
   rechazar_oferta_cancelacion: 'appointment_id',
   descartar_propuesta:         'old_proposal_id',
   rechazar_propuesta:          'old_proposal_id',
+  oferta_proactiva:            'appointment_id',
 }
 
 export function isDestructiveAction(action) {
