@@ -585,6 +585,7 @@ function Agenda(){
   const[followupWaitlist,setFollowupWaitlist]=useState(false)
   const[followupMessage,setFollowupMessage]=useState('')
   const[followupBusy,setFollowupBusy]=useState(false)
+  const[futureAppts,setFutureAppts]=useState([]) // citas futuras del paciente (para el cuadro de próxima cita)
   // Cuadro de oferta "Próxima cita": el bot reserva el candado y aquí Marta revisa/edita/envía.
   const[offerModal,setOfferModal]=useState(null)
   const[offerMsg,setOfferMsg]=useState('')
@@ -728,6 +729,20 @@ function Agenda(){
       setEditPatient(modal.patients || null)
       setEditPatSearch('')
       setEditPatResults([])
+      // Citas FUTURAS del paciente (activas), excluyendo esta misma, para ayudar a
+      // elegir las semanas de la próxima cita. Ordenadas por fecha.
+      setFutureAppts([])
+      if (modal.patient_id) {
+        const nowISO = localDT(new Date())
+        sb.from('appointments')
+          .select('id,starts_at,status,professionals(name),services(name)')
+          .eq('patient_id', modal.patient_id)
+          .in('status', ['pending','confirmed'])
+          .gte('starts_at', nowISO)
+          .neq('id', modal.id)
+          .order('starts_at', { ascending: true })
+          .then(({data})=>setFutureAppts(data||[]))
+      }
     }
   },[modal])
 
@@ -1639,6 +1654,16 @@ function Agenda(){
       {modal.status==='completed' || (modal.starts_at && modal.starts_at < localDT(new Date())) ? (
         <div style={{borderTop:'1px solid var(--border)',paddingTop:14,marginTop:14}}>
           <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Próxima cita</div>
+
+          {/* Citas futuras ya existentes del paciente (para elegir mejor las semanas) */}
+          {futureAppts.length>0 ? (
+            <div style={{background:'#eef2ff',border:'1px solid #c7d2fe',borderRadius:8,padding:'8px 12px',marginBottom:10,fontSize:12}}>
+              <div style={{fontWeight:700,color:'#3730a3',marginBottom:4}}>📅 Ya tiene {futureAppts.length} cita{futureAppts.length!==1?'s':''} futura{futureAppts.length!==1?'s':''}:</div>
+              {futureAppts.map(a=><div key={a.id} style={{color:'#3730a3'}}>· {fDT(a.starts_at)}{a.professionals?.name?` · ${a.professionals.name}`:''}{a.status==='pending'?' (sin confirmar)':''}</div>)}
+            </div>
+          ) : (
+            <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:10}}>Sin citas futuras.</div>
+          )}
 
           {/* Semanas */}
           <div style={{marginBottom:10}}>
