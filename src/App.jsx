@@ -1866,11 +1866,67 @@ function Horarios(){
   const[reminderTime,setReminderTime]=useState('10:00')
   const[savingReminder,setSavingReminder]=useState(false)
   const[sendingAgenda,setSendingAgenda]=useState(false)
+  // Envío manual de recordatorios para un día concreto (plan vacaciones):
+  // se eligen las citas de ese día y se mandan YA (el texto del bot ya dice
+  // "el lunes 20 de julio" si no es mañana).
+  const[manualModal,setManualModal]=useState(false)
+  const[manualDate,setManualDate]=useState('')
+  const[manualBusy,setManualBusy]=useState(false)
+  // Modo vacaciones (bot_config): switch + mensaje editable.
+  const VACATION_DEFAULT='Hola, disculpa pero estamos unos días de vacaciones, volvemos el lunes 20 de Julio y nos pondremos en contacto contigo entonces. Muchas gracias y disculpa.'
+  const[vacMode,setVacMode]=useState(false)
+  const[vacMsg,setVacMsg]=useState(VACATION_DEFAULT)
+  const[vacBusy,setVacBusy]=useState(false)
 
   useEffect(()=>{
     sb.from('app_config').select('value').eq('key','reminder_time').maybeSingle()
       .then(({data})=>{ if(data?.value) setReminderTime(data.value) })
+    sb.from('bot_config').select('vacation_mode,vacation_message').eq('id',1).maybeSingle()
+      .then(({data})=>{
+        if(!data)return
+        setVacMode(data.vacation_mode===true)
+        if(data.vacation_message)setVacMsg(data.vacation_message)
+      })
   },[])
+
+  // Al ACTIVAR guarda también vacation_started_at: el bot solo saluda una vez
+  // por chat DESDE esa marca (reactivar en otras vacaciones vuelve a saludar).
+  const toggleVacation=async()=>{
+    if(vacBusy)return
+    setVacBusy(true)
+    const newVal=!vacMode
+    const updates={vacation_mode:newVal,vacation_message:vacMsg.trim()||VACATION_DEFAULT,updated_at:new Date().toISOString()}
+    if(newVal)updates.vacation_started_at=new Date().toISOString()
+    const{error}=await sb.from('bot_config').update(updates).eq('id',1)
+    setVacBusy(false)
+    if(error){setToast({msg:'Error (¿falta la columna vacation_mode en bot_config?): '+error.message,type:'error'});return}
+    setVacMode(newVal)
+    try{await botFetch('/training-mode-refresh',{method:'POST'})}catch{/* el bot refresca por TTL igualmente */}
+    setToast({msg:newVal?'🏖 Modo vacaciones ACTIVADO — el bot responderá el mensaje de vacaciones':'Modo vacaciones desactivado',type:'ok'})
+  }
+  const saveVacMsg=async()=>{
+    setVacBusy(true)
+    const{error}=await sb.from('bot_config').update({vacation_message:vacMsg.trim()||VACATION_DEFAULT,updated_at:new Date().toISOString()}).eq('id',1)
+    setVacBusy(false)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setToast({msg:'Mensaje de vacaciones guardado',type:'ok'})
+  }
+
+  const sendManualReminders=async()=>{
+    if(!manualDate)return
+    setManualBusy(true)
+    try{
+      const r=await botFetch('/reminders',{method:'POST',body:JSON.stringify({date:manualDate})})
+      let sent; try{const j=await r.json();sent=j.sent??j.enviados}catch{/* sin json */}
+      if(r.ok){
+        setToast({msg:`Recordatorios del ${manualDate} enviados${sent!=null?` (${sent})`:''}`,type:'ok'})
+        setManualModal(false)
+      }else{
+        setToast({msg:'⚠️ El bot no aceptó el envío (¿soporta ya POST /reminders con fecha?)',type:'error'})
+      }
+    }catch(e){setToast({msg:'⚠️ Bot inaccesible: '+e.message,type:'error'})}
+    setManualBusy(false)
+  }
 
   const saveReminderTime = async () => {
     setSavingReminder(true)
@@ -2015,14 +2071,38 @@ function Horarios(){
         </select>
       </div>
       <Btn onClick={saveReminderTime} disabled={savingReminder}>{savingReminder?'Guardando…':'Guardar hora'}</Btn>
-      <Btn variant="ghost" onClick={async()=>{
-        try{
-          const r=await botFetch('/reminders')
-          setToast({msg: r.ok ? 'Recordatorios enviados (mira logs del bot)' : '⚠️ Bot no respondió',type: r.ok ? 'ok' : 'error'})
-        }catch(e){ setToast({msg:'⚠️ Bot inaccesible: '+e.message,type:'error'}) }
-      }}>⏰ Enviar ahora (prueba)</Btn>
+      <Btn variant="ghost" onClick={()=>{setManualDate('');setManualModal(true)}}>📤 Envío manual</Btn>
       <span style={{fontSize:11,color:'var(--text-muted)'}}>El bot manda WhatsApp a los pacientes del día siguiente a esta hora</span>
     </div>
+
+    {/* Modo vacaciones: el bot responde el mensaje una sola vez por chat y calla */}
+    <div className="card" style={{padding:'14px 16px',marginBottom:16,border:vacMode?'1.5px solid #f59e0b':undefined,background:vacMode?'#fffbeb':undefined}}>
+      <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        <span style={{fontWeight:700,fontSize:13}}>🏖 Modo vacaciones</span>
+        <Toggle on={vacMode} onChange={toggleVacation}/>
+        {vacMode&&<span style={{fontSize:12,fontWeight:700,color:'#b45309'}}>ACTIVO — el bot responde el mensaje de abajo (una vez por chat) y luego calla</span>}
+      </div>
+      <div style={{marginTop:10}}>
+        <label className="field-label">Mensaje de vacaciones (se envía automático, una sola vez por paciente)</label>
+        <textarea className="notes-area" rows={3} value={vacMsg} onChange={e=>setVacMsg(e.target.value)} style={{width:'100%'}}/>
+        <div style={{display:'flex',gap:8,marginTop:6,alignItems:'center',flexWrap:'wrap'}}>
+          <Btn variant="ghost" onClick={saveVacMsg} disabled={vacBusy}>Guardar mensaje</Btn>
+          <span style={{fontSize:11,color:'var(--text-muted)'}}>La sugerencia del bot para el día de vuelta se genera con los mensajes del paciente, sin este texto.</span>
+        </div>
+      </div>
+    </div>
+
+    {manualModal&&<Modal title="Envío manual de recordatorios" onClose={()=>setManualModal(false)}>
+      <p style={{fontSize:13,color:'var(--text-muted)',marginBottom:12,lineHeight:1.6}}>
+        Manda AHORA los recordatorios de las citas del día que elijas (útil antes de vacaciones).
+        El mensaje dirá el día real (“el lunes 20 de julio”), no “mañana”.
+      </p>
+      <Inp label="Día de las citas" type="date" value={manualDate} onChange={e=>setManualDate(e.target.value)}/>
+      <div style={{display:'flex',gap:10,marginTop:12}}>
+        <Btn variant="ghost" onClick={()=>setManualModal(false)} style={{flex:1}}>Cancelar</Btn>
+        <Btn onClick={sendManualReminders} disabled={!manualDate||manualBusy} style={{flex:1}}>{manualBusy?'Enviando…':'📤 Enviar recordatorios'}</Btn>
+      </div>
+    </Modal>}
 
     <div className="section-header">
       <span className="section-title">Horarios de trabajo</span>
