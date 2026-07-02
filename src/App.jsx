@@ -1869,7 +1869,6 @@ function Horarios(){
   // Envío manual de recordatorios para un día concreto (plan vacaciones):
   // se eligen las citas de ese día y se mandan YA (el texto del bot ya dice
   // "el lunes 20 de julio" si no es mañana).
-  const[manualModal,setManualModal]=useState(false)
   const[manualDate,setManualDate]=useState('')
   const[manualBusy,setManualBusy]=useState(false)
   // Modo vacaciones (bot_config): switch + mensaje editable.
@@ -1920,7 +1919,7 @@ function Horarios(){
       let sent; try{const j=await r.json();sent=j.sent??j.enviados}catch{/* sin json */}
       if(r.ok){
         setToast({msg:`Recordatorios del ${manualDate} enviados${sent!=null?` (${sent})`:''}`,type:'ok'})
-        setManualModal(false)
+        setManualDate('')
       }else{
         setToast({msg:'⚠️ El bot no aceptó el envío (¿soporta ya POST /reminders con fecha?)',type:'error'})
       }
@@ -2071,8 +2070,14 @@ function Horarios(){
         </select>
       </div>
       <Btn onClick={saveReminderTime} disabled={savingReminder}>{savingReminder?'Guardando…':'Guardar hora'}</Btn>
-      <Btn variant="ghost" onClick={()=>{setManualDate('');setManualModal(true)}}>📤 Envío manual</Btn>
       <span style={{fontSize:11,color:'var(--text-muted)'}}>El bot manda WhatsApp a los pacientes del día siguiente a esta hora</span>
+      {/* Envío manual: elegir el día de las citas y mandar sus recordatorios YA */}
+      <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',borderLeft:'1px solid var(--border)',paddingLeft:16}}>
+        <span style={{fontWeight:700,fontSize:13}}>📤 Envío manual</span>
+        <input className="field-input" type="date" style={{width:'auto',minHeight:34}} value={manualDate} onChange={e=>setManualDate(e.target.value)} title="Día de las citas que quieres recordar"/>
+        <Btn variant="ghost" onClick={sendManualReminders} disabled={!manualDate||manualBusy}>{manualBusy?'Enviando…':'Enviar'}</Btn>
+        <span style={{fontSize:11,color:'var(--text-muted)'}}>Manda ahora los recordatorios de las citas de ese día</span>
+      </div>
     </div>
 
     {/* Modo vacaciones: el bot responde el mensaje una sola vez por chat y calla */}
@@ -2092,17 +2097,6 @@ function Horarios(){
       </div>
     </div>
 
-    {manualModal&&<Modal title="Envío manual de recordatorios" onClose={()=>setManualModal(false)}>
-      <p style={{fontSize:13,color:'var(--text-muted)',marginBottom:12,lineHeight:1.6}}>
-        Manda AHORA los recordatorios de las citas del día que elijas (útil antes de vacaciones).
-        El mensaje dirá el día real (“el lunes 20 de julio”), no “mañana”.
-      </p>
-      <Inp label="Día de las citas" type="date" value={manualDate} onChange={e=>setManualDate(e.target.value)}/>
-      <div style={{display:'flex',gap:10,marginTop:12}}>
-        <Btn variant="ghost" onClick={()=>setManualModal(false)} style={{flex:1}}>Cancelar</Btn>
-        <Btn onClick={sendManualReminders} disabled={!manualDate||manualBusy} style={{flex:1}}>{manualBusy?'Enviando…':'📤 Enviar recordatorios'}</Btn>
-      </div>
-    </Modal>}
 
     <div className="section-header">
       <span className="section-title">Horarios de trabajo</span>
