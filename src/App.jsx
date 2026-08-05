@@ -4074,8 +4074,10 @@ function BotCoach() {
       setProfessionals(pr.data || [])
     })()
   }, [])
-  // Al cambiar de review, resetear el override (cada propuesta parte del bot).
-  useEffect(() => { setOverrideAction(null); setActionEditorOpen(false) }, [selPending?.id])
+  // NOTA: el useEffect que resetea `overrideAction` al cambiar de review se define
+  // MÁS ABAJO, cerca de la declaración de `selPending` (línea ~4300), porque
+  // `selPending` no existe todavía a esta altura del componente (Temporal Dead
+  // Zone si lo usara aquí → rompía la pantalla del Bot Coach 24-jul).
   const [narrow, setNarrow] = useState(() => typeof window!=='undefined' && window.matchMedia('(max-width:1023px)').matches)
   // Panel "Procesos del bot": lista pacientes con procesos automáticos activos
   // (pending_searches, wait_queue, propuestas pending, reviews pending, outbound queued)
@@ -4297,6 +4299,10 @@ function BotCoach() {
   const pendingByConv = {}
   for (const rv of reviews) if (rv.verdict==='pending' && rv.conversation_id) pendingByConv[rv.conversation_id] = (pendingByConv[rv.conversation_id]||0)+1
   const selPending = reviews.find(rv => rv.conversation_id===selConvId && rv.verdict==='pending') || null
+  // Al cambiar de review, resetear el override de acción (cada propuesta parte
+  // del bot). Declarado AQUÍ porque `selPending` acaba de definirse; ponerlo
+  // arriba con los demás hooks daba Temporal Dead Zone y rompía la pantalla.
+  useEffect(() => { setOverrideAction(null); setActionEditorOpen(false) }, [selPending?.id])
   const MIN30 = 30*60*1000
   const pendingConvs = convFiltered.filter(c => (pendingByConv[c.id]||0) > 0)
   convFilteredRef.current = convFiltered
