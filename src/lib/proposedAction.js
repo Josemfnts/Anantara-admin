@@ -52,6 +52,9 @@ const META = {
   // Oferta proactiva gateada (follow-up / hueco liberado). El candado ya existe;
   // aprobar = enviar el texto. NO es destructiva. La cita ofertada se resuelve por id.
   oferta_proactiva:            { label: 'Oferta de cita',           icon: '📅', family: 'confirm' },
+  // Compuesta: cancelar la vieja + proponer la nueva. La monta el panel cuando
+  // Marta corrige un cancelar_cita que era en realidad un cambio de fecha.
+  reprogramar:                 { label: 'Reprogramar cita',         icon: '🔀', family: 'confirm' },
 }
 
 const DESTRUCTIVE = new Set(['cancelar_cita', 'descartar_propuesta', 'rechazar_propuesta'])

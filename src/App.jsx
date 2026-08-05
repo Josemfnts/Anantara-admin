@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { actionLookupId, describeProposedAction, isDestructiveAction } from './lib/proposedAction.js'
+import { ActionEditorModal } from './components/ActionEditorModal.jsx'
 import { fClock, fClockDT } from './lib/datetime.js'
 import { moveItem } from './lib/listOrder.js'
 import { quickRepliesFor } from './lib/quickReplies.js'
@@ -4055,6 +4056,26 @@ function BotCoach() {
   // Se resuelve al cambiar de propuesta: lee appointments por el id que aplique a
   // cada tipo y formatea día/hora/prof. Ver src/lib/proposedAction.js.
   const [actionDesc, setActionDesc] = useState(null)
+  // Modal "Cambiar acción": permite a Marta corregir el tipo de acción propuesto
+  // por el bot (típico bot dice "cancelar" pero era un cambio de fecha). Al confirmar,
+  // guardamos el override y el flujo de aprobación sigue igual, pero /send-validated
+  // recibirá final_action = la acción corregida (queda como training data).
+  const [actionEditorOpen, setActionEditorOpen] = useState(false)
+  const [overrideAction, setOverrideAction] = useState(null)  // null → usar proposed_action del bot
+  const [services, setServices] = useState([])
+  const [professionals, setProfessionals] = useState([])
+  useEffect(() => {
+    ;(async () => {
+      const [sv, pr] = await Promise.all([
+        sb.from('services').select('id, name, section, duration_minutes').order('name'),
+        sb.from('professionals').select('id, name').order('name'),
+      ])
+      setServices(sv.data || [])
+      setProfessionals(pr.data || [])
+    })()
+  }, [])
+  // Al cambiar de review, resetear el override (cada propuesta parte del bot).
+  useEffect(() => { setOverrideAction(null); setActionEditorOpen(false) }, [selPending?.id])
   const [narrow, setNarrow] = useState(() => typeof window!=='undefined' && window.matchMedia('(max-width:1023px)').matches)
   // Panel "Procesos del bot": lista pacientes con procesos automáticos activos
   // (pending_searches, wait_queue, propuestas pending, reviews pending, outbound queued)
@@ -4380,8 +4401,13 @@ function BotCoach() {
 
   const sendProposal = async () => {
     if (!selPending) return
-    const verdict = (draft.trim() !== (selPending.proposed_text||'').trim()) ? 'modified' : 'sent'
-    const act = selPending.proposed_action
+    // Si Marta corrigió la acción con el modal, el final_action es su override.
+    // El bot lo ejecuta como si el bot lo hubiera propuesto originalmente, y el
+    // par (proposed_action, final_action) queda como training data del loop.
+    const act = overrideAction || selPending.proposed_action
+    const actionChanged = !!overrideAction && overrideAction.type !== selPending.proposed_action?.type
+    const textChanged = draft.trim() !== (selPending.proposed_text||'').trim()
+    const verdict = (textChanged || actionChanged) ? 'modified' : 'sent'
     let approveAction = !!act
     // Confirm SOLO en acciones destructivas (cancelar/descartar/rechazar). El
     // resto se aprueba con la tarjeta ya visible. El texto del confirm repite el
@@ -4978,6 +5004,16 @@ function BotCoach() {
                   <button key={i} onClick={()=>setDraft(qr)} style={{padding:'4px 10px',borderRadius:999,fontSize:11,border:'1px solid var(--stone)',background:'var(--cream)',cursor:'pointer'}}>{qr}</button>
                 ))}
               </div>
+              {/* Aviso override: Marta cambió la acción propuesta por el bot */}
+              {selPending && overrideAction && (
+                <div style={{border:'1px dashed #d97706',background:'#fef3c7',borderRadius:'var(--radius-lg)',padding:'6px 12px',marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
+                  <span style={{fontSize:12,color:'#92400e',fontWeight:600}}>✏️ Acción corregida a <strong>{overrideAction.type}</strong> (el bot proponía <em>{selPending.proposed_action?.type || '—'}</em>)</span>
+                  <button onClick={()=>{ setOverrideAction(null); setDraft(selPending.proposed_text || '') }}
+                    style={{marginLeft:'auto',fontSize:11,padding:'2px 8px',border:'1px solid #92400e',background:'#fff',color:'#92400e',borderRadius:999,cursor:'pointer'}}>
+                    Descartar cambio
+                  </button>
+                </div>
+              )}
               {selPending?.proposed_action && actionDesc && (() => {
                 // Paleta por familia; unresolved fuerza tratamiento rojo de alerta.
                 const PAL = {
@@ -4994,7 +5030,11 @@ function BotCoach() {
                       <span style={{fontSize:14}}>{actionDesc.icon}</span>
                       <span style={{fontSize:11,fontWeight:700,letterSpacing:.3,textTransform:'uppercase',color:p.ac}}>{actionDesc.label}</span>
                       {actionDesc.destructive && <span style={{fontSize:9,fontWeight:700,color:'#fff',background:p.ac,borderRadius:999,padding:'1px 6px'}}>acción real</span>}
-                      {showCal && <button onClick={openCalendar} title="Cambiar fecha/hora" style={{marginLeft:'auto',fontSize:11,padding:'3px 8px',border:`1px solid ${p.ac}`,background:'#fff',color:p.ac,borderRadius:999,cursor:'pointer'}}>📅 Cambiar</button>}
+                      {showCal && <button onClick={openCalendar} title="Cambiar fecha/hora" style={{marginLeft:'auto',fontSize:11,padding:'3px 8px',border:`1px solid ${p.ac}`,background:'#fff',color:p.ac,borderRadius:999,cursor:'pointer'}}>📅 Cambiar fecha</button>}
+                      <button onClick={()=>setActionEditorOpen(true)} title="Cambiar TIPO de acción (ej. cancelar → reprogramar)"
+                        style={{marginLeft: showCal ? 4 : 'auto',fontSize:11,padding:'3px 8px',border:'1px solid var(--text-muted)',background:'#fff',color:'var(--body)',borderRadius:999,cursor:'pointer'}}>
+                        ✏️ Cambiar acción
+                      </button>
                     </div>
                     {actionDesc.unresolved
                       ? <div style={{fontSize:12,fontWeight:600,color:'#dc2626'}}>⚠️ No se pudo resolver la cita (id {actionLookupId(selPending.proposed_action) || '—'}). No apruebes sin verificar.</div>
@@ -5138,6 +5178,30 @@ function BotCoach() {
         />
       </div>
     </div>
+  )}
+
+  {/* Modal "Cambiar acción" — Marta corrige la acción propuesta por el bot */}
+  {actionEditorOpen && selPending && (
+    <ActionEditorModal
+      patient={{
+        id: selPending?.conversations?.patients?.id,
+        full_name: selPending?.conversations?.patients?.full_name,
+        phone: selPending?.conversations?.patients?.phone || selPending?.patient_phone,
+      }}
+      currentAction={overrideAction || selPending.proposed_action}
+      currentText={draft}
+      services={services}
+      professionals={professionals}
+      sb={sb}
+      botFetch={(path, init) => botFetch(path, init)}
+      onCancel={()=> setActionEditorOpen(false)}
+      onConfirm={(newAction, newText) => {
+        setOverrideAction(newAction)
+        setDraft(newText)
+        setActionEditorOpen(false)
+        setToast({msg: `✓ Acción cambiada a ${newAction.type}. Aprueba para ejecutar.`, type:'ok'})
+      }}
+    />
   )}
 </div>
 }
