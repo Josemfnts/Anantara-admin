@@ -55,6 +55,10 @@ const META = {
   // Compuesta: cancelar la vieja + proponer la nueva. La monta el panel cuando
   // Marta corrige un cancelar_cita que era en realidad un cambio de fecha.
   reprogramar:                 { label: 'Reprogramar cita',         icon: '🔀', family: 'confirm' },
+  // Solo escribe `notes` de una cita existente: no toca fecha, hora, profesional
+  // ni estado. La usa el bot cuando el paciente dice para quién es la cita o que
+  // va otra persona en su lugar ("irá mi tía", "en mi lugar va mi cuñado Óscar").
+  anotar_cita:                 { label: 'Anotar en la cita',        icon: '📝', family: 'list' },
 }
 
 const DESTRUCTIVE = new Set(['cancelar_cita', 'descartar_propuesta', 'rechazar_propuesta'])
@@ -70,6 +74,7 @@ const LOOKUP_ID_FIELD = {
   descartar_propuesta:         'old_proposal_id',
   rechazar_propuesta:          'old_proposal_id',
   oferta_proactiva:            'appointment_id',
+  anotar_cita:                 'appointment_id',
 }
 
 export function isDestructiveAction(action) {
