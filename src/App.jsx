@@ -5,7 +5,12 @@ import { ActionEditorModal } from './components/ActionEditorModal.jsx'
 import { fClock, fClockDT } from './lib/datetime.js'
 import { moveItem } from './lib/listOrder.js'
 import { quickRepliesFor } from './lib/quickReplies.js'
-import { buildFollowupMessage, weekText } from './lib/followupMessage.js'
+import { buildFollowupMessage, weekText, buildNextAppointmentReminder } from './lib/followupMessage.js'
+import { importeCita, buildNoShowMessage } from './lib/noShow.js'
+import { parseCompanions, textoAcompanantes as textoAcompanantesPreview } from './lib/companions.js'
+import { AusenciasPage } from './components/AusenciasPage.jsx'
+import { BotMovil } from './components/BotMovil.jsx'
+import { AutonomiaPage } from './components/AutonomiaPage.jsx'
 import { conversationPayloadFor } from './lib/newConversation.js'
 import { ProposalCalendar } from './components/ProposalCalendar.jsx'
 
@@ -144,6 +149,8 @@ const NAV_GROUPS = [
   {label:'Principal',items:[{id:'dashboard',icon:'📊',label:'Dashboard'}]},
   {label:'Bot',items:[
     {id:'bot-coach',icon:'🤖',label:'Bot Coach'},
+    {id:'bot-movil',icon:'📱',label:'Bot móvil'},
+    {id:'autonomia',icon:'🎚',label:'Autonomía'},
     {id:'bot-nlu',icon:'🧠',label:'NLU Log'},
   ]},
   {label:'Osteopatía',items:[
@@ -165,6 +172,7 @@ const NAV_GROUPS = [
   ]},
   {label:'Administración',items:[
     {id:'facturacion',icon:'🧾',label:'Facturación'},
+    {id:'ausencias',icon:'🚫',label:'Ausencias'},
   ]},
 ]
 function Sidebar({page,onNav,open,onClose,onLogout,notifCount=0}){
@@ -315,7 +323,7 @@ function Dashboard({onNav}){
       sb.from('wait_queue').select('id,weeks_pautadas,created_at').eq('queue_type', 'waiting'),
       sb.from('wait_queue').select('id,weeks_pautadas,created_at').eq('queue_type', 'expedite'),
       sb.from('cancellation_holds').select('id,appointment_id,current_offer_id,appointments(starts_at,patients(full_name),professionals(name))').is('current_offer_id', null),
-      sb.from('appointments').select('id,status,services(price)')
+      sb.from('appointments').select('id,status,no_show_at,no_show_charge_pct,services(price)')
         .gte('starts_at', monthStart + 'T00:00:00').lte('starts_at', monthEnd + 'T23:59:59'),
     ])
 
@@ -368,7 +376,7 @@ function Dashboard({onNav}){
     const monthList = monthAppts.data || []
     const completed = monthList.filter(a => a.status === 'completed').length
     const cancelled = monthList.filter(a => a.status === 'cancelled').length
-    const revenue = monthList.filter(a => a.status === 'completed').reduce((s, a) => s + (a.services?.price || 0), 0)
+    const revenue = monthList.filter(a => a.status === 'completed').reduce((s, a) => s + importeCita(a), 0)
     setMonthly({ completed, cancelled, revenue })
 
     setLoading(false)
@@ -569,7 +577,10 @@ function Agenda(){
   const[patSearch,setPatSearch]=useState('')
   const[patResults,setPatResults]=useState([])
   const[selPat,setSelPat]=useState(null)
-  const[form,setForm]=useState({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:'',leave_pending:true})
+  // `svc_id:'custom'` = cita PERSONALIZADA: duración libre en tramos de 15 min y
+  // acompañantes. El titular sigue siendo un único paciente (decisión Josema):
+  // los acompañantes son solo nombres para que el recordatorio los mencione.
+  const[form,setForm]=useState({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:'',leave_pending:true,custom_min:60,companions:''})
   const[editNotes,setEditNotes]=useState('')
   const[editProfId,setEditProfId]=useState('')
   const[editPayment,setEditPayment]=useState('')
@@ -586,6 +597,15 @@ function Agenda(){
   const[followupWaitlist,setFollowupWaitlist]=useState(false)
   const[followupMessage,setFollowupMessage]=useState('')
   const[followupBusy,setFollowupBusy]=useState(false)
+  const[nextApptBusy,setNextApptBusy]=useState(false)
+  // Ausencias: la ventana que sale al marcar que el paciente no vino.
+  const[noShowOpen,setNoShowOpen]=useState(false)
+  const[noShowBusy,setNoShowBusy]=useState(false)
+  const[noShowCobrar,setNoShowCobrar]=useState(true)
+  const[noShowPct,setNoShowPct]=useState(50)
+  const[noShowMsg,setNoShowMsg]=useState('')
+  const[noShowTouched,setNoShowTouched]=useState(false)
+  const[noShowPlantilla,setNoShowPlantilla]=useState('')
   const[futureAppts,setFutureAppts]=useState([]) // citas futuras del paciente (para el cuadro de próxima cita)
   // Cuadro de oferta "Próxima cita": el bot reserva el candado y aquí Marta revisa/edita/envía.
   const[offerModal,setOfferModal]=useState(null)
@@ -614,7 +634,7 @@ function Agenda(){
     setLoading(true)
     const from=toK(days[0])+'T00:00:00', to=toK(days[days.length-1])+'T23:59:59'
     const[appts,profsR,blks,holdsR]=await Promise.all([
-      sb.from('appointments').select('id,starts_at,ends_at,status,patient_id,service_id,professional_id,notes,payment_method,reminder_sent_at,reminder_confirmed_at,proposed_until,followup_handled_at,patients(id,full_name,phone),services(name,duration_minutes),professionals(name)')
+      sb.from('appointments').select('id,starts_at,ends_at,status,patient_id,service_id,professional_id,notes,payment_method,reminder_sent_at,reminder_confirmed_at,proposed_until,followup_handled_at,no_show_at,no_show_charge_pct,patients(id,full_name,phone),services(name,price,duration_minutes),professionals(name)')
         .gte('starts_at',from).lte('starts_at',to),
       sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name',{ascending:false}),
       sb.from('blocked_slots').select('id,professional_id,starts_at,ends_at,reason')
@@ -781,6 +801,122 @@ function Agenda(){
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setToast({msg:'Recordatorio confirmado',type:'ok'})
     setModal(null); load()
+  }
+
+  // ─── Ausencias ────────────────────────────────────────────────────────────
+  // El paciente no vino y no avisó. Se marca la cita, se decide qué % se factura
+  // (a veces se perdona) y se le manda un mensaje que la secretaria puede editar.
+  const precioModal = () => modal?.services?.price ?? 0
+  const textoAusencia = (plantilla, pct, cobrar) => buildNoShowMessage(plantilla, {
+    dia: modal?.starts_at ? fD(modal.starts_at) : '',
+    hora: modal?.starts_at ? fTime(modal.starts_at) : '',
+    profesional: modal?.professionals?.name || '',
+    porcentaje: cobrar ? pct : 0,
+    importe: cobrar ? Math.round(precioModal() * (pct / 100) * 100) / 100 : 0,
+  })
+
+  const abrirAusencia = async () => {
+    setNoShowTouched(false)
+    let plantilla = ''
+    let pct = 50
+    try {
+      const { data } = await sb.from('bot_config').select('no_show_message,no_show_default_pct').limit(1).maybeSingle()
+      plantilla = data?.no_show_message || ''
+      pct = data?.no_show_default_pct ?? 50
+    } catch { /* si falla la config, se abre igual con la plantilla vacía */ }
+    setNoShowPct(pct)
+    setNoShowCobrar(true)
+    setNoShowMsg(textoAusencia(plantilla, pct, true))
+    setNoShowPlantilla(plantilla)
+    setNoShowOpen(true)
+  }
+
+  const confirmarAusencia = async ({ enviar }) => {
+    if (!modal?.id) return
+    setNoShowBusy(true)
+    try {
+      const pctFinal = noShowCobrar ? Math.max(0, Math.min(100, Number(noShowPct) || 0)) : 0
+      const { error } = await sb.from('appointments').update({
+        no_show_at: new Date().toISOString(),
+        no_show_charge_pct: pctFinal,
+      }).eq('id', modal.id)
+      if (error) throw new Error(error.message)
+
+      if (enviar && noShowMsg.trim()) {
+        const tel = (modal.patients?.phone || '').replace(/\D/g, '')
+        const chatId = `${tel.startsWith('34') ? tel : `34${tel}`}@c.us`
+        const r = await botFetch('/send-message', {
+          method: 'POST',
+          body: JSON.stringify({ chat_id: chatId, text: noShowMsg.trim(), by: 'secretaria' }),
+        })
+        // La ausencia YA está marcada: si falla el envío no la deshacemos, avisamos.
+        if (!r.ok) {
+          setToast({msg:'Ausencia marcada, pero el mensaje NO se envió: '+(await r.text()),type:'error'})
+          setNoShowOpen(false); setModal(null); await load()
+          return
+        }
+      }
+      setToast({msg: enviar ? 'Ausencia marcada y mensaje enviado' : 'Ausencia marcada', type:'ok'})
+      setNoShowOpen(false); setModal(null); await load()
+    } catch (e) {
+      setToast({msg:'Error al marcar la ausencia: '+e.message,type:'error'})
+    } finally {
+      setNoShowBusy(false)
+    }
+  }
+
+  const quitarAusencia = async () => {
+    if (!modal?.id) return
+    setNoShowBusy(true)
+    try {
+      const { error } = await sb.from('appointments').update({
+        no_show_at: null, no_show_charge_pct: null,
+      }).eq('id', modal.id)
+      if (error) throw new Error(error.message)
+      setToast({msg:'Ausencia deshecha',type:'ok'})
+      setModal(null); await load()
+    } catch (e) {
+      setToast({msg:'Error: '+e.message,type:'error'})
+    } finally { setNoShowBusy(false) }
+  }
+
+  // "Recordar la cita siguiente": para pacientes con citas recurrentes (una por
+  // semana) que YA tienen la siguiente dada. No se les asigna nada nuevo: se busca
+  // la próxima cita real y se prepara el recordatorio en el cuadro editable. Enviar
+  // y marcar como gestionada lo hace el botón Aceptar de siempre.
+  const handleRecordarSiguiente = async () => {
+    if (!modal?.patients?.id && !modal?.patient_id) {
+      setToast({msg:'No identifico al paciente de esta cita',type:'error'}); return
+    }
+    setNextApptBusy(true)
+    try {
+      const patientId = modal.patients?.id || modal.patient_id
+      const { data, error } = await sb.from('appointments')
+        .select('id, starts_at, status, professionals(name)')
+        .eq('patient_id', patientId)
+        .in('status', ['confirmed', 'pending'])
+        .gt('starts_at', localDT(new Date()))
+        .neq('id', modal.id)
+        .order('starts_at', { ascending: true })
+        .limit(1)
+        .maybeSingle()
+      if (error) throw new Error(error.message)
+      if (!data) {
+        setToast({msg:'Este paciente no tiene ninguna cita futura. Asígnale una primero.',type:'error'})
+        return
+      }
+      const texto = buildNextAppointmentReminder({
+        startsAt: data.starts_at,
+        profName: data.professionals?.name || null,
+      })
+      if (!texto) { setToast({msg:'No he podido leer la fecha de la próxima cita',type:'error'}); return }
+      setFollowupMessage(texto)
+      setToast({msg:'Recordatorio preparado. Revísalo y dale a Aceptar.',type:'ok'})
+    } catch (e) {
+      setToast({msg:'Error buscando la próxima cita: '+e.message,type:'error'})
+    } finally {
+      setNextApptBusy(false)
+    }
   }
 
   const handleAcceptFollowup = async () => {
@@ -1159,10 +1295,12 @@ function Agenda(){
     setToast({msg:'Esa cita no se puede cancelar',type:'error'})
   }
 
+
   const createAppt=async()=>{
     if(!selPat||!form.prof_id||!form.svc_id||!form.date||!form.time)return
-    const svc=services.find(s=>s.id===form.svc_id)
-    const dur=svc?.duration_minutes||60
+    const esCustom = form.svc_id==='custom'
+    const svc=esCustom?null:services.find(s=>s.id===form.svc_id)
+    const dur=esCustom?(Number(form.custom_min)||60):(svc?.duration_minutes||60)
     const startDT=new Date(`${form.date}T${form.time}:00`)
     const endDT=new Date(startDT.getTime()+dur*60000)
     // Blocked day check
@@ -1177,15 +1315,28 @@ function Agenda(){
     const proposedUntil = form.leave_pending
       ? localDT(new Date(Date.now() + 36 * 60 * 60 * 1000))
       : null
-    const{data:newAppt,error}=await sb.from('appointments').insert({
-      patient_id:selPat.id,professional_id:form.prof_id,service_id:form.svc_id,
+    const acompanantes = parseCompanions(form.companions)
+    const fila = {
+      // En personalizada no hay servicio: la duración la fija la secretaria.
+      patient_id:selPat.id,professional_id:form.prof_id,service_id:esCustom?null:form.svc_id,
       starts_at:localDT(startDT),ends_at:localDT(endDT),notes:form.notes||null,
       payment_method:form.payment_method||null,
       status,
       proposed_until: proposedUntil,
-    }).select('id').single()
+    }
+    if(acompanantes.length) fila.companions = acompanantes
+
+    let{data:newAppt,error}=await sb.from('appointments').insert(fila).select('id').single()
+    // Tolerancia al orden de despliegue: `companions` la añade el SQL 0016. Si el
+    // panel llega antes que la migración, guardamos la cita igual (sin acompañantes)
+    // en vez de perderla, y avisamos de por qué.
+    if(error && /companions/i.test(error.message||'')){
+      const {companions, ...sinComp} = fila            // eslint-disable-line no-unused-vars
+      ;({data:newAppt,error}=await sb.from('appointments').insert(sinComp).select('id').single())
+      if(!error) setToast({msg:'Cita creada, pero los acompañantes no se guardaron: falta aplicar sql/0016',type:'error'})
+    }
     if(error){setToast({msg:error.message,type:'error'});return}
-    setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:'',leave_pending:true})
+    setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:'',leave_pending:true,custom_min:60,companions:''})
     // Si se dejó en pending, notificar al paciente por WhatsApp
     if(status==='pending' && newAppt?.id){
       try{
@@ -1320,6 +1471,10 @@ function Agenda(){
     const proposedUntil = obj?.proposed_until
     const reminderConfirmedAt = obj?.reminder_confirmed_at
     if(status==='cancelled') return{bg:'#fee2e2',border:'#dc2626',text:'#7f1d1d'}  // rojo: cancelada
+    // AUSENCIA (no vino y no avisó). Estado propio, por delante de completed:
+    // una ausencia es siempre una cita pasada, y debe verse como ausencia, no como
+    // atendida. Rojo CLARO, distinguible del rojo fuerte de cancelada (decisión Josema).
+    if(obj?.no_show_at) return{bg:'#fecdd3',border:'#f87171',text:'#7f1d1d'}
     if(status==='completed') return obj?.followup_handled_at
       ? {bg:'#7c3aed',border:'#5b21b6',text:'#f5f3ff'}   // MORADO OSCURO: pasada + próxima cita gestionada (se dio a Aceptar)
       : {bg:'#e9d5ff',border:'#a855f7',text:'#581c87'}   // MORADO CLARO: cita pasada, sin gestionar
@@ -1536,8 +1691,51 @@ function Agenda(){
             onClick={()=>{setSelPat(p);setPatSearch('');setPatResults([])}}><strong>{p.full_name}</strong> <span style={{color:'var(--text-muted)'}}>{p.phone}</span></div>)}
         </div>}
       </div>
-      <Sel label="Profesional"value={form.prof_id}onChange={e=>setForm(f=>({...f,prof_id:e.target.value}))}options={[['','Seleccionar…'],...profs.map(p=>[p.id,p.name])]}/>
-      <Sel label="Servicio"value={form.svc_id}onChange={e=>setForm(f=>({...f,svc_id:e.target.value}))}options={[['','Seleccionar…'],...services.filter(s=>!s.professional_id||s.professional_id===form.prof_id).map(s=>[s.id,`${s.name} (${s.duration_minutes}min)`])]}/>
+      {/* Al elegir profesional se preselecciona su servicio de 1 HORA (orden de
+          Josema: "siempre preseleccionada en todos los sitios la de 1h, punto"). */}
+      <Sel label="Profesional"value={form.prof_id}onChange={e=>{
+        const prof_id=e.target.value
+        const suyos=services.filter(s=>!s.professional_id||s.professional_id===prof_id)
+        const unaHora=suyos.find(s=>s.duration_minutes===60)
+        setForm(f=>({...f,prof_id,svc_id:unaHora?unaHora.id:''}))
+      }}options={[['','Seleccionar…'],...profs.map(p=>[p.id,p.name])]}/>
+      <Sel label="Servicio"value={form.svc_id}onChange={e=>setForm(f=>({...f,svc_id:e.target.value}))}
+        options={[['','Seleccionar…'],
+          ...services.filter(s=>!s.professional_id||s.professional_id===form.prof_id).map(s=>[s.id,`${s.name} (${s.duration_minutes}min)`]),
+          ['custom','✏️ Personalizada (duración libre)']]}/>
+
+      {/* Personalizada: duración en tramos de 15 min. Sirve para citas de dos
+          personas seguidas (marido y mujer) sin tener que crear un servicio. */}
+      {form.svc_id==='custom' && (
+        <div style={{background:'var(--cream)',border:'1px solid var(--border)',borderRadius:'var(--radius-lg)',padding:'10px 12px',marginBottom:14}}>
+          <label className="field-label">Duración</label>
+          <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:4}}>
+            {[15,30,45,60,75,90,105,120].map(m=>(
+              <button key={m} type="button" onClick={()=>setForm(f=>({...f,custom_min:m}))}
+                style={{padding:'6px 12px',borderRadius:999,fontSize:12,cursor:'pointer',
+                  border:`1px solid ${form.custom_min===m?'var(--green)':'var(--border)'}`,
+                  background:form.custom_min===m?'var(--green)':'#fff',
+                  color:form.custom_min===m?'#fff':'var(--body)',fontWeight:form.custom_min===m?700:400}}>
+                {m<60?`${m} min`:m%60===0?`${m/60} h`:`${Math.floor(m/60)} h ${m%60}`}
+              </button>
+            ))}
+          </div>
+          <div style={{fontSize:11,color:'var(--text-muted)'}}>Sin servicio asociado: no suma importe a facturación.</div>
+        </div>
+      )}
+
+      {/* Acompañantes: NO son pacientes, solo nombres para el recordatorio. */}
+      <div className="field" style={{marginBottom:14}}>
+        <label className="field-label">Acompañantes (opcional)</label>
+        <input className="field-input" value={form.companions}
+          onChange={e=>setForm(f=>({...f,companions:e.target.value}))}
+          placeholder="Lucía, Pedro — separados por coma"/>
+        <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>
+          {parseCompanions(form.companions).length
+            ? `El recordatorio dirá "…tienes cita con ${profs.find(p=>p.id===form.prof_id)?.name||'el profesional'}${textoAcompanantesPreview(parseCompanions(form.companions))}".`
+            : 'Van con el titular pero no son pacientes. Solo se usan en el recordatorio.'}
+        </div>
+      </div>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
         <Inp label="Fecha"type="date"value={form.date}onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>
         <Sel label="Hora"value={form.time}onChange={e=>setForm(f=>({...f,time:e.target.value}))}options={[['','--:--'],...Array.from({length:(21-7)*2+2},(_,i)=>{const h=7+Math.floor(i/2),m=(i%2)*30;const v=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;return[v,v]}).filter(([v])=>v<='21:30')]}/>
@@ -1651,6 +1849,27 @@ function Agenda(){
         <textarea className="notes-area"value={editNotes}onChange={e=>setEditNotes(e.target.value)}placeholder="Observaciones del profesional…"/>
       </div>
 
+      {/* Asistencia — solo en citas pasadas. Una ausencia no es una cita atendida:
+          sale en rojo claro en la agenda y se factura solo el % que se decida. */}
+      {modal.status!=='cancelled' && (modal.status==='completed' || (modal.starts_at && modal.starts_at < localDT(new Date()))) ? (
+        <div style={{borderTop:'1px solid var(--border)',paddingTop:14,marginTop:14}}>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Asistencia</div>
+          {modal.no_show_at ? (
+            <div style={{background:'#fecdd3',border:'1px solid #f87171',borderRadius:'var(--radius-lg)',padding:'8px 12px',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+              <span style={{fontSize:12,color:'#7f1d1d',fontWeight:600}}>
+                🚫 No asistió · se factura el {modal.no_show_charge_pct ?? 0}%
+                {precioModal() ? ` (${importeCita(modal)} €)` : ''}
+              </span>
+              <Btn variant="ghost" disabled={noShowBusy} onClick={quitarAusencia}
+                style={{marginLeft:'auto',padding:'4px 10px',fontSize:11}}>Deshacer</Btn>
+            </div>
+          ) : (
+            <Btn variant="ghost" onClick={abrirAusencia} style={{width:'100%',fontSize:13}}
+              title="El paciente no vino y no avisó">🚫 Marcar ausencia</Btn>
+          )}
+        </div>
+      ) : null}
+
       {/* Próxima cita (follow-up) — solo si la cita es del pasado o completed */}
       {modal.status==='completed' || (modal.starts_at && modal.starts_at < localDT(new Date())) ? (
         <div style={{borderTop:'1px solid var(--border)',paddingTop:14,marginTop:14}}>
@@ -1715,6 +1934,18 @@ function Agenda(){
             Meter en lista de espera
           </label>
 
+          {/* Recordar la cita que YA tiene (pacientes con citas recurrentes: se les
+              da una a la semana y solo hay que recordarles la siguiente, no asignar
+              nada nuevo). Rellena el cuadro; el botón Aceptar de abajo la envía y
+              marca la cita pasada como gestionada (morado oscuro), igual que el resto. */}
+          <div style={{marginBottom:10}}>
+            <Btn variant="ghost" disabled={nextApptBusy} style={{width:'100%',fontSize:13}}
+              onClick={handleRecordarSiguiente}
+              title="Busca la próxima cita del paciente y prepara el recordatorio">
+              {nextApptBusy ? 'Buscando…' : '🔔 Recordar la cita siguiente'}
+            </Btn>
+          </div>
+
           {/* Mensaje editable */}
           <div className="field" style={{marginBottom:10}}>
             <label className="field-label">Mensaje para el paciente</label>
@@ -1763,6 +1994,65 @@ function Agenda(){
       <div style={{display:'flex',gap:10,marginTop:10}}>
         <Btn variant="ghost"onClick={()=>setModal(null)}style={{flex:1}}>Cerrar</Btn>
         <Btn onClick={saveApptChanges}disabled={saving}style={{flex:1}}>{saving?'Guardando…':'Guardar cambios'}</Btn>
+      </div>
+    </Modal>}
+
+    {/* Ausencia: mensaje editable + decidir si se cobra. Sale al marcar que no vino. */}
+    {noShowOpen&&modal&&<Modal title="Marcar ausencia"onClose={()=>setNoShowOpen(false)}>
+      <div style={{fontSize:13,marginBottom:12,color:'var(--text-muted)'}}>
+        {modal.patients?.full_name||'Paciente'} · cita del {fD(modal.starts_at)} a las {fTime(modal.starts_at)}
+        {modal.professionals?.name?` con ${modal.professionals.name}`:''}
+      </div>
+
+      {/* Cobrar o perdonar */}
+      <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginBottom:10,cursor:'pointer'}}>
+        <input type="checkbox" checked={noShowCobrar} style={{cursor:'pointer'}}
+          onChange={e=>{
+            const c=e.target.checked
+            setNoShowCobrar(c)
+            if(!noShowTouched) setNoShowMsg(textoAusencia(noShowPlantilla,noShowPct,c))
+          }}/>
+        Cobrar la ausencia
+      </label>
+
+      {noShowCobrar && (
+        <div className="field" style={{marginBottom:10}}>
+          <label className="field-label">% de la cita que se factura</label>
+          <div style={{display:'flex',alignItems:'center',gap:10}}>
+            <input className="field-input" type="number" min={0} max={100} step={5} value={noShowPct}
+              style={{width:110}}
+              onChange={e=>{
+                const v=e.target.value===''?'':Math.max(0,Math.min(100,Number(e.target.value)))
+                setNoShowPct(v)
+                if(!noShowTouched) setNoShowMsg(textoAusencia(noShowPlantilla,v||0,true))
+              }}/>
+            <span style={{fontSize:12,color:'var(--text-muted)'}}>
+              {precioModal()
+                ? `${Math.round(precioModal()*((Number(noShowPct)||0)/100)*100)/100} € de ${precioModal()} €`
+                : 'el servicio no tiene precio'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      <div className="field" style={{marginBottom:6}}>
+        <label className="field-label">Mensaje para el paciente</label>
+        <textarea className="notes-area" rows={4} value={noShowMsg}
+          placeholder="Escribe el mensaje que se enviará…"
+          onChange={e=>{setNoShowMsg(e.target.value);setNoShowTouched(true)}}/>
+      </div>
+      <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:12}}>
+        La plantilla se edita en la pantalla de Ausencias.
+        {noShowTouched && ' · Has editado el texto: ya no se regenera solo.'}
+      </div>
+
+      <div style={{display:'flex',gap:8}}>
+        <Btn variant="ghost" disabled={noShowBusy} onClick={()=>confirmarAusencia({enviar:false})} style={{flex:1}}>
+          Marcar sin avisar
+        </Btn>
+        <Btn disabled={noShowBusy||!noShowMsg.trim()} onClick={()=>confirmarAusencia({enviar:true})} style={{flex:1}}>
+          {noShowBusy?'Guardando…':'Marcar y enviar'}
+        </Btn>
       </div>
     </Modal>}
 
@@ -3729,7 +4019,7 @@ function Facturacion(){
     if(!from||!to)return
     setLoading(true)
     const{data,error}=await sb.from('appointments')
-      .select('id,starts_at,status,payment_method,notes,patients(id,full_name),services(name,price,duration_minutes)')
+      .select('id,starts_at,status,payment_method,notes,no_show_at,no_show_charge_pct,patients(id,full_name),services(name,price,duration_minutes)')
       .gte('starts_at',from+'T00:00:00').lte('starts_at',to+'T23:59:59')
       .neq('status','cancelled').order('starts_at')
     setLoading(false)
@@ -3741,7 +4031,7 @@ function Facturacion(){
   useEffect(()=>{load()},[load])
 
   const selArr=appts.filter(a=>selected.has(a.id))
-  const totalAmt=selArr.reduce((s,a)=>s+(a.services?.price||0),0)
+  const totalAmt=selArr.reduce((s,a)=>s+(importeCita(a)),0)
   const handlePct=v=>{pctRef.current=v;setPct(v);setSelected(distribute(appts,v))}
   const toggle=id=>setSelected(prev=>{const s=new Set(prev);s.has(id)?s.delete(id):s.add(id);return s})
 
@@ -3789,7 +4079,7 @@ function Facturacion(){
           a.patients?.full_name||'—','',
           a.services?.name||'Sesión',
           a.services?.duration_minutes||60,
-          a.services?.price||0,
+          importeCita(a),
           PAY[a.payment_method]||a.payment_method||'',
           STATUS_TXT[a.status]||a.status||'',
           a.notes||'',
@@ -3822,7 +4112,7 @@ function Facturacion(){
       addH2('DESGLOSE POR FORMA DE PAGO')
       ws2.addRow(['Forma de pago','Nº sesiones','Importe (€)','% del total']).eachCell(c=>{c.font={name:'Arial',bold:true,size:10}})
       const byPay={}
-      for(const a of selArr){const p=PAY[a.payment_method]||a.payment_method||'No especificado';if(!byPay[p])byPay[p]={n:0,amt:0};byPay[p].n++;byPay[p].amt+=(a.services?.price||0)}
+      for(const a of selArr){const p=PAY[a.payment_method]||a.payment_method||'No especificado';if(!byPay[p])byPay[p]={n:0,amt:0};byPay[p].n++;byPay[p].amt+=(importeCita(a))}
       for(const[p,{n,amt}]of Object.entries(byPay)){
         const r=ws2.addRow([p,n,amt,totalAmt?`${Math.round(amt/totalAmt*100)}%`:'—'])
         r.eachCell(c=>{c.font=dFont});r.getCell(3).numFmt='#,##0.00 €'
@@ -3831,7 +4121,7 @@ function Facturacion(){
       addH2('DESGLOSE MENSUAL')
       ws2.addRow(['Mes','Nº sesiones','Importe (€)']).eachCell(c=>{c.font={name:'Arial',bold:true,size:10}})
       const byMon={}
-      for(const a of selArr){const k=a.starts_at.slice(0,7);if(!byMon[k])byMon[k]={n:0,amt:0};byMon[k].n++;byMon[k].amt+=(a.services?.price||0)}
+      for(const a of selArr){const k=a.starts_at.slice(0,7);if(!byMon[k])byMon[k]={n:0,amt:0};byMon[k].n++;byMon[k].amt+=(importeCita(a))}
       for(const[k,{n,amt}]of Object.entries(byMon).sort()){
         const[y,m]=k.split('-')
         const lbl=`${MONTHS[Number(m)-1].charAt(0).toUpperCase()+MONTHS[Number(m)-1].slice(1)} ${y}`
@@ -3848,7 +4138,7 @@ function Facturacion(){
         .eachCell(c=>{c.font={name:'Arial',bold:true,size:12,color:{argb:'FFFFFFFF'}};c.fill=hFill})
       ws3.addRow([])
       const pagadas=selArr.filter(a=>a.status==='confirmed'||a.status==='completed')
-      const totPag=pagadas.reduce((s,a)=>s+(a.services?.price||0),0)
+      const totPag=pagadas.reduce((s,a)=>s+(importeCita(a)),0)
       const add3=(l,v,bold=false,nf=null,yfill=false)=>{
         const r=ws3.addRow([l,v]);r.eachCell(c=>{c.font={name:'Arial',bold:!!bold,size:10}})
         if(nf)r.getCell(2).numFmt=nf
@@ -3859,7 +4149,7 @@ function Facturacion(){
       ws3.addRow(['DESGLOSE MENSUAL']).eachCell(c=>{c.font={name:'Arial',bold:true,size:10};c.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFE0E8F0'}}})
       ws3.addRow(['Mes','Nº sesiones','Ingresos (€)']).eachCell(c=>{c.font={name:'Arial',bold:true,size:10}})
       const byMonG={}
-      for(const a of pagadas){const k=a.starts_at.slice(0,7);if(!byMonG[k])byMonG[k]={n:0,amt:0};byMonG[k].n++;byMonG[k].amt+=(a.services?.price||0)}
+      for(const a of pagadas){const k=a.starts_at.slice(0,7);if(!byMonG[k])byMonG[k]={n:0,amt:0};byMonG[k].n++;byMonG[k].amt+=(importeCita(a))}
       for(const[k,{n,amt}]of Object.entries(byMonG).sort()){
         const[y,m]=k.split('-')
         const r=ws3.addRow([`${MONTHS[Number(m)-1].charAt(0).toUpperCase()+MONTHS[Number(m)-1].slice(1)} ${y}`,n,amt])
@@ -3983,7 +4273,10 @@ function Facturacion(){
                 <td style={{padding:'8px 12px',fontWeight:600}}>{a.patients?.full_name||'—'}</td>
                 <td style={{padding:'8px 12px'}}>{a.services?.name||'—'}</td>
                 <td style={{padding:'8px 12px',whiteSpace:'nowrap',fontWeight:700,color:'var(--green)'}}>
-                  {a.services?.price!=null?`${a.services.price} €`:'—'}
+                  {/* Importe REALMENTE facturado: en una ausencia es el % que se
+                      decidió cobrar, no el precio entero del servicio. */}
+                  {a.services?.price!=null?`${importeCita(a)} €`:'—'}
+                  {a.no_show_at && <span style={{marginLeft:6,fontSize:10,fontWeight:700,color:'#b91c1c'}}>ausencia {a.no_show_charge_pct ?? 0}%</span>}
                 </td>
                 <td style={{padding:'8px 12px',color:a.payment_method?'var(--text)':'var(--text-muted)',fontStyle:a.payment_method?'normal':'italic'}}>
                   {PAY[a.payment_method]||a.payment_method||'—'}
@@ -4086,6 +4379,10 @@ function BotCoach() {
   const [pendingsData, setPendingsData] = useState(null)  // { patients: [...], total_patients }
   const [pendingsLoading, setPendingsLoading] = useState(false)
   const [pendingsExpanded, setPendingsExpanded] = useState(() => new Set())
+  // Caja del hilo de mensajes. Hasta ahora no había NADA de scroll: al abrir una
+  // conversación se quedaba arriba y Marta tenía que bajar a mano cada vez para
+  // ver el último mensaje. Con la ref bajamos la caja, no la página.
+  const threadBoxRef = useRef(null)
   const selConvRef = useRef(selConvId)
   const convFilteredRef = useRef([])
   const pendingByConvRef = useRef({})
@@ -4180,6 +4477,16 @@ function BotCoach() {
     setThread(data || [])
   }, [])
   useEffect(() => { reloadThread(selConvId) }, [selConvId, reloadThread])
+
+  // Ir SIEMPRE al último mensaje: al abrir una conversación y cuando llega uno
+  // nuevo. requestAnimationFrame para que el navegador ya haya pintado las
+  // burbujas (si no, scrollHeight aún es el de antes y se queda a medias).
+  useEffect(() => {
+    const box = threadBoxRef.current
+    if (!box) return
+    const id = requestAnimationFrame(() => { box.scrollTop = box.scrollHeight })
+    return () => cancelAnimationFrame(id)
+  }, [selConvId, thread.length])
 
   // Mensajes recientes para la vista Monitor (últimos por conversación)
   const loadGridMsgs = useCallback(async () => {
@@ -4890,7 +5197,7 @@ function BotCoach() {
             })}
           </div>
     ) : (
-    <div style={{display:'flex',height:'calc(100vh - 300px)',minHeight:440,border:'1px solid var(--border)',borderRadius:12,overflow:'hidden',background:'#fff'}}>
+    <div style={{display:'flex',height:'calc(100vh - 190px)',minHeight:620,border:'1px solid var(--border)',borderRadius:12,overflow:'hidden',background:'#fff'}}>
 
       {newConvOpen && (
         <Modal title="Nueva conversación" onClose={()=>{ setNewConvOpen(false); setNewConvQuery(''); setNewConvResults([]) }}>
@@ -4983,7 +5290,7 @@ function BotCoach() {
             </div>
 
             {/* Hilo de mensajes */}
-            <div style={{flex:1,overflowY:'auto',padding:16,background:'var(--cream)',display:'flex',flexDirection:'column',gap:8}}>
+            <div ref={threadBoxRef} style={{flex:1,overflowY:'auto',padding:16,background:'var(--cream)',display:'flex',flexDirection:'column',gap:8}}>
               {thread.length===0
                 ? <div style={{margin:'auto',fontSize:12,color:'var(--text-muted)'}}>Sin mensajes guardados todavía</div>
                 : thread.map(m => {
@@ -5017,6 +5324,21 @@ function BotCoach() {
                   <button onClick={()=>{ setOverrideAction(null); setDraft(selPending.proposed_text || '') }}
                     style={{marginLeft:'auto',fontSize:11,padding:'2px 8px',border:'1px solid #92400e',background:'#fff',color:'#92400e',borderRadius:999,cursor:'pointer'}}>
                     Descartar cambio
+                  </button>
+                </div>
+              )}
+              {/* Sin acción propuesta: el bot solo iba a escribir texto. Antes aquí no
+                  se pintaba NADA y Marta no tenía forma de corregirlo — justo el caso
+                  en que el bot falla POR no hacer nada (ej. "en mi lugar irá mi cuñado
+                  Óscar": contestó sin ejecutar ninguna acción). El botón abre el mismo
+                  modal, que ya arranca en blanco si no hay acción previa. */}
+              {selPending && !selPending.proposed_action && !overrideAction && (
+                <div style={{border:'1px dashed var(--border)',background:'var(--cream)',borderRadius:'var(--radius-lg)',padding:'6px 12px',marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
+                  <span style={{fontSize:14}}>🗒</span>
+                  <span style={{fontSize:12,color:'var(--text-muted)'}}>Sin acción: el bot solo responde con texto, no toca la agenda.</span>
+                  <button onClick={()=>setActionEditorOpen(true)} title="Añadir una acción que el bot no propuso (reservar, cancelar, anotar…)"
+                    style={{marginLeft:'auto',fontSize:11,padding:'3px 8px',border:'1px solid var(--text-muted)',background:'#fff',color:'var(--body)',borderRadius:999,cursor:'pointer',whiteSpace:'nowrap'}}>
+                    ✏️ Añadir acción
                   </button>
                 </div>
               )}
@@ -5396,14 +5718,24 @@ function BotNlu() {
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
-const PAGE_TITLES={dashboard:'Dashboard',agenda:'Agenda',horarios:'Horarios',bloqueados:'Días bloqueados',espera:'Lista de espera',yoga:'Yoga',escalada:'Escalada',belleza:'Belleza',pacientes:'Pacientes',servicios:'Servicios',profesionales:'Profesionales',facturacion:'Facturación','bot-coach':'Bot Coach','bot-nlu':'NLU Log'}
+const PAGE_TITLES={dashboard:'Dashboard',agenda:'Agenda',horarios:'Horarios',bloqueados:'Días bloqueados',espera:'Lista de espera',yoga:'Yoga',escalada:'Escalada',belleza:'Belleza',pacientes:'Pacientes',servicios:'Servicios',profesionales:'Profesionales',facturacion:'Facturación',ausencias:'Ausencias',autonomia:'Autonomía del bot','bot-coach':'Bot Coach','bot-nlu':'NLU Log'}
 
 export default function App(){
   const[user,setUser]=useState(null)
   const[authLoading,setAuthLoading]=useState(true)
-  const[page,setPage]=useState('dashboard')
+  // La PWA arranca en /?page=bot-movil (start_url del manifest): así el icono de
+  // la pantalla de inicio abre directamente el Bot móvil, no el panel.
+  const[page,setPage]=useState(()=>{
+    try{
+      const p=new URLSearchParams(window.location.search).get('page')
+      return p==='bot-movil'?'bot-movil':'dashboard'
+    }catch{ return 'dashboard' }
+  })
   const[sidebarOpen,setSidebarOpen]=useState(false)
   const[notifCount,setNotifCount]=useState(0)
+  // Toast a nivel raíz: las pantallas que viven como componente aparte (Ausencias)
+  // no tienen el suyo. Las que ya lo tenían dentro siguen igual.
+  const[rootToast,setRootToast]=useState(null)
 
   useEffect(()=>{
     sb.auth.getSession().then(({data})=>{
@@ -5541,13 +5873,24 @@ export default function App(){
       case 'profesionales': return<Profesionales/>
       case 'servicios':     return<Servicios/>
       case 'facturacion':   return<Facturacion/>
+      case 'ausencias':     return<AusenciasPage sb={sb} onToast={setRootToast}/>
       case 'bot-coach':     return<BotCoach/>
+      case 'autonomia':     return<AutonomiaPage sb={sb} onToast={setRootToast}/>
       case 'bot-nlu':       return<BotNlu/>
       default:              return<Dashboard onNav={navigate}/>
     }
   }
 
+  // Bot móvil: a PANTALLA COMPLETA, fuera del Layout. Es el requisito de Josema
+  // ("que se vea como WhatsApp, sin nada de por medio raro"): con la barra lateral
+  // y la cabecera del panel encima no se parecería a WhatsApp ni de lejos.
+  if(page==='bot-movil') return<>
+    <BotMovil sb={sb} botFetch={botFetch}/>
+    {rootToast&&<Toast msg={rootToast.msg}type={rootToast.type}onDone={()=>setRootToast(null)}/>}
+  </>
+
   return<Layout title={PAGE_TITLES[page]||'Panel'}page={page}onNav={navigate}sidebarOpen={sidebarOpen}onToggleSidebar={setSidebarOpen}notifCount={notifCount}alerts={alerts}alertsUnread={alertsUnread}onAlertsSeen={markAlertsSeen}onLogout={logout}>
     {renderPage()}
+    {rootToast&&<Toast msg={rootToast.msg}type={rootToast.type}onDone={()=>setRootToast(null)}/>}
   </Layout>
 }
