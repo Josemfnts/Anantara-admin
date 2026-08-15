@@ -150,14 +150,13 @@ const NAV_GROUPS = [
   {label:'Bot',items:[
     {id:'bot-coach',icon:'🤖',label:'Bot Coach'},
     {id:'bot-movil',icon:'📱',label:'Bot móvil'},
-    {id:'autonomia',icon:'🎚',label:'Autonomía'},
-    {id:'bot-nlu',icon:'🧠',label:'NLU Log'},
   ]},
   {label:'Osteopatía',items:[
     {id:'agenda',icon:'📅',label:'Agenda'},
     {id:'horarios',icon:'🕐',label:'Horarios'},
     {id:'bloqueados',icon:'🚫',label:'Días bloqueados'},
     {id:'espera',icon:'⏳',label:'Listas'},
+    {id:'ausencias',icon:'🚫',label:'Ausencias'},
   ]},
   {label:'Clases',items:[
     // Yoga oculto temporalmente: de momento (y para largo) no hay clases de yoga.
@@ -172,7 +171,12 @@ const NAV_GROUPS = [
   ]},
   {label:'Administración',items:[
     {id:'facturacion',icon:'🧾',label:'Facturación'},
-    {id:'ausencias',icon:'🚫',label:'Ausencias'},
+  ]},
+  // Al final del todo y en su propio grupo: son pantallas de ajuste y
+  // diagnóstico, no de trabajo diario. Orden pedido por Josema.
+  {label:'Avanzado',items:[
+    {id:'autonomia',icon:'🎚',label:'Autonomía'},
+    {id:'bot-nlu',icon:'🧠',label:'NLU Log'},
   ]},
 ]
 function Sidebar({page,onNav,open,onClose,onLogout,notifCount=0}){

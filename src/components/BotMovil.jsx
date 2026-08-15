@@ -22,17 +22,23 @@
 //     verdict='pending' — la propuesta que el bot tiene lista para revisar.
 //
 // Acciones (botFetch, endpoints ya existentes en el bot):
-//   - POST /send-validated  { review_id, verdict:'sent'|'modified', final_text, action_approved:true }
-//   - POST /reject          { review_id, rejection_reason }
+//   - POST /send-validated  { review_id, verdict, final_text, final_action, action_approved, reviewed_by }
+//   - POST /reject-proposal { review_id, reviewed_by, rejection_reason }
 //   - POST /send-message    { chat_id, text, by:'secretaria' }
-//   "Yo me ocupo" usa el mismo /reject (no hay endpoint propio en el contrato
-//   de esta pantalla): descarta la propuesta con un motivo distinto, para que
-//   quede registrado que la secretaria decidió llevarlo ella a mano. No hace
-//   la limpieza extra de procesos automáticos que sí hace el takeover del
-//   Bot Coach (pending_searches, wait_queue…) — eso no está en este contrato.
+//
+//   OJO: el endpoint de rechazo es /reject-proposal. NO existe /reject — usarlo
+//   da 404 en silencio (pasó al crear esta pantalla).
+//   final_action y action_approved van SIEMPRE juntos: sin final_action el bot
+//   envía el texto pero NO ejecuta la acción, y la cita se queda sin tocar.
+//
+//   "Yo me ocupo" usa /reject-proposal con un motivo distinto, para que quede
+//   registrado que la secretaria lo lleva a mano. No hace la limpieza extra de
+//   procesos automáticos del takeover de Bot Coach (pending_searches, wait_queue…).
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fClock } from '../lib/datetime.js'
+import { describeProposedAction, isDestructiveAction, actionLookupId } from '../lib/proposedAction.js'
+import { quickRepliesFor } from '../lib/quickReplies.js'
 
 // ─── Paleta WhatsApp adaptada al verde del centro ─────────────────────────
 const HEADER_BG = '#1d5c2e'
@@ -118,6 +124,10 @@ export function BotMovil({ sb, botFetch }) {
   const [actionError, setActionError] = useState(null)
   const [freeText, setFreeText] = useState('')
   const [sendingFree, setSendingFree] = useState(false)
+  const [actionDesc, setActionDesc] = useState(null)          // tarjeta de la acción propuesta (ver proposedAction.js)
+  const [manualMode, setManualMode] = useState(false)          // true: fuerza la caja de texto libre aunque haya propuesta pendiente
+  const [confirmDelete, setConfirmDelete] = useState(false)    // confirmación propia de borrado (nunca window.confirm)
+  const [deletingConv, setDeletingConv] = useState(false)
 
   const selectedConvIdRef = useRef(null)
   useEffect(() => { selectedConvIdRef.current = selectedConv?.id || null }, [selectedConv])
@@ -226,6 +236,8 @@ export function BotMovil({ sb, botFetch }) {
     setView('chat')
     setActionError(null)
     setFreeText('')
+    setConfirmDelete(false)
+    setManualMode(false)
     loadThread(conv.id)
   }
 
@@ -234,6 +246,14 @@ export function BotMovil({ sb, botFetch }) {
     setSelectedConv(null)
     setMessages([])
     setActionError(null)
+    setConfirmDelete(false)
+    setManualMode(false)
+  }
+
+  // Salida al panel normal (problema 2): el arquitecto lee `?page=bot-movil` al
+  // arrancar, así que navegar a la raíz vuelve al panel de Marta.
+  const exitToPanel = () => {
+    window.location.href = '/'
   }
 
   // Abre siempre abajo del todo, como WhatsApp: al abrir el chat y al llegar
@@ -254,7 +274,37 @@ export function BotMovil({ sb, botFetch }) {
 
   useEffect(() => {
     setProposalDraft(pendingForSelected?.proposed_text || '')
+    setManualMode(false)
   }, [pendingForSelected])
+
+  // Resuelve la tarjeta de la acción propuesta (icono, etiqueta, día/hora/profesional),
+  // igual que Bot Coach (ver src/lib/proposedAction.js): si el tipo depende de un id
+  // (cancelar_cita, confirmar_propuesta…) se busca la cita en `appointments`; si no
+  // se encuentra, se marca `unresolved` y NUNCA se inventa la identidad de la cita.
+  useEffect(() => {
+    const act = pendingForSelected?.proposed_action
+    if (!act) { setActionDesc(null); return }
+    const patientName = selectedConv?.patients?.full_name || act.patient_name || null
+    let cancelled = false
+    ;(async () => {
+      const apptId = actionLookupId(act)
+      let appt = null
+      if (apptId) {
+        const { data } = await sb.from('appointments')
+          .select('id, starts_at, status, professionals(name), services(name, duration_minutes)')
+          .eq('id', apptId).maybeSingle()
+        appt = data || null
+      }
+      if (cancelled) return
+      setActionDesc(describeProposedAction(act, { patientName, appt }))
+    })()
+    return () => { cancelled = true }
+  }, [pendingForSelected?.id, pendingForSelected?.proposed_action, selectedConv, sb])
+
+  // Solo UNA caja de texto activa a la vez (problema 3): si hay propuesta pendiente
+  // y la secretaria no ha pedido explícitamente escribir otro mensaje, se ve el
+  // borrador; si no, la caja libre.
+  const showProposalBox = !!pendingForSelected && !manualMode
 
   // ─── Acciones ──────────────────────────────────────────────────────────
   const sendProposal = async () => {
@@ -318,6 +368,29 @@ export function BotMovil({ sb, botFetch }) {
   const rejectProposal = () => rejectPendingWithReason('Rechazada desde Bot móvil')
   const takeover = () => rejectPendingWithReason('Yo me ocupo (secretaria, desde Bot móvil)')
 
+  // Borra la conversación y su historial (problema 5): primero las reviews de esa
+  // conversación, luego la conversación (los mensajes caen por CASCADE) — mismo
+  // orden que usa Bot Coach. La confirmación es el overlay propio de la cabecera
+  // del chat, nunca window.confirm.
+  const deleteConversation = async () => {
+    if (!selectedConv) return
+    setDeletingConv(true); setActionError(null)
+    try {
+      await sb.from('bot_coach_reviews').delete().eq('conversation_id', selectedConv.id)
+      const { error } = await sb.from('conversations').delete().eq('id', selectedConv.id)
+      if (error) throw error
+      setConfirmDelete(false)
+      goBack()
+      loadConversations()
+      loadPendingReviews()
+    } catch (e) {
+      setConfirmDelete(false)
+      setActionError(e?.message || 'No se pudo borrar la conversación')
+    } finally {
+      setDeletingConv(false)
+    }
+  }
+
   const sendFreeText = async () => {
     const text = freeText.trim()
     if (!text || !selectedConv) return
@@ -350,8 +423,15 @@ export function BotMovil({ sb, botFetch }) {
   }, [conversations, search])
 
   // ─── Estilos base (inline: esta pantalla no toca App.css) ─────────────
+  // `inset:0` ya fija top/right/bottom/left a 0, así que el contenedor ocupa
+  // SIEMPRE el viewport real, incluso cuando la barra de direcciones del móvil
+  // aparece o desaparece. Fijar ADEMÁS `height:100dvh` sobre-restringe el cálculo
+  // CSS (top + height + bottom, los tres fijados a la vez): el navegador ignora
+  // `bottom:0` para respetar `height`, y si 100dvh no coincide exactamente con el
+  // viewport visible en ese momento, queda un hueco muerto abajo (problema 4).
+  // Sin `height` explícita, `bottom:0` manda y el hueco desaparece.
   const screenStyle = {
-    position: 'fixed', inset: 0, height: '100dvh', width: '100%',
+    position: 'fixed', inset: 0, width: '100%',
     display: 'flex', flexDirection: 'column', overflow: 'hidden',
     background: THREAD_BG, fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
   }
@@ -368,7 +448,18 @@ export function BotMovil({ sb, botFetch }) {
     return (
       <div style={screenStyle}>
         <div style={headerStyle}>
-          <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 10 }}>Anantara</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
+            <div style={{ fontSize: 20, fontWeight: 700 }}>Anantara</div>
+            <button
+              onClick={exitToPanel}
+              style={{
+                minHeight: 36, background: 'rgba(255,255,255,0.16)', color: '#fff', border: 'none',
+                borderRadius: 8, fontSize: 13, fontWeight: 600, padding: '0 12px', cursor: 'pointer',
+              }}
+            >
+              ← Salir al panel
+            </button>
+          </div>
           <input
             type="text"
             value={search}
@@ -457,11 +548,49 @@ export function BotMovil({ sb, botFetch }) {
         >
           ←
         </button>
-        <div style={{ minWidth: 0 }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ fontSize: 17, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
           <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.8)' }}>{selectedConv?.phone || ''}</div>
         </div>
+        <button
+          onClick={() => setConfirmDelete(true)}
+          aria-label="Borrar conversación"
+          title="Borrar conversación"
+          style={{ width: 40, height: 40, flexShrink: 0, background: 'rgba(255,255,255,0.14)', border: 'none', borderRadius: 8, color: '#fff', fontSize: 17, cursor: 'pointer' }}
+        >
+          🗑
+        </button>
       </div>
+
+      {confirmDelete && (
+        <div style={{
+          position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 20,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+        }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 18, maxWidth: 320, width: '100%' }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#111b21', marginBottom: 8 }}>¿Borrar esta conversación?</div>
+            <div style={{ fontSize: 14, color: '#4b5563', marginBottom: 16 }}>
+              Se borra todo su historial y las propuestas pendientes de esta conversación. No se puede deshacer.
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                onClick={() => setConfirmDelete(false)}
+                disabled={deletingConv}
+                style={{ flex: 1, minHeight: 44, background: '#fff', color: '#374151', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 15, fontWeight: 600 }}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={deleteConversation}
+                disabled={deletingConv}
+                style={{ flex: 1, minHeight: 44, background: '#dc2626', color: '#fff', border: 'none', borderRadius: 8, fontSize: 15, fontWeight: 700, opacity: deletingConv ? 0.6 : 1 }}
+              >
+                {deletingConv ? 'Borrando…' : 'Borrar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div ref={threadBoxRef} style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', padding: '10px 0' }}>
         {loadingThread ? <Spinner /> : threadError ? (
@@ -500,9 +629,26 @@ export function BotMovil({ sb, botFetch }) {
       }}>
         {actionError && <ErrorBanner text={actionError} />}
 
-        {pendingForSelected && (
+        {/* Chips de respuesta rápida (src/lib/quickReplies.js), según la categoría de
+            la propuesta pendiente (genéricas si no hay). Sustituyen el texto de la
+            caja que esté activa en ese momento: borrador o mensaje libre. */}
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+          {quickRepliesFor(pendingForSelected ? pendingForSelected.category : null).map((qr, i) => (
+            <button
+              key={i}
+              onClick={() => (showProposalBox ? setProposalDraft(qr) : setFreeText(qr))}
+              style={{ padding: '5px 10px', borderRadius: 999, fontSize: 12, border: '1px solid #cbd5c0', background: '#fff', color: '#33403a', cursor: 'pointer' }}
+            >
+              {qr}
+            </button>
+          ))}
+        </div>
+
+        {/* Solo UNA caja de texto a la vez (problema 3): el borrador de la propuesta
+            O el mensaje libre, nunca los dos juntos. */}
+        {showProposalBox ? (
           <div style={{ background: '#fff', border: '1px solid #d6d6d6', borderRadius: 10, padding: 10, marginBottom: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: HEADER_BG, textTransform: 'uppercase', letterSpacing: 0.3 }}>
                 Propuesta del bot
               </span>
@@ -511,7 +657,53 @@ export function BotMovil({ sb, botFetch }) {
                   {pendingForSelected.category}
                 </span>
               )}
+              <button
+                onClick={() => setManualMode(true)}
+                style={{ marginLeft: 'auto', fontSize: 12, color: HEADER_BG, background: 'none', border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}
+              >
+                escribir otro mensaje
+              </button>
             </div>
+
+            {/* Tarjeta de la acción propuesta (problema 1): qué cita toca, para que la
+                secretaria no apruebe a ciegas. Mismo criterio que Bot Coach — ver
+                src/lib/proposedAction.js. isDestructiveAction se calcula aparte de
+                actionDesc para pintar en rojo desde el primer render, sin esperar al
+                lookup async de la cita. */}
+            {pendingForSelected.proposed_action ? (
+              (() => {
+                const destructive = isDestructiveAction(pendingForSelected.proposed_action)
+                const unresolved = !!actionDesc?.unresolved
+                const alert = destructive || unresolved
+                const bg = alert ? '#fef2f2' : '#f0fdf4'
+                const bd = alert ? '#fecaca' : '#bbf7d0'
+                const ac = alert ? '#dc2626' : HEADER_BG
+                return (
+                  <div style={{ border: `1px solid ${bd}`, background: bg, borderRadius: 8, padding: '8px 10px', marginBottom: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 14 }}>{actionDesc?.icon || '⚙️'}</span>
+                      <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.3, textTransform: 'uppercase', color: ac }}>
+                        {actionDesc?.label || pendingForSelected.proposed_action.type}
+                      </span>
+                      {destructive && (
+                        <span style={{ fontSize: 10, fontWeight: 700, color: '#fff', background: ac, borderRadius: 999, padding: '1px 7px' }}>
+                          acción real
+                        </span>
+                      )}
+                    </div>
+                    {unresolved
+                      ? <div style={{ fontSize: 13, fontWeight: 600, color: '#dc2626' }}>⚠️ No se pudo resolver la cita. No apruebes sin verificar.</div>
+                      : <div style={{ fontSize: 14, color: '#111b21' }}>{actionDesc?.line || '…'}</div>}
+                    {actionDesc?.note && <div style={{ fontSize: 12, color: '#b45309', marginTop: 2 }}>⚠ {actionDesc.note}</div>}
+                  </div>
+                )
+              })()
+            ) : (
+              <div style={{ fontSize: 13, color: '#6b7d6f', marginBottom: 8 }}>
+                Sin acción: solo texto.
+              </div>
+            )}
+
             <textarea
               value={proposalDraft}
               onChange={e => setProposalDraft(e.target.value)}
@@ -545,32 +737,41 @@ export function BotMovil({ sb, botFetch }) {
               </button>
             </div>
           </div>
+        ) : (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              type="text"
+              value={freeText}
+              onChange={e => setFreeText(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !sendingFree) sendFreeText() }}
+              placeholder="Escribe un mensaje"
+              style={{
+                flex: 1, minHeight: 44, fontSize: 16, border: '1px solid #ddd', borderRadius: 22,
+                padding: '0 16px', boxSizing: 'border-box',
+              }}
+            />
+            <button
+              onClick={sendFreeText}
+              disabled={sendingFree || !freeText.trim()}
+              aria-label="Enviar mensaje"
+              style={{
+                width: 44, height: 44, flexShrink: 0, borderRadius: '50%', border: 'none',
+                background: HEADER_BG, color: '#fff', fontSize: 18, opacity: (sendingFree || !freeText.trim()) ? 0.6 : 1,
+              }}
+            >
+              ➤
+            </button>
+          </div>
         )}
 
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input
-            type="text"
-            value={freeText}
-            onChange={e => setFreeText(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !sendingFree) sendFreeText() }}
-            placeholder="Escribe un mensaje"
-            style={{
-              flex: 1, minHeight: 44, fontSize: 16, border: '1px solid #ddd', borderRadius: 22,
-              padding: '0 16px', boxSizing: 'border-box',
-            }}
-          />
+        {pendingForSelected && !showProposalBox && (
           <button
-            onClick={sendFreeText}
-            disabled={sendingFree || !freeText.trim()}
-            aria-label="Enviar mensaje"
-            style={{
-              width: 44, height: 44, flexShrink: 0, borderRadius: '50%', border: 'none',
-              background: HEADER_BG, color: '#fff', fontSize: 18, opacity: (sendingFree || !freeText.trim()) ? 0.6 : 1,
-            }}
+            onClick={() => setManualMode(false)}
+            style={{ marginTop: 8, fontSize: 12, color: HEADER_BG, background: 'none', border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}
           >
-            ➤
+            ↩ volver a la propuesta del bot
           </button>
-        </div>
+        )}
       </div>
     </div>
   )
