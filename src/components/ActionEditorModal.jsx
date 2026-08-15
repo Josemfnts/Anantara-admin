@@ -315,11 +315,33 @@ export function ActionEditorModal({
           </label>
 
           {/* Aviso si el descriptor está incompleto */}
-          {!descriptor && (
-            <div style={{ fontSize: 12, color: '#b45309', background: '#fef3c7', border: '1px solid #fcd34d', padding: '6px 10px', borderRadius: 6 }}>
-              Faltan datos para guardar esta acción. Rellena los campos.
-            </div>
-          )}
+          {/* Decir QUÉ falta, no "rellena los campos". Un botón gris sin explicación
+              es un callejón sin salida: se pulsa, no pasa nada y no se sabe por qué.
+              Incluye el texto vacío, que también bloquea el guardado y antes no se
+              avisaba en ningún sitio. */}
+          {!canSave && (() => {
+            const falta = []
+            if (!descriptor) {
+              if (['proponer_cita', 'reprogramar'].includes(type)) {
+                if (!profId) falta.push('profesional')
+                if (!svcId) falta.push('servicio')
+                if (!slotIso) falta.push('día y hora')
+              }
+              if (['reprogramar', 'cancelar_cita', 'confirmar_propuesta', 'descartar_propuesta'].includes(type) && !selectedApptId) {
+                falta.push('la cita sobre la que actuar')
+              }
+              if (type === 'apuntar_lista_espera' || type === 'apuntar_lista_adelantar') {
+                if (!svcId) falta.push('servicio')
+              }
+              if (!falta.length) falta.push('algún dato de la acción')
+            }
+            if (!(text || '').trim()) falta.push('el mensaje para el paciente')
+            return (
+              <div style={{ fontSize: 12.5, color: '#b45309', background: '#fef3c7', border: '1px solid #fcd34d', padding: '8px 12px', borderRadius: 6 }}>
+                Para guardar falta: <strong>{falta.join(', ')}</strong>.
+              </div>
+            )
+          })()}
 
           {/* Botones */}
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>

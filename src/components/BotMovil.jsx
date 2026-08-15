@@ -39,6 +39,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fClock } from '../lib/datetime.js'
 import { describeProposedAction, isDestructiveAction, actionLookupId } from '../lib/proposedAction.js'
 import { quickRepliesFor } from '../lib/quickReplies.js'
+import { conversationPayloadFor } from '../lib/newConversation.js'
 
 // ─── Paleta WhatsApp adaptada al verde del centro ─────────────────────────
 const HEADER_BG = '#1d5c2e'
@@ -108,6 +109,14 @@ export function BotMovil({ sb, botFetch }) {
   const [pendingReviews, setPendingReviews] = useState([])  // filas pending completas
   const [pendingByConv, setPendingByConv] = useState({})    // conversation_id -> nº pendientes
   const [search, setSearch] = useState('')
+
+  // ─── Nueva conversación (capa "nuevo chat" estilo WhatsApp) ────────────
+  const [newChatOpen, setNewChatOpen] = useState(false)
+  const [newChatQuery, setNewChatQuery] = useState('')
+  const [newChatResults, setNewChatResults] = useState([])
+  const [newChatSearching, setNewChatSearching] = useState(false)
+  const [newChatError, setNewChatError] = useState(null)
+  const [creatingPatientId, setCreatingPatientId] = useState(null)
 
   // ─── Navegación lista / chat ───────────────────────────────────────────
   const [view, setView] = useState('list')            // 'list' | 'chat'
@@ -254,6 +263,77 @@ export function BotMovil({ sb, botFetch }) {
   // arrancar, así que navegar a la raíz vuelve al panel de Marta.
   const exitToPanel = () => {
     window.location.href = '/'
+  }
+
+  // ─── Nueva conversación ────────────────────────────────────────────────
+  const openNewChat = () => {
+    setNewChatOpen(true)
+    setNewChatQuery('')
+    setNewChatResults([])
+    setNewChatError(null)
+  }
+
+  const closeNewChat = () => {
+    setNewChatOpen(false)
+    setNewChatQuery('')
+    setNewChatResults([])
+    setNewChatError(null)
+    setCreatingPatientId(null)
+  }
+
+  // Busca pacientes según se escribe (mínimo 2 caracteres, ~300ms de retardo
+  // para no lanzar una consulta por tecla) — mismo patrón que Bot Coach
+  // (App.jsx, buscador de "Nueva conversación").
+  useEffect(() => {
+    const q = newChatQuery.trim()
+    if (q.length < 2) { setNewChatResults([]); setNewChatSearching(false); return }
+    setNewChatSearching(true)
+    const t = setTimeout(async () => {
+      try {
+        const { data, error } = await sb.from('patients')
+          .select('id, full_name, phone')
+          .or(`full_name.ilike.%${q}%,phone.ilike.%${q}%`)
+          .limit(6)
+        if (error) throw error
+        setNewChatResults(data || [])
+      } catch {
+        setNewChatResults([])
+      } finally {
+        setNewChatSearching(false)
+      }
+    }, 300)
+    return () => clearTimeout(t)
+  }, [newChatQuery, sb])
+
+  // Crea (o recupera, si ya existía) la conversación del paciente y la abre
+  // directamente. OJO: la crea el BOT vía /ensure-conversation — el panel no
+  // puede insertar en `conversations` por permisos (RLS). Mismo flujo que
+  // `startConversation` en App.jsx.
+  const startNewConversation = async (patient) => {
+    const payload = conversationPayloadFor(patient)
+    if (!payload) { setNewChatError('Ese paciente no tiene teléfono válido'); return }
+    setCreatingPatientId(patient.id); setNewChatError(null)
+    try {
+      const r = await botFetch('/ensure-conversation', {
+        method: 'POST',
+        body: JSON.stringify({ phone: payload.phone, patient_id: payload.patient_id }),
+      })
+      if (!r.ok) throw new Error(await r.text().catch(() => 'fallo al crear la conversación'))
+      const { conversation_id } = await r.json()
+      if (!conversation_id) throw new Error('El bot no devolvió la conversación')
+      const { data, error } = await sb.from('conversations')
+        .select('id, phone, patients(full_name), last_message_at')
+        .eq('id', conversation_id)
+        .maybeSingle()
+      if (error) throw error
+      closeNewChat()
+      await loadConversations()
+      openConversation(data || { id: conversation_id, phone: payload.phone, patients: { full_name: patient.full_name } })
+    } catch (e) {
+      setNewChatError(e?.message || 'No se pudo crear la conversación')
+    } finally {
+      setCreatingPatientId(null)
+    }
   }
 
   // Abre siempre abajo del todo, como WhatsApp: al abrir el chat y al llegar
@@ -460,18 +540,112 @@ export function BotMovil({ sb, botFetch }) {
               ← Salir al panel
             </button>
           </div>
-          <input
-            type="text"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Buscar paciente o teléfono"
-            style={{
-              width: '100%', boxSizing: 'border-box', fontSize: 16, minHeight: 44,
-              border: 'none', borderRadius: 10, padding: '0 14px',
-              background: 'rgba(255,255,255,0.16)', color: '#fff', outline: 'none',
-            }}
-          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Buscar paciente o teléfono"
+              style={{
+                flex: 1, minWidth: 0, boxSizing: 'border-box', fontSize: 16, minHeight: 44,
+                border: 'none', borderRadius: 10, padding: '0 14px',
+                background: 'rgba(255,255,255,0.16)', color: '#fff', outline: 'none',
+              }}
+            />
+            <button
+              onClick={openNewChat}
+              aria-label="Nueva conversación"
+              title="Nueva conversación"
+              style={{
+                width: 44, height: 44, flexShrink: 0, borderRadius: '50%', border: 'none',
+                background: 'rgba(255,255,255,0.16)', color: '#fff', fontSize: 22, fontWeight: 700,
+                lineHeight: 1, cursor: 'pointer',
+              }}
+            >
+              +
+            </button>
+          </div>
         </div>
+
+        {newChatOpen && (
+          <div style={{
+            position: 'fixed', inset: 0, zIndex: 30, display: 'flex', flexDirection: 'column',
+            background: THREAD_BG,
+          }}>
+            <div style={headerStyle}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                <button
+                  onClick={closeNewChat}
+                  aria-label="Cerrar nueva conversación"
+                  style={{ width: 44, height: 44, flexShrink: 0, marginLeft: -10, background: 'transparent', border: 'none', color: '#fff', fontSize: 24, cursor: 'pointer' }}
+                >
+                  ←
+                </button>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>Nueva conversación</div>
+              </div>
+              <input
+                type="text"
+                autoFocus
+                value={newChatQuery}
+                onChange={e => setNewChatQuery(e.target.value)}
+                placeholder="Buscar paciente o teléfono"
+                style={{
+                  width: '100%', boxSizing: 'border-box', fontSize: 16, minHeight: 44,
+                  border: 'none', borderRadius: 10, padding: '0 14px',
+                  background: 'rgba(255,255,255,0.16)', color: '#fff', outline: 'none',
+                }}
+              />
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
+              {newChatError && <ErrorBanner text={newChatError} />}
+              {newChatQuery.trim().length < 2 ? (
+                <div style={{ padding: 32, textAlign: 'center', color: '#6b7d6f', fontSize: 15 }}>
+                  Escribe al menos 2 letras para buscar.
+                </div>
+              ) : newChatSearching ? (
+                <Spinner />
+              ) : newChatResults.length === 0 ? (
+                <div style={{ padding: 32, textAlign: 'center', color: '#6b7d6f', fontSize: 15 }}>
+                  Ningún paciente coincide.
+                </div>
+              ) : (
+                newChatResults.map(p => {
+                  const creating = creatingPatientId === p.id
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => startNewConversation(p)}
+                      disabled={creating}
+                      style={{
+                        width: '100%', display: 'flex', alignItems: 'center', gap: 12,
+                        padding: '12px 14px', minHeight: 64, background: '#fff',
+                        border: 'none', borderBottom: '1px solid #eee', textAlign: 'left', cursor: 'pointer',
+                        opacity: creating ? 0.6 : 1,
+                      }}
+                    >
+                      <div style={{
+                        width: 46, height: 46, borderRadius: '50%', flexShrink: 0,
+                        background: HEADER_BG, color: '#fff', display: 'flex', alignItems: 'center',
+                        justifyContent: 'center', fontSize: 16, fontWeight: 700,
+                      }}>
+                        {initials(p.full_name)}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 16, fontWeight: 600, color: '#111b21', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {p.full_name || 'Sin nombre'}
+                        </div>
+                        <div style={{ fontSize: 14, color: creating ? HEADER_BG : '#667781' }}>
+                          {creating ? 'Creando conversación…' : (p.phone || 'Sin teléfono')}
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })
+              )}
+            </div>
+          </div>
+        )}
 
         <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
           {loadingList ? <Spinner /> : listError ? (
