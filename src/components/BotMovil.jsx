@@ -46,7 +46,7 @@ import { conversationPayloadFor } from '../lib/newConversation.js'
 // ─── Paleta WhatsApp adaptada al verde del centro ─────────────────────────
 // Súbelo a mano en cada cambio visible de esta pantalla. Se muestra junto al
 // título para saber qué build tiene el móvil sin adivinar.
-const BUILD = 'v7'
+const BUILD = 'v8'
 
 const HEADER_BG = '#1d5c2e'
 const THREAD_BG = '#efe7dd'
@@ -913,7 +913,7 @@ export function BotMovil({ sb, botFetch }) {
         // 8px y punto. Antes llevaba `env(safe-area-inset-bottom)`, que en el
         // iPhone son ~34px de relleno VACÍO bajo los botones: ese era el hueco.
         // Josema lo quiere pegado abajo, no reservado para el indicador de inicio.
-        paddingBottom: 8,
+        paddingBottom: 6,
         paddingTop: 10,
       }}>
         {actionError && <ErrorBanner text={actionError} />}
@@ -938,7 +938,9 @@ export function BotMovil({ sb, botFetch }) {
         {showProposalBox ? (
           // Sin fondo ni borde propios: la zona de trabajo YA es blanca, y una
           // tarjeta blanca sobre blanco solo añadía un recuadro sin función.
-          <div style={{ marginBottom: 8 }}>
+          // marginBottom 0: es el último elemento, y ese margen sumaba con el
+          // relleno de la barra = 16px de blanco muerto bajo los botones.
+          <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: HEADER_BG, textTransform: 'uppercase', letterSpacing: 0.3 }}>
                 Propuesta del bot
