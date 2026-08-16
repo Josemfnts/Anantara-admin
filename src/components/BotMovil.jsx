@@ -46,7 +46,7 @@ import { conversationPayloadFor } from '../lib/newConversation.js'
 // ─── Paleta WhatsApp adaptada al verde del centro ─────────────────────────
 // Súbelo a mano en cada cambio visible de esta pantalla. Se muestra junto al
 // título para saber qué build tiene el móvil sin adivinar.
-const BUILD = 'v10'
+const BUILD = 'v11'
 
 const HEADER_BG = '#1d5c2e'
 const THREAD_BG = '#efe7dd'
@@ -166,38 +166,13 @@ export function BotMovil({ sb, botFetch }) {
     const style = document.createElement('style')
     style.setAttribute('data-bot-movil', '')
     style.textContent = `
-      html, body, #root { height: 100%; height: var(--bm-vh, 100dvh); margin: 0; overflow: hidden; }
+      html, body, #root { height: 100%; height: 100dvh; margin: 0; overflow: hidden; }
       body { background: #fff; overscroll-behavior: none; }
     `
     document.head.appendChild(style)
 
-    // EL TECLADO. Al abrirlo, iOS encoge la pantalla visible y desplaza la página;
-    // al cerrarlo NO la devuelve sola, y ahí se quedaba el blanco para siempre.
-    // `100dvh` no lo cubre porque no reacciona al teclado en iOS.
-    // Solución: medir el viewport REAL (visualViewport) y devolver el scroll a 0
-    // en cada cambio, que es lo que quita el residuo al cerrar.
-    const vv = window.visualViewport
-    const ajustar = () => {
-      const alto = vv ? vv.height : window.innerHeight
-      document.documentElement.style.setProperty('--bm-vh', `${alto}px`)
-      // iOS deja la página desplazada tras cerrar el teclado: la recolocamos.
-      if (window.scrollY !== 0) window.scrollTo(0, 0)
-    }
-    ajustar()
-    if (vv) {
-      vv.addEventListener('resize', ajustar)
-      vv.addEventListener('scroll', ajustar)
-    }
-    window.addEventListener('orientationchange', ajustar)
-
     return () => {
       style.remove()
-      document.documentElement.style.removeProperty('--bm-vh')
-      if (vv) {
-        vv.removeEventListener('resize', ajustar)
-        vv.removeEventListener('scroll', ajustar)
-      }
-      window.removeEventListener('orientationchange', ajustar)
     }
   }, [])
 

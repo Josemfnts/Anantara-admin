@@ -3,7 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- interactive-widget=resizes-content: al abrir el teclado, el navegador
+         REDUCE el viewport en vez de desplazar la página. Sin esto había que
+         pelearse con visualViewport desde JavaScript, y eso rompía el layout. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="theme-color" content="#2C4A35" />
     <title>Centro Anantara — Admin</title>
     <!-- PWA "Bot móvil" (pantalla nueva para la secretaria, ver src/components/BotMovil.jsx).
