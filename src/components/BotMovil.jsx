@@ -46,7 +46,7 @@ import { conversationPayloadFor } from '../lib/newConversation.js'
 // ─── Paleta WhatsApp adaptada al verde del centro ─────────────────────────
 // Súbelo a mano en cada cambio visible de esta pantalla. Se muestra junto al
 // título para saber qué build tiene el móvil sin adivinar.
-const BUILD = 'v8'
+const BUILD = 'v9'
 
 const HEADER_BG = '#1d5c2e'
 const THREAD_BG = '#efe7dd'
@@ -166,7 +166,7 @@ export function BotMovil({ sb, botFetch }) {
     const style = document.createElement('style')
     style.setAttribute('data-bot-movil', '')
     style.textContent = `
-      html, body, #root { height: 100%; margin: 0; overflow: hidden; }
+      html, body, #root { height: 100%; height: 100dvh; margin: 0; overflow: hidden; }
       body { background: #fff; overscroll-behavior: none; }
     `
     document.head.appendChild(style)
