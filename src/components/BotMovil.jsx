@@ -864,9 +864,12 @@ export function BotMovil({ sb, botFetch }) {
         )}
       </div>
 
-      {/* Zona de trabajo de la secretaria */}
+      {/* Zona de trabajo de la secretaria.
+          UNA sola superficie blanca: antes había franja gris + tarjeta blanca
+          encima del hilo beige, y se veían tres fondos apilados con huecos
+          muertos entre ellos. WhatsApp tiene una sola barra bajo el hilo. */}
       <div style={{
-        flexShrink: 0, background: '#f0f0f0', borderTop: '1px solid #ddd',
+        flexShrink: 0, background: '#fff', borderTop: '1px solid #e2e2e2',
         paddingLeft: 'calc(env(safe-area-inset-left) + 10px)',
         paddingRight: 'calc(env(safe-area-inset-right) + 10px)',
         paddingBottom: 'calc(env(safe-area-inset-bottom) + 10px)',
@@ -892,7 +895,9 @@ export function BotMovil({ sb, botFetch }) {
         {/* Solo UNA caja de texto a la vez (problema 3): el borrador de la propuesta
             O el mensaje libre, nunca los dos juntos. */}
         {showProposalBox ? (
-          <div style={{ background: '#fff', border: '1px solid #d6d6d6', borderRadius: 10, padding: 10, marginBottom: 10 }}>
+          // Sin fondo ni borde propios: la zona de trabajo YA es blanca, y una
+          // tarjeta blanca sobre blanco solo añadía un recuadro sin función.
+          <div style={{ marginBottom: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: HEADER_BG, textTransform: 'uppercase', letterSpacing: 0.3 }}>
                 Propuesta del bot
@@ -957,14 +962,17 @@ export function BotMovil({ sb, botFetch }) {
                 </button>
               </div>
             ) : (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 13, color: '#6b7d6f' }}>
-                  {pendingForSelected?.proposed_action ? '¿No es la acción correcta?' : 'Sin acción: el bot no toca la agenda.'}
+              // Una sola línea, sin wrap: con flexWrap el botón se iba solo a otra
+              // fila y dejaba un hueco enorme a su izquierda. El texto se recorta
+              // si no cabe; el botón nunca se encoge.
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 13, color: '#6b7d6f', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {pendingForSelected?.proposed_action ? '¿No es la acción correcta?' : 'Sin acción en la agenda'}
                 </span>
                 <button onClick={() => setActionEditorOpen(true)} disabled={!pacienteActual.id}
                   title={pacienteActual.id ? '' : 'Esta conversación no tiene paciente enlazado'}
-                  style={{ marginLeft: 'auto', minHeight: 40, padding: '6px 14px', fontSize: 14, fontWeight: 600, borderRadius: 8, border: `1px solid ${pacienteActual.id ? HEADER_BG : '#cbd5c0'}`, background: '#fff', color: pacienteActual.id ? HEADER_BG : '#9aa79c' }}>
-                  {pendingForSelected?.proposed_action ? '✏️ Cambiar acción' : '✏️ Añadir acción'}
+                  style={{ marginLeft: 'auto', flexShrink: 0, height: 34, padding: '0 12px', fontSize: 13, fontWeight: 600, borderRadius: 17, border: `1px solid ${pacienteActual.id ? HEADER_BG : '#cbd5c0'}`, background: '#fff', color: pacienteActual.id ? HEADER_BG : '#9aa79c', whiteSpace: 'nowrap' }}>
+                  {pendingForSelected?.proposed_action ? '✏️ Cambiar' : '✏️ Añadir acción'}
                 </button>
               </div>
             )}
@@ -1020,11 +1028,16 @@ export function BotMovil({ sb, botFetch }) {
                 </button>
               </div>
             ) : (
-              <button onClick={() => setActionEditorOpen(true)} disabled={!pacienteActual.id}
-                title={pacienteActual.id ? '' : 'Esta conversación no tiene paciente enlazado'}
-                style={{ width: '100%', minHeight: 40, marginBottom: 8, fontSize: 14, fontWeight: 600, borderRadius: 8, border: `1px dashed ${pacienteActual.id ? HEADER_BG : '#cbd5c0'}`, background: '#fff', color: pacienteActual.id ? HEADER_BG : '#9aa79c' }}>
-                ✏️ Añadir acción (el bot no propuso nada)
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 13, color: '#6b7d6f', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  El bot no propuso nada
+                </span>
+                <button onClick={() => setActionEditorOpen(true)} disabled={!pacienteActual.id}
+                  title={pacienteActual.id ? '' : 'Esta conversación no tiene paciente enlazado'}
+                  style={{ marginLeft: 'auto', flexShrink: 0, height: 34, padding: '0 12px', fontSize: 13, fontWeight: 600, borderRadius: 17, border: `1px solid ${pacienteActual.id ? HEADER_BG : '#cbd5c0'}`, background: '#fff', color: pacienteActual.id ? HEADER_BG : '#9aa79c', whiteSpace: 'nowrap' }}>
+                  ✏️ Añadir acción
+                </button>
+              </div>
             )}
             {actionError && <div style={{ fontSize: 13, color: '#7f1d1d', marginBottom: 8 }}>⚠️ {actionError}</div>}
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
