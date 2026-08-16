@@ -149,6 +149,23 @@ export function BotMovil({ sb, botFetch }) {
   const selectedConvIdRef = useRef(null)
   useEffect(() => { selectedConvIdRef.current = selectedConv?.id || null }, [selectedConv])
 
+  // Mientras esta pantalla está montada, el `body` del panel queda detrás y su
+  // fondo crema asomaba como una franja al final. Lo pintamos del mismo color y
+  // bloqueamos su scroll (el que scrollea es el hilo, no la página). Se revierte
+  // al salir para no dejar tocado el panel normal.
+  useEffect(() => {
+    const b = document.body
+    const antes = { background: b.style.background, overflow: b.style.overflow, margin: b.style.margin }
+    b.style.background = THREAD_BG
+    b.style.overflow = 'hidden'
+    b.style.margin = '0'
+    return () => {
+      b.style.background = antes.background
+      b.style.overflow = antes.overflow
+      b.style.margin = antes.margin
+    }
+  }, [])
+
   // ─── Carga: conversaciones ─────────────────────────────────────────────
   const loadConversations = useCallback(async () => {
     setLoadingList(true); setListError(null)
@@ -581,8 +598,13 @@ export function BotMovil({ sb, botFetch }) {
   // `bottom:0` para respetar `height`, y si 100dvh no coincide exactamente con el
   // viewport visible en ese momento, queda un hueco muerto abajo (problema 4).
   // Sin `height` explícita, `bottom:0` manda y el hueco desaparece.
+  // Anclado arriba y con altura dinámica, NO `inset:0`. Con `inset:0` el `bottom`
+  // se calcula contra el viewport de layout, que en el móvil no coincide con lo
+  // que se ve cuando el navegador muestra u oculta su barra: ahí es donde salía
+  // la franja muerta al final. `100dvh` sigue al viewport REAL.
   const screenStyle = {
-    position: 'fixed', inset: 0, width: '100%',
+    position: 'fixed', top: 0, left: 0, right: 0,
+    height: '100vh', maxHeight: '100dvh', minHeight: '100dvh',
     display: 'flex', flexDirection: 'column', overflow: 'hidden',
     background: THREAD_BG, fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
   }
@@ -837,7 +859,7 @@ export function BotMovil({ sb, botFetch }) {
         </div>
       )}
 
-      <div ref={threadBoxRef} style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch', padding: '10px 0' }}>
+      <div ref={threadBoxRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto', WebkitOverflowScrolling: 'touch', padding: '10px 0' }}>
         {loadingThread ? <Spinner /> : threadError ? (
           <ErrorBanner text={threadError} onRetry={() => loadThread(selectedConv.id)} />
         ) : messages.length === 0 ? (
