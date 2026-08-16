@@ -4829,7 +4829,44 @@ function BotCoach() {
     } catch(e) { setToast({msg:'Yo me ocupo: '+e.message+' (pendiente en el bot)', type:'error'}) }
   }
 
-  const primaryAction = () => { if (selPending) sendProposal(); else sendFree() }
+  // Acción creada por la secretaria SIN propuesta del bot. No hay review que
+  // aprobar, así que el panel no puede usar /send-validated: el bot crea una
+  // review sintética y la pasa por el mismo camino gateado (/secretary-action).
+  const sendSecretaryAction = async () => {
+    if (!selConv || !overrideAction) return
+    setSending(true)
+    try {
+      // El último mensaje del PACIENTE es la mitad izquierda del par de
+      // entrenamiento: "esto escribió → esta era la acción correcta". Sin él, el
+      // digest solo vería la respuesta y no sabría a qué respondía.
+      const ultimoEntrante = [...thread].reverse().find(m => m.direction === 'in')
+      const r = await botFetch('/secretary-action', {
+        method: 'POST',
+        body: JSON.stringify({
+          phone: selConv.phone,
+          text: draft.trim() || null,
+          action: overrideAction,
+          patient_message: ultimoEntrante?.text || null,
+          reviewed_by: 'secretaria',
+        }),
+      })
+      if (!r.ok) throw new Error(await r.text())
+      const out = await r.json()
+      if (out?.ok === false) throw new Error(out.error || 'no se pudo ejecutar')
+      setToast({ msg: '✓ Acción creada y enviada', type: 'ok' })
+      setDraft(''); setOverrideAction(null)
+      loadData(); reloadThread()
+    } catch (e) {
+      setToast({ msg: 'Error: ' + e.message, type: 'error' })
+    }
+    setSending(false)
+  }
+
+  const primaryAction = () => {
+    if (selPending) sendProposal()
+    else if (overrideAction) sendSecretaryAction()   // acción sin propuesta previa
+    else sendFree()
+  }
 
   // ─── Mini calendario de edición de propuesta ───────────────────────────────
   const calendarActionTypes = new Set(['proponer_cita', 'rechazar_propuesta', 'reservar_clase'])
@@ -5336,10 +5373,15 @@ function BotCoach() {
                   en que el bot falla POR no hacer nada (ej. "en mi lugar irá mi cuñado
                   Óscar": contestó sin ejecutar ninguna acción). El botón abre el mismo
                   modal, que ya arranca en blanco si no hay acción previa. */}
-              {selPending && !selPending.proposed_action && !overrideAction && (
+              {/* Sale TAMBIÉN sin propuesta pendiente. Antes exigía `selPending`, así
+                  que en los chats donde el bot no propuso NADA —porque derivó o se
+                  calló— no había forma de crear una acción, y es justo donde más
+                  falta hace (Alejandro pidió mover la cita, el bot derivó, y Marta
+                  se quedaba sin poder proponer desde el chat). */}
+              {selConv && !selPending?.proposed_action && !overrideAction && (
                 <div style={{border:'1px dashed var(--border)',background:'var(--cream)',borderRadius:'var(--radius-lg)',padding:'6px 12px',marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
                   <span style={{fontSize:14}}>🗒</span>
-                  <span style={{fontSize:12,color:'var(--text-muted)'}}>Sin acción: el bot solo responde con texto, no toca la agenda.</span>
+                  <span style={{fontSize:12,color:'var(--text-muted)'}}>{selPending ? 'Sin acción: el bot solo responde con texto, no toca la agenda.' : 'El bot no propuso nada en este chat.'}</span>
                   <button onClick={()=>setActionEditorOpen(true)} title="Añadir una acción que el bot no propuso (reservar, cancelar, anotar…)"
                     style={{marginLeft:'auto',fontSize:11,padding:'3px 8px',border:'1px solid var(--text-muted)',background:'#fff',color:'var(--body)',borderRadius:999,cursor:'pointer',whiteSpace:'nowrap'}}>
                     ✏️ Añadir acción
@@ -5387,7 +5429,9 @@ function BotCoach() {
                 rows={3} className="field-input" style={{width:'100%',resize:'vertical',fontSize:13,marginBottom:8}}/>
               <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                 <Btn onClick={primaryAction} disabled={sending || !draft.trim()} style={{flex:1,minWidth:140}}>
-                  {selPending ? (draft.trim()!==(selPending.proposed_text||'').trim() ? '✏️ Enviar mi versión' : '✅ Enviar tal cual') : '✅ Enviar mensaje'}
+                  {selPending
+                    ? (draft.trim()!==(selPending.proposed_text||'').trim() ? '✏️ Enviar mi versión' : '✅ Enviar tal cual')
+                    : (overrideAction ? '✅ Enviar y ejecutar acción' : '✅ Enviar mensaje')}
                 </Btn>
                 <Btn variant="ghost" onClick={takeover} title="Bot en pausa 30 min" disabled={sending}>📵 Yo me ocupo</Btn>
                 {selPending && <Btn variant="danger" onClick={rejectProposal} disabled={sending}>🗑 Rechazar</Btn>}
