@@ -149,21 +149,24 @@ export function BotMovil({ sb, botFetch }) {
   const selectedConvIdRef = useRef(null)
   useEffect(() => { selectedConvIdRef.current = selectedConv?.id || null }, [selectedConv])
 
-  // Mientras esta pantalla está montada, el `body` del panel queda detrás y su
-  // fondo crema asomaba como una franja al final. Lo pintamos del mismo color y
-  // bloqueamos su scroll (el que scrollea es el hilo, no la página). Se revierte
-  // al salir para no dejar tocado el panel normal.
+  // CADENA DE ALTURAS. `html`, `body` y `#root` no tenían altura en el CSS del
+  // panel, así que esta pantalla tenía que anclarse con posición fija y medir
+  // contra el viewport — que en el móvil, y sobre todo instalada como PWA, no
+  // coincide con lo que se ve. De ahí las franjas muertas al final.
+  //
+  // Con la cadena `height:100%` desde html hasta #root, la pantalla ocupa la
+  // caja real del documento y no hay nada que pueda asomar por debajo. Es el
+  // patrón fiable para pantalla completa; el posicionamiento fijo no lo es.
+  // Se revierte al salir para no dejar tocado el panel normal.
   useEffect(() => {
-    const b = document.body
-    const antes = { background: b.style.background, overflow: b.style.overflow, margin: b.style.margin }
-    b.style.background = THREAD_BG
-    b.style.overflow = 'hidden'
-    b.style.margin = '0'
-    return () => {
-      b.style.background = antes.background
-      b.style.overflow = antes.overflow
-      b.style.margin = antes.margin
-    }
+    const style = document.createElement('style')
+    style.setAttribute('data-bot-movil', '')
+    style.textContent = `
+      html, body, #root { height: 100%; margin: 0; overflow: hidden; }
+      body { background: ${THREAD_BG}; overscroll-behavior: none; }
+    `
+    document.head.appendChild(style)
+    return () => { style.remove() }
   }, [])
 
   // ─── Carga: conversaciones ─────────────────────────────────────────────
@@ -598,13 +601,11 @@ export function BotMovil({ sb, botFetch }) {
   // `bottom:0` para respetar `height`, y si 100dvh no coincide exactamente con el
   // viewport visible en ese momento, queda un hueco muerto abajo (problema 4).
   // Sin `height` explícita, `bottom:0` manda y el hueco desaparece.
-  // Anclado arriba y con altura dinámica, NO `inset:0`. Con `inset:0` el `bottom`
-  // se calcula contra el viewport de layout, que en el móvil no coincide con lo
-  // que se ve cuando el navegador muestra u oculta su barra: ahí es donde salía
-  // la franja muerta al final. `100dvh` sigue al viewport REAL.
+  // Flujo normal con altura del 100% del padre (ver la cadena de alturas de
+  // arriba). Nada de posición fija: era lo que dejaba las franjas al final,
+  // porque medía contra un viewport que en PWA no es el que se ve.
   const screenStyle = {
-    position: 'fixed', top: 0, left: 0, right: 0,
-    height: '100vh', maxHeight: '100dvh', minHeight: '100dvh',
+    height: '100%', width: '100%',
     display: 'flex', flexDirection: 'column', overflow: 'hidden',
     background: THREAD_BG, fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
   }
