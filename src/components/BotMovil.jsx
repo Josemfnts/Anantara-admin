@@ -46,7 +46,7 @@ import { conversationPayloadFor } from '../lib/newConversation.js'
 // ─── Paleta WhatsApp adaptada al verde del centro ─────────────────────────
 // Súbelo a mano en cada cambio visible de esta pantalla. Se muestra junto al
 // título para saber qué build tiene el móvil sin adivinar.
-const BUILD = 'v5'
+const BUILD = 'v6'
 
 const HEADER_BG = '#1d5c2e'
 const THREAD_BG = '#efe7dd'
@@ -167,7 +167,7 @@ export function BotMovil({ sb, botFetch }) {
     style.setAttribute('data-bot-movil', '')
     style.textContent = `
       html, body, #root { height: 100%; margin: 0; overflow: hidden; }
-      body { background: ${THREAD_BG}; overscroll-behavior: none; }
+      body { background: #fff; overscroll-behavior: none; }
     `
     document.head.appendChild(style)
     return () => { style.remove() }
@@ -608,10 +608,15 @@ export function BotMovil({ sb, botFetch }) {
   // Flujo normal con altura del 100% del padre (ver la cadena de alturas de
   // arriba). Nada de posición fija: era lo que dejaba las franjas al final,
   // porque medía contra un viewport que en PWA no es el que se ve.
+  // Fondo BLANCO, no beige. El beige lo pinta el hilo por su cuenta.
+  // Motivo: cualquier franja que quede al final —por safe-area, por el viewport
+  // del PWA o por lo que sea— sale del contenedor o del documento. Si ambos son
+  // blancos como la barra de trabajo, esa franja es invisible. Perseguir el
+  // origen exacto costó cuatro intentos; garantizar el color, uno.
   const screenStyle = {
     height: '100%', width: '100%',
     display: 'flex', flexDirection: 'column', overflow: 'hidden',
-    background: THREAD_BG, fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+    background: '#fff', fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
   }
   const headerStyle = {
     background: HEADER_BG, color: '#fff', flexShrink: 0,
@@ -870,7 +875,7 @@ export function BotMovil({ sb, botFetch }) {
         </div>
       )}
 
-      <div ref={threadBoxRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto', WebkitOverflowScrolling: 'touch', padding: '10px 0' }}>
+      <div ref={threadBoxRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto', WebkitOverflowScrolling: 'touch', padding: '10px 0', background: THREAD_BG }}>
         {loadingThread ? <Spinner /> : threadError ? (
           <ErrorBanner text={threadError} onRetry={() => loadThread(selectedConv.id)} />
         ) : messages.length === 0 ? (
