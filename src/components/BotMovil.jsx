@@ -12,7 +12,8 @@
 //   - botFetch(path, init): fetch al bot ya autenticado, inyectado por el padre.
 //
 // Datos (mismas tablas que Bot Coach):
-//   - conversations: id, phone, patients(full_name), last_message_at.
+//   - conversations: id, phone, patient_id, patients(id, full_name), last_message_at.
+//     El id del paciente hace falta para crear acciones desde el chat.
 //   - messages: id, direction, text, created_at, metadata — filtrado por
 //     conversation_id para el hilo. Para el texto de previsualización de la
 //     lista (que conversations no guarda) se leen los últimos mensajes de
@@ -39,6 +40,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fClock } from '../lib/datetime.js'
 import { describeProposedAction, isDestructiveAction, actionLookupId } from '../lib/proposedAction.js'
 import { quickRepliesFor } from '../lib/quickReplies.js'
+import { ActionEditorModal } from './ActionEditorModal.jsx'
 import { conversationPayloadFor } from '../lib/newConversation.js'
 
 // ─── Paleta WhatsApp adaptada al verde del centro ─────────────────────────
@@ -134,6 +136,12 @@ export function BotMovil({ sb, botFetch }) {
   const [freeText, setFreeText] = useState('')
   const [sendingFree, setSendingFree] = useState(false)
   const [actionDesc, setActionDesc] = useState(null)          // tarjeta de la acción propuesta (ver proposedAction.js)
+  // Acción corregida o creada por la secretaria. Si está puesta, manda sobre la
+  // que propuso el bot (o la crea desde cero si el bot no propuso ninguna).
+  const [overrideAction, setOverrideAction] = useState(null)
+  const [actionEditorOpen, setActionEditorOpen] = useState(false)
+  const [services, setServices] = useState([])
+  const [professionals, setProfessionals] = useState([])
   const [manualMode, setManualMode] = useState(false)          // true: fuerza la caja de texto libre aunque haya propuesta pendiente
   const [confirmDelete, setConfirmDelete] = useState(false)    // confirmación propia de borrado (nunca window.confirm)
   const [deletingConv, setDeletingConv] = useState(false)
@@ -146,7 +154,7 @@ export function BotMovil({ sb, botFetch }) {
     setLoadingList(true); setListError(null)
     try {
       const { data, error } = await sb.from('conversations')
-        .select('id, phone, patients(full_name), last_message_at')
+        .select('id, phone, patient_id, patients(id, full_name), last_message_at')
         .order('last_message_at', { ascending: false })
         .limit(60)
       if (error) throw error
@@ -322,7 +330,7 @@ export function BotMovil({ sb, botFetch }) {
       const { conversation_id } = await r.json()
       if (!conversation_id) throw new Error('El bot no devolvió la conversación')
       const { data, error } = await sb.from('conversations')
-        .select('id, phone, patients(full_name), last_message_at')
+        .select('id, phone, patient_id, patients(id, full_name), last_message_at')
         .eq('id', conversation_id)
         .maybeSingle()
       if (error) throw error
@@ -386,17 +394,80 @@ export function BotMovil({ sb, botFetch }) {
   // borrador; si no, la caja libre.
   const showProposalBox = !!pendingForSelected && !manualMode
 
+  // Catálogo para el editor de acciones. Una vez, al montar.
+  useEffect(() => {
+    let vivo = true
+    ;(async () => {
+      try {
+        const [sv, pr] = await Promise.all([
+          sb.from('services').select('id, name, section, duration_minutes').order('name'),
+          sb.from('professionals').select('id, name').order('name'),
+        ])
+        if (!vivo) return
+        setServices(sv.data || [])
+        setProfessionals(pr.data || [])
+      } catch { /* el editor avisará si faltan datos */ }
+    })()
+    return () => { vivo = false }
+  }, [sb])
+
+  // La corrección es de ESTA propuesta: al cambiar de chat o de propuesta, fuera.
+  useEffect(() => { setOverrideAction(null); setActionEditorOpen(false) }, [selectedConv?.id, pendingForSelected?.id])
+
+  // Paciente para el editor. Sin id no se puede construir ninguna acción.
+  const pacienteActual = useMemo(() => ({
+    id: selectedConv?.patients?.id || selectedConv?.patient_id || null,
+    full_name: selectedConv?.patients?.full_name || null,
+    phone: selectedConv?.phone || null,
+  }), [selectedConv])
+
+  // Acción creada por la secretaria SIN que el bot propusiera nada. No hay review
+  // que aprobar, así que /send-validated no sirve: el bot crea una review
+  // sintética y la pasa por el mismo camino gateado.
+  const sendSecretaryAction = async () => {
+    if (!selectedConv || !overrideAction) return
+    setActing(true); setActionError(null)
+    try {
+      // El último mensaje del PACIENTE es la mitad izquierda del par de
+      // entrenamiento: "esto escribió → esta era la acción correcta".
+      const ultimoEntrante = [...messages].reverse().find(m => m.direction === 'in')
+      const r = await botFetch('/secretary-action', {
+        method: 'POST',
+        body: JSON.stringify({
+          phone: selectedConv.phone,
+          text: proposalDraft.trim() || freeText.trim() || null,
+          action: overrideAction,
+          patient_message: ultimoEntrante?.text || null,
+          reviewed_by: 'secretaria',
+        }),
+      })
+      if (!r.ok) throw new Error(await r.text().catch(() => 'fallo al ejecutar'))
+      const out = await r.json().catch(() => ({ ok: true }))
+      if (out && out.ok === false) throw new Error(out.error || 'no se pudo ejecutar')
+      setOverrideAction(null); setProposalDraft(''); setFreeText('')
+      await loadPendingReviews()
+      await loadThread(selectedConv.id)
+    } catch (e) {
+      setActionError(e?.message || 'No se pudo ejecutar la acción')
+    } finally {
+      setActing(false)
+    }
+  }
+
   // ─── Acciones ──────────────────────────────────────────────────────────
   const sendProposal = async () => {
     if (!pendingForSelected) return
     setActing(true); setActionError(null)
     try {
       const finalText = proposalDraft.trim()
-      const verdict = finalText === (pendingForSelected.proposed_text || '').trim() ? 'sent' : 'modified'
+      // Si Marta corrigió la acción, el veredicto es 'modified' aunque el texto
+      // no haya cambiado: lo que cambió es lo que se va a EJECUTAR.
+      const textoIgual = finalText === (pendingForSelected.proposed_text || '').trim()
+      const verdict = (textoIgual && !overrideAction) ? 'sent' : 'modified'
       // final_action + action_approved van SIEMPRE juntos: el bot ejecuta la
       // acción solo si recibe las dos. Si la propuesta no traía acción, se aprueba
       // solo el texto (action_approved=false), que es lo correcto.
-      const accion = pendingForSelected.proposed_action || null
+      const accion = overrideAction || pendingForSelected.proposed_action || null
       const r = await botFetch('/send-validated', {
         method: 'POST',
         body: JSON.stringify({
@@ -872,9 +943,29 @@ export function BotMovil({ sb, botFetch }) {
                   </div>
                 )
               })()
+            ) : null}
+
+            {/* Añadir / cambiar la acción. Sale SIEMPRE que haya chat abierto, no
+                solo con propuesta pendiente: el caso en que más falta hace es justo
+                cuando el bot no propuso nada (derivó o se calló). */}
+            {overrideAction ? (
+              <div style={{ border: '1px dashed #d97706', background: '#fef3c7', borderRadius: 8, padding: '8px 10px', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, color: '#92400e', fontWeight: 600 }}>✏️ Acción corregida a <strong>{overrideAction.type}</strong></span>
+                <button onClick={() => { setOverrideAction(null); setProposalDraft(pendingForSelected?.proposed_text || '') }}
+                  style={{ marginLeft: 'auto', minHeight: 36, padding: '4px 12px', fontSize: 13, border: '1px solid #92400e', background: '#fff', color: '#92400e', borderRadius: 8 }}>
+                  Descartar
+                </button>
+              </div>
             ) : (
-              <div style={{ fontSize: 13, color: '#6b7d6f', marginBottom: 8 }}>
-                Sin acción: solo texto.
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, color: '#6b7d6f' }}>
+                  {pendingForSelected?.proposed_action ? '¿No es la acción correcta?' : 'Sin acción: el bot no toca la agenda.'}
+                </span>
+                <button onClick={() => setActionEditorOpen(true)} disabled={!pacienteActual.id}
+                  title={pacienteActual.id ? '' : 'Esta conversación no tiene paciente enlazado'}
+                  style={{ marginLeft: 'auto', minHeight: 40, padding: '6px 14px', fontSize: 14, fontWeight: 600, borderRadius: 8, border: `1px solid ${pacienteActual.id ? HEADER_BG : '#cbd5c0'}`, background: '#fff', color: pacienteActual.id ? HEADER_BG : '#9aa79c' }}>
+                  {pendingForSelected?.proposed_action ? '✏️ Cambiar acción' : '✏️ Añadir acción'}
+                </button>
               </div>
             )}
 
@@ -912,13 +1003,37 @@ export function BotMovil({ sb, botFetch }) {
             </div>
           </div>
         ) : (
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <>
+            {/* Sin propuesta del bot también se puede crear una acción: es justo
+                donde más falta hace (el bot derivó o se calló y la agenda hay que
+                tocarla igual). Se envía por /secretary-action. */}
+            {overrideAction ? (
+              <div style={{ border: '1px dashed #d97706', background: '#fef3c7', borderRadius: 8, padding: '8px 10px', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, color: '#92400e', fontWeight: 600 }}>✏️ Acción a ejecutar: <strong>{overrideAction.type}</strong></span>
+                <button onClick={() => setOverrideAction(null)}
+                  style={{ minHeight: 36, padding: '4px 12px', fontSize: 13, border: '1px solid #92400e', background: '#fff', color: '#92400e', borderRadius: 8 }}>
+                  Quitar
+                </button>
+                <button onClick={sendSecretaryAction} disabled={acting}
+                  style={{ marginLeft: 'auto', minHeight: 40, padding: '6px 14px', fontSize: 14, fontWeight: 700, border: 'none', background: HEADER_BG, color: '#fff', borderRadius: 8, opacity: acting ? 0.6 : 1 }}>
+                  {acting ? 'Enviando…' : '✅ Enviar y ejecutar'}
+                </button>
+              </div>
+            ) : (
+              <button onClick={() => setActionEditorOpen(true)} disabled={!pacienteActual.id}
+                title={pacienteActual.id ? '' : 'Esta conversación no tiene paciente enlazado'}
+                style={{ width: '100%', minHeight: 40, marginBottom: 8, fontSize: 14, fontWeight: 600, borderRadius: 8, border: `1px dashed ${pacienteActual.id ? HEADER_BG : '#cbd5c0'}`, background: '#fff', color: pacienteActual.id ? HEADER_BG : '#9aa79c' }}>
+                ✏️ Añadir acción (el bot no propuso nada)
+              </button>
+            )}
+            {actionError && <div style={{ fontSize: 13, color: '#7f1d1d', marginBottom: 8 }}>⚠️ {actionError}</div>}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <input
               type="text"
               value={freeText}
               onChange={e => setFreeText(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !sendingFree) sendFreeText() }}
-              placeholder="Escribe un mensaje"
+              placeholder={overrideAction ? 'Mensaje que acompaña a la acción' : 'Escribe un mensaje'}
               style={{
                 flex: 1, minHeight: 44, fontSize: 16, border: '1px solid #ddd', borderRadius: 22,
                 padding: '0 16px', boxSizing: 'border-box',
@@ -935,7 +1050,8 @@ export function BotMovil({ sb, botFetch }) {
             >
               ➤
             </button>
-          </div>
+            </div>
+          </>
         )}
 
         {pendingForSelected && !showProposalBox && (
@@ -947,6 +1063,41 @@ export function BotMovil({ sb, botFetch }) {
           </button>
         )}
       </div>
+
+      {/* Editor de acción — el MISMO componente que el panel de escritorio, para
+          que no se separen los comportamientos. Se envuelve para que quepa en una
+          pantalla estrecha y pueda hacer scroll dentro, sin tocar su fichero. */}
+      {actionEditorOpen && pacienteActual.id && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 60, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          <div className="bot-movil-editor" style={{ minHeight: '100%' }}>
+            <style>{`
+              .bot-movil-editor .modal { max-width: 100% !important; width: 100% !important;
+                border-radius: 0 !important; max-height: none !important; }
+              .bot-movil-editor .modal-overlay { align-items: flex-start !important; padding: 0 !important; }
+              .bot-movil-editor input, .bot-movil-editor select, .bot-movil-editor textarea { font-size: 16px !important; }
+              @media (max-width: 480px) {
+                .bot-movil-editor .modal [style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+              }
+            `}</style>
+            <ActionEditorModal
+              patient={pacienteActual}
+              currentAction={overrideAction || pendingForSelected?.proposed_action || null}
+              currentText={proposalDraft || freeText}
+              services={services}
+              professionals={professionals}
+              sb={sb}
+              botFetch={botFetch}
+              onCancel={() => setActionEditorOpen(false)}
+              onConfirm={(nuevaAccion, nuevoTexto) => {
+                setOverrideAction(nuevaAccion)
+                if (pendingForSelected) setProposalDraft(nuevoTexto)
+                else setFreeText(nuevoTexto)
+                setActionEditorOpen(false)
+              }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   )
 }
