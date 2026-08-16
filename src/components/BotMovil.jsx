@@ -44,6 +44,10 @@ import { ActionEditorModal } from './ActionEditorModal.jsx'
 import { conversationPayloadFor } from '../lib/newConversation.js'
 
 // ─── Paleta WhatsApp adaptada al verde del centro ─────────────────────────
+// Súbelo a mano en cada cambio visible de esta pantalla. Se muestra junto al
+// título para saber qué build tiene el móvil sin adivinar.
+const BUILD = 'v5'
+
 const HEADER_BG = '#1d5c2e'
 const THREAD_BG = '#efe7dd'
 const BUBBLE_OUT = '#d9fdd3'
@@ -623,7 +627,13 @@ export function BotMovil({ sb, botFetch }) {
       <div style={screenStyle}>
         <div style={headerStyle}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
-            <div style={{ fontSize: 20, fontWeight: 700 }}>Anantara</div>
+            {/* Marca de versión. El PWA cachea con ganas y hemos perdido varias
+                rondas discutiendo sobre builds distintos: con esto se ve de un
+                vistazo si el móvil tiene la última o una vieja. */}
+            <div style={{ fontSize: 20, fontWeight: 700, display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              Anantara
+              <span style={{ fontSize: 11, fontWeight: 400, color: 'rgba(255,255,255,0.65)' }}>{BUILD}</span>
+            </div>
             <button
               onClick={exitToPanel}
               style={{
