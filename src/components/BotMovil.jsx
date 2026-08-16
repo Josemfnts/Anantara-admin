@@ -46,7 +46,7 @@ import { conversationPayloadFor } from '../lib/newConversation.js'
 // ─── Paleta WhatsApp adaptada al verde del centro ─────────────────────────
 // Súbelo a mano en cada cambio visible de esta pantalla. Se muestra junto al
 // título para saber qué build tiene el móvil sin adivinar.
-const BUILD = 'v6'
+const BUILD = 'v7'
 
 const HEADER_BG = '#1d5c2e'
 const THREAD_BG = '#efe7dd'
@@ -910,7 +910,10 @@ export function BotMovil({ sb, botFetch }) {
         flexShrink: 0, background: '#fff', borderTop: '1px solid #e2e2e2',
         paddingLeft: 'calc(env(safe-area-inset-left) + 10px)',
         paddingRight: 'calc(env(safe-area-inset-right) + 10px)',
-        paddingBottom: 'calc(env(safe-area-inset-bottom) + 10px)',
+        // 8px y punto. Antes llevaba `env(safe-area-inset-bottom)`, que en el
+        // iPhone son ~34px de relleno VACÍO bajo los botones: ese era el hueco.
+        // Josema lo quiere pegado abajo, no reservado para el indicador de inicio.
+        paddingBottom: 8,
         paddingTop: 10,
       }}>
         {actionError && <ErrorBanner text={actionError} />}
