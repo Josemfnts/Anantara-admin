@@ -37,7 +37,7 @@
 //   procesos automáticos del takeover de Bot Coach (pending_searches, wait_queue…).
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { fClock } from '../lib/datetime.js'
+import { fClock, fDayLabel, madridDay } from '../lib/datetime.js'
 import { describeProposedAction, isDestructiveAction, actionLookupId } from '../lib/proposedAction.js'
 import { quickRepliesFor } from '../lib/quickReplies.js'
 import { ActionEditorModal } from './ActionEditorModal.jsx'
@@ -884,10 +884,23 @@ export function BotMovil({ sb, botFetch }) {
         ) : messages.length === 0 ? (
           <div style={{ padding: 32, textAlign: 'center', color: '#6b7d6f', fontSize: 15 }}>Sin mensajes todavía.</div>
         ) : (
-          messages.map(m => {
+          messages.map((m, i) => {
             const mine = m.direction === 'out'
+            // Separador de día: sin él, una conversación de varios días parecía
+            // desordenada (21:30 seguido de 08:02 son días distintos).
+            const dia = madridDay(m.created_at)
+            const nuevoDia = dia && dia !== madridDay(messages[i - 1]?.created_at)
             return (
-              <div key={m.id} style={{ display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start', padding: '2px 10px' }}>
+              <React.Fragment key={m.id}>
+              {nuevoDia && (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '10px 0 6px' }}>
+                  <span style={{
+                    background: '#e3ede4', color: '#4a5a4d', fontSize: 12, fontWeight: 600,
+                    padding: '3px 10px', borderRadius: 10, boxShadow: '0 1px 1px rgba(0,0,0,0.08)',
+                  }}>{fDayLabel(m.created_at)}</span>
+                </div>
+              )}
+              <div style={{ display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start', padding: '2px 10px' }}>
                 <div style={{
                   maxWidth: '80%', background: mine ? BUBBLE_OUT : BUBBLE_IN, borderRadius: 10,
                   padding: '8px 10px', boxShadow: '0 1px 1px rgba(0,0,0,0.1)',
@@ -900,6 +913,7 @@ export function BotMovil({ sb, botFetch }) {
                   </div>
                 </div>
               </div>
+              </React.Fragment>
             )
           })
         )}

@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { actionLookupId, describeProposedAction, isDestructiveAction } from './lib/proposedAction.js'
 import { ActionEditorModal } from './components/ActionEditorModal.jsx'
-import { fClock, fClockDT } from './lib/datetime.js'
+import { fClock, fClockDT, fDayLabel, madridDay } from './lib/datetime.js'
 import { moveItem } from './lib/listOrder.js'
 import { quickRepliesFor } from './lib/quickReplies.js'
 import { buildFollowupMessage, weekText, buildNextAppointmentReminder } from './lib/followupMessage.js'
@@ -2661,26 +2661,72 @@ function Espera(){
   }
 
   const openAssign = async (row) => {
-    // Buscar huecos cancelled del profesional de la fila
+    // Huecos = citas canceladas del profesional que SIGUEN libres.
+    //
+    // Una cita cancelada NO es un hueco por sí sola: puede haberse vuelto a
+    // ocupar con otro paciente, caer en un día/franja bloqueada, estar ya
+    // ofrecida a otro de la lista, o simplemente haber pasado ya. Antes se
+    // listaban todas y Marta veía horas que no existían (aviso de 19-ago).
     const fbStart = row.fallback_appointment_id ? fbMap[row.fallback_appointment_id]?.starts_at : null
-    const minDate = row.target_date || new Date().toISOString().slice(0,10)
-    const { data: cancelled } = await sb.from('appointments')
-      .select('id,starts_at,ends_at,service_id')
-      .eq('professional_id', row.professional_id)
-      .eq('status', 'cancelled')
-      .gte('starts_at', minDate + 'T00:00:00')
-      .order('starts_at')
-      .limit(15)
-    const candidates = (cancelled || []).map(a => {
+    const hoy = new Date().toISOString().slice(0,10)
+    // target_date puede estar en el pasado: nunca bajamos de hoy.
+    const minDate = (row.target_date && row.target_date > hoy) ? row.target_date : hoy
+    const desde = minDate + 'T00:00:00'
+    const hasta = new Date(Date.now() + 120*24*36e5).toISOString().slice(0,10) + 'T23:59:59'
+
+    const [cancQ, ocupQ, bsQ, bdQ] = await Promise.all([
+      sb.from('appointments').select('id,starts_at,ends_at,service_id')
+        .eq('professional_id', row.professional_id).eq('status', 'cancelled')
+        .gte('starts_at', desde).lte('starts_at', hasta).order('starts_at').limit(60),
+      // Todo lo que ocupa agenda de ese profesional (pending incluida: está reservada).
+      sb.from('appointments').select('starts_at,ends_at')
+        .eq('professional_id', row.professional_id).neq('status', 'cancelled')
+        .gte('starts_at', desde).lte('starts_at', hasta),
+      sb.from('blocked_slots').select('starts_at,ends_at')
+        .eq('professional_id', row.professional_id).gte('starts_at', desde).lte('starts_at', hasta),
+      sb.from('blocked_days').select('date')
+        .eq('professional_id', row.professional_id).gte('date', minDate),
+    ])
+
+    const cancelled = cancQ.data || []
+    // Huecos ya ofrecidos a otro paciente de la lista → no volver a ofrecerlos.
+    let ofrecidos = new Set()
+    if (cancelled.length) {
+      const { data: holds } = await sb.from('cancellation_holds')
+        .select('appointment_id,current_offer_id')
+        .in('appointment_id', cancelled.map(a => a.id))
+      ofrecidos = new Set((holds || []).filter(h => h.current_offer_id).map(h => h.appointment_id))
+    }
+
+    const ocupados = ocupQ.data || []
+    const bloques = bsQ.data || []
+    const diasBloqueados = new Set((bdQ.data || []).map(b => b.date))
+    const solapa = (a, lista) => lista.some(o =>
+      a.starts_at < (o.ends_at || o.starts_at) && (a.ends_at || a.starts_at) > o.starts_at)
+    // Comparación en hora local de pared, igual que el resto de la agenda: los
+    // starts_at de citas son wall-clock, nunca se pasan por toISOString().
+    const ahora = new Date()
+    const ahoraLocal = `${ahora.getFullYear()}-${String(ahora.getMonth()+1).padStart(2,'0')}-${String(ahora.getDate()).padStart(2,'0')}T${String(ahora.getHours()).padStart(2,'0')}:${String(ahora.getMinutes()).padStart(2,'0')}:00`
+
+    const vistos = new Set()
+    const candidates = []
+    for (const a of cancelled) {
+      if (a.starts_at.slice(0,19) <= ahoraLocal) continue          // ya pasó
+      if (diasBloqueados.has(a.starts_at.slice(0,10))) continue     // día cerrado
+      if (ofrecidos.has(a.id)) continue                             // ofrecido a otro
+      if (solapa(a, ocupados)) continue                             // reocupado
+      if (solapa(a, bloques)) continue                              // franja bloqueada
+      const clave = a.starts_at.slice(0,16)
+      if (vistos.has(clave)) continue                               // dos cancelaciones del mismo slot
+      vistos.add(clave)
       const hour = parseInt(a.starts_at.slice(11,13))
       const beforeFb = !fbStart || a.starts_at < fbStart.slice(0, 19)
       const hourMatches = row.preferred_hour == null || row.preferred_hour === hour
-      // Nada bloquea: solo avisos visuales.
-      return { appt: a, beforeFb, hourMatches }
-    })
+      candidates.push({ appt: a, beforeFb, hourMatches })
+    }
     const score2 = c => (c.beforeFb?10:0) + (c.hourMatches?1:0)
     candidates.sort((a,b) => score2(b) - score2(a))
-    setAssignModal({ row, candidates })
+    setAssignModal({ row, candidates: candidates.slice(0, 15) })
   }
 
   const confirmAssign = async (cancelledAppt) => {
@@ -5334,11 +5380,21 @@ function BotCoach() {
             <div ref={threadBoxRef} style={{flex:1,overflowY:'auto',padding:16,background:'var(--cream)',display:'flex',flexDirection:'column',gap:8}}>
               {thread.length===0
                 ? <div style={{margin:'auto',fontSize:12,color:'var(--text-muted)'}}>Sin mensajes guardados todavía</div>
-                : thread.map(m => {
+                : thread.map((m,i) => {
                     const out = m.direction === 'out'
                     const who = m.metadata?.sent_by
+                    // Separador de día: solo con HH:MM, una conversación de varios
+                    // días parece desordenada (21:30 seguido de 08:02).
+                    const dia = madridDay(m.created_at)
+                    const nuevoDia = dia && dia !== madridDay(thread[i-1]?.created_at)
                     return (
-                      <div key={m.id} style={{alignSelf: out?'flex-end':'flex-start', maxWidth:'72%'}}>
+                      <React.Fragment key={m.id}>
+                      {nuevoDia && (
+                        <div style={{alignSelf:'center',fontSize:10,fontWeight:700,color:'var(--text-muted)',background:'#fff',border:'1px solid var(--border)',borderRadius:999,padding:'2px 10px',margin:'4px 0'}}>
+                          {fDayLabel(m.created_at)}
+                        </div>
+                      )}
+                      <div style={{alignSelf: out?'flex-end':'flex-start', maxWidth:'72%'}}>
                         <div style={{
                           padding:'8px 12px',borderRadius:12,fontSize:13,whiteSpace:'pre-wrap',wordBreak:'break-word',
                           background: out?'var(--green)':'#fff', color: out?'#fff':'var(--body)',
@@ -5347,6 +5403,7 @@ function BotCoach() {
                           {fClock(m.created_at)}{who?` · ${who}`:''}
                         </div>
                       </div>
+                      </React.Fragment>
                     )
                   })}
             </div>

@@ -39,3 +39,30 @@ export function fClockDT(iso) {
   const m = madridParts(iso)
   return m ? `${m.d} ${MONTHS[m.mo - 1]} · ${m.h}:${m.mi}` : '—'
 }
+
+// 'YYYY-MM-DD' del día de pared en Europe/Madrid. Clave para agrupar mensajes
+// por día en los chats.
+export function madridDay(iso) {
+  const m = madridParts(iso)
+  return m ? `${m.y}-${String(m.mo).padStart(2, '0')}-${String(m.d).padStart(2, '0')}` : null
+}
+
+const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado']
+
+// Etiqueta del separador de día en un chat: 'Hoy', 'Ayer', 'martes 12 ago' o,
+// si es de otro año, '12 ago 2025'. Los chats mostraban solo HH:MM, así que una
+// conversación de varios días parecía desordenada (21:30 seguido de 08:02).
+export function fDayLabel(iso, now = new Date()) {
+  const m = madridParts(iso)
+  if (!m) return ''
+  const dia = madridDay(iso)
+  const hoy = madridDay(now.toISOString())
+  if (dia === hoy) return 'Hoy'
+  const ayer = madridDay(new Date(now.getTime() - 24 * 36e5).toISOString())
+  if (dia === ayer) return 'Ayer'
+  const dow = new Date(Date.UTC(m.y, m.mo - 1, m.d)).getUTCDay()
+  const esteAno = new Date(hoy + 'T00:00:00Z').getUTCFullYear()
+  return m.y === esteAno
+    ? `${DIAS[dow]} ${m.d} ${MONTHS[m.mo - 1]}`
+    : `${m.d} ${MONTHS[m.mo - 1]} ${m.y}`
+}
