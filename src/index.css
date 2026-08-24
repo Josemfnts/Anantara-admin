@@ -182,12 +182,19 @@ button, input, select, textarea { font-family: inherit }
 .notes-area:focus { border-color: var(--sage); box-shadow: 0 0 0 3px rgba(61,107,79,.12) }
 
 /* ── Modal ── */
-.modal-overlay { position: fixed; inset: 0; background: rgba(28,43,34,.6); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 200; padding: 20px; animation: modalFade 180ms ease }
-.modal { background: #fff; border-radius: var(--r-xl); padding: 28px; width: 100%; max-width: 480px; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-xl); animation: modalIn 220ms cubic-bezier(.2,.9,.3,1) }
+/* overflow-y:auto en el overlay = red de seguridad: si un modal crece más que la
+   pantalla, se puede desplazar el overlay en vez de quedar contenido inalcanzable.
+   align-items:flex-start con margin:auto centra cuando cabe, pero deja el modal
+   pegado arriba (y por tanto alcanzable) cuando no cabe — con align-items:center
+   la parte de arriba se recorta y no hay forma de llegar a ella. */
+.modal-overlay { position: fixed; inset: 0; background: rgba(28,43,34,.6); backdrop-filter: blur(4px); display: flex; align-items: flex-start; justify-content: center; z-index: 200; padding: 20px; overflow-y: auto; -webkit-overflow-scrolling: touch; animation: modalFade 180ms ease }
+/* 100dvh (no vh): en el móvil, vh cuenta la barra de direcciones aunque esté
+   visible, así que "90vh" se salía de la pantalla de verdad. */
+.modal { background: #fff; border-radius: var(--r-xl); padding: 28px; width: 100%; max-width: 480px; max-height: 90dvh; overflow-y: auto; margin: auto; box-shadow: var(--shadow-xl); animation: modalIn 220ms cubic-bezier(.2,.9,.3,1) }
 @keyframes modalFade { from { opacity: 0 } to { opacity: 1 } }
 @keyframes modalIn { from { opacity: 0; transform: translateY(8px) scale(.98) } to { opacity: 1; transform: translateY(0) scale(1) } }
 @media (min-width: 1024px) { .modal { max-width: 520px } }
-@media (max-width: 600px) { .modal { padding: 22px; border-radius: var(--r-lg) } }
+@media (max-width: 600px) { .modal { padding: 18px; border-radius: var(--r-lg) } .modal-overlay { padding: 10px } }
 .modal-title { font-family: var(--font-display); font-size: var(--text-xl); font-weight: 700; margin-bottom: 20px; color: var(--ink); letter-spacing: var(--ls-display); padding-bottom: 14px; border-bottom: 1px solid var(--stone) }
 
 /* ── Toast ── */

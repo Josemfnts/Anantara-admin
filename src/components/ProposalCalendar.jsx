@@ -41,11 +41,15 @@ export function ProposalCalendar({ month, days, loading, onPrev, onNext, onSelec
   const selectedHours = selectedDay ? (days[selectedDay]?.hours || []) : []
 
   return (
-    <div style={{ width: 320 }}>
+    // Ancho FLUIDO. Antes era `width: 320` fijo: en un móvil de 360px, restando
+    // el relleno del modal y el de la tarjeta, quedaban ~296px y el calendario
+    // se salía por la derecha — las columnas del jueves al domingo quedaban
+    // cortadas (reportado el 24-ago: "se ven muy muy mal").
+    <div style={{ width: '100%', maxWidth: 360, margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-        <button onClick={onPrev} style={navBtn}>◀</button>
-        <div style={{ fontWeight: 700, fontSize: 14 }}>{MONTHS[month.getMonth()]} {month.getFullYear()}</div>
-        <button onClick={onNext} style={navBtn}>▶</button>
+        <button onClick={onPrev} style={navBtn} aria-label="Mes anterior">◀</button>
+        <div style={{ fontWeight: 700, fontSize: 15 }}>{MONTHS[month.getMonth()]} {month.getFullYear()}</div>
+        <button onClick={onNext} style={navBtn} aria-label="Mes siguiente">▶</button>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: 4 }}>
@@ -89,7 +93,10 @@ export function ProposalCalendar({ month, days, loading, onPrev, onNext, onSelec
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'var(--body)' }}>
             Horas disponibles el {selectedDay.slice(8)}:
           </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 120, overflowY: 'auto' }}>
+          {/* maxHeight 120 dejaba ver dos filas escasas de horas y el scroll
+              interno competía con el del modal en el móvil. 200 + WebkitOverflowScrolling
+              hace que se desplace con el dedo sin pelearse con la página. */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 200, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
             {selectedHours.length === 0 ? (
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Sin horas</span>
             ) : (
@@ -114,25 +121,34 @@ export function ProposalCalendar({ month, days, loading, onPrev, onNext, onSelec
   )
 }
 
+// Medidas pensadas para el DEDO, no para el ratón: en el móvil de Marta las
+// celdas de 28-32px eran casi imposibles de acertar. 40px es el mínimo cómodo.
 const navBtn = {
   border: '1px solid var(--stone)',
   background: '#fff',
-  borderRadius: 6,
-  width: 28,
-  height: 28,
+  borderRadius: 8,
+  width: 40,
+  height: 40,
   cursor: 'pointer',
-  fontSize: 12,
+  fontSize: 14,
+  flexShrink: 0,
 }
 
 const dayBtn = {
   border: 'none',
-  borderRadius: 6,
-  height: 32,
-  fontSize: 12,
+  borderRadius: 8,
+  // aspectRatio mantiene las celdas cuadradas al ser el ancho fluido; minHeight
+  // garantiza que nunca bajen del tamaño mínimo de toque aunque la pantalla sea
+  // muy estrecha.
+  aspectRatio: '1 / 1',
+  minHeight: 40,
+  width: '100%',
+  fontSize: 14,
   fontWeight: 600,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
+  padding: 0,
 }
 
 const hourBtn = {
@@ -140,8 +156,9 @@ const hourBtn = {
   background: 'var(--sage-mist)',
   color: 'var(--green)',
   borderRadius: 999,
-  padding: '4px 10px',
-  fontSize: 12,
+  padding: '8px 14px',
+  minHeight: 40,
+  fontSize: 14,
   fontWeight: 600,
   cursor: 'pointer',
 }

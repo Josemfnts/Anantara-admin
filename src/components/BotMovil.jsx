@@ -219,7 +219,7 @@ export function BotMovil({ sb, botFetch }) {
         // `proposed_action` es imprescindible: el bot solo ejecuta la acción si
         // recibe final_action Y action_approved. Sin ella se enviaría el texto
         // pero la cita no se confirmaría/cancelaría nunca.
-        .select('id, conversation_id, proposed_text, proposed_action, category')
+        .select('id, conversation_id, proposed_text, proposed_action, category, intent_detected')
         .eq('verdict', 'pending')
       if (error) throw error
       setPendingReviews(data || [])
@@ -960,7 +960,7 @@ export function BotMovil({ sb, botFetch }) {
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: HEADER_BG, textTransform: 'uppercase', letterSpacing: 0.3 }}>
-                Propuesta del bot
+                {pendingForSelected.proposed_text ? 'Propuesta del bot' : 'El bot no ha propuesto nada'}
               </span>
               {pendingForSelected.category && (
                 <span style={{ fontSize: 11, color: '#6b7d6f', background: '#eef3ec', borderRadius: 999, padding: '2px 8px' }}>
@@ -974,6 +974,16 @@ export function BotMovil({ sb, botFetch }) {
                 escribir otro mensaje
               </button>
             </div>
+
+            {!pendingForSelected.proposed_text && (
+              // Sin esto, Marta abre el chat y se encuentra un cuadro vacío sin
+              // saber por qué. El motivo lo escribe el bot en intent_detected
+              // cuando calla sin resolver (audio, dolencia, fallo, desconocido).
+              <div style={{ fontSize: 13, color: '#7a5b00', background: '#fff8e1', border: '1px solid #f0d68a', borderRadius: 8, padding: '8px 10px', marginBottom: 8 }}>
+                Lo tienes que contestar tú.
+                {pendingForSelected.intent_detected ? ` Motivo: ${pendingForSelected.intent_detected}.` : ''}
+              </div>
+            )}
 
             {/* Tarjeta de la acción propuesta (problema 1): qué cita toca, para que la
                 secretaria no apruebe a ciegas. Mismo criterio que Bot Coach — ver
@@ -1141,12 +1151,21 @@ export function BotMovil({ sb, botFetch }) {
           que no se separen los comportamientos. Se envuelve para que quepa en una
           pantalla estrecha y pueda hacer scroll dentro, sin tocar su fichero. */}
       {actionEditorOpen && pacienteActual.id && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 60, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
-          <div className="bot-movil-editor" style={{ minHeight: '100%' }}>
+        <div className="bot-movil-editor">
+            {/* POR QUÉ ESTO ES ASÍ (fallo del 24-ago: "es fijo y no va"):
+                antes esto era un <div position:fixed; overflow:auto> que envolvía
+                al modal Y le quitaba el max-height. Pero .modal-overlay es a su
+                vez position:fixed, y un elemento fixed NO se desplaza con el
+                contenedor que lo envuelve: se ancla a la pantalla. Resultado, lo
+                que quedaba por debajo del borde inferior era inalcanzable.
+                Ahora el modal se desplaza por dentro (cabecera y botones fijos,
+                cuerpo con scroll — ver ActionEditorModal) y aquí solo se ajusta
+                lo propio del móvil: ancho completo y letra de 16px en los campos,
+                que es el mínimo que evita que iOS haga zoom al enfocar. */}
             <style>{`
               .bot-movil-editor .modal { max-width: 100% !important; width: 100% !important;
-                border-radius: 0 !important; max-height: none !important; }
-              .bot-movil-editor .modal-overlay { align-items: flex-start !important; padding: 0 !important; }
+                border-radius: 12px !important; }
+              .bot-movil-editor .modal-overlay { padding: 8px !important; }
               .bot-movil-editor input, .bot-movil-editor select, .bot-movil-editor textarea { font-size: 16px !important; }
               @media (max-width: 480px) {
                 .bot-movil-editor .modal [style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
@@ -1168,7 +1187,6 @@ export function BotMovil({ sb, botFetch }) {
                 setActionEditorOpen(false)
               }}
             />
-          </div>
         </div>
       )}
     </div>

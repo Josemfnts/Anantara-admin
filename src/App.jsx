@@ -4,6 +4,7 @@ import { actionLookupId, describeProposedAction, isDestructiveAction } from './l
 import { ActionEditorModal } from './components/ActionEditorModal.jsx'
 import { fClock, fClockDT, fDayLabel, madridDay } from './lib/datetime.js'
 import { moveItem } from './lib/listOrder.js'
+import { preferredMinutesOf, preferredHoursLabel, minutesToLabel, huecoMatchesPreferred } from './lib/prefHours.js'
 import { quickRepliesFor } from './lib/quickReplies.js'
 import { buildFollowupMessage, weekText, buildNextAppointmentReminder } from './lib/followupMessage.js'
 import { importeCita, buildNoShowMessage } from './lib/noShow.js'
@@ -1083,7 +1084,7 @@ function Agenda(){
   const openAssignModal = async (appt) => {
     // Cargar primeras 10 filas de wait_queue de ese profesional, ordenadas por queue_type (waiting primero) + priority
     const { data: rows } = await sb.from('wait_queue')
-      .select('id,queue_type,priority_order,target_date,preferred_hour,fallback_appointment_id,patient_id,patients(id,full_name,phone),services(name,duration_minutes)')
+      .select('id,queue_type,priority_order,target_date,preferred_hour,preferred_hours,fallback_appointment_id,patient_id,patients(id,full_name,phone),services(name,duration_minutes)')
       .eq('professional_id', appt.professional_id)
       .order('queue_type', { ascending: false })  // 'waiting' < 'expedite' alphabetically — invertir
       .order('priority_order', { ascending: true })
@@ -1104,14 +1105,15 @@ function Agenda(){
       .maybeSingle()
 
     const huecoStart = appt.starts_at
-    const huecoHour = parseInt(huecoStart.slice(11,13))
     const huecoDate = huecoStart.slice(0,10)
 
     const candidates = (rows || []).map(r => {
       const fbDate = fbMap[r.fallback_appointment_id] || null
       const beforeFallback = !fbDate || huecoStart < fbDate.slice(0, 19)
       const afterTarget = !r.target_date || huecoDate >= r.target_date
-      const hourMatches = r.preferred_hour == null || r.preferred_hour === huecoHour
+      // Admite varias horas y respeta la MEDIA hora: `preferred_hour === huecoHour`
+      // daba por bueno un hueco de las 08:30 para quien pidió las 08:00.
+      const hourMatches = huecoMatchesPreferred(huecoStart, r)
       // Nada es bloqueante: la secretaria decide. Solo se muestran avisos.
       return {
         ...r,
@@ -2125,12 +2127,12 @@ function Agenda(){
                   </div>
                   <div style={{fontSize:11,color:'var(--text-muted)'}}>
                     {c.fallback_starts_at ? `Cita actual: ${fDT(c.fallback_starts_at)}` : 'Sin cita asignada'} ·
-                    Hora preferida: {c.preferred_hour != null ? `${pad(c.preferred_hour)}:00` : 'Cualquiera'}
+                    Horas admitidas: {preferredHoursLabel(c)}
                   </div>
                   {someMismatch && <div style={{fontSize:10,color:'#a16207',marginTop:2,fontWeight:600}}>
                     ⚠ {!c.beforeFallback && 'Posterior a su cita actual. '}
                     {!c.afterTarget && 'Antes de la fecha pautada. '}
-                    {!c.hourMatches && `Hora preferida: ${pad(c.preferred_hour)}:00. `}
+                    {!c.hourMatches && `Fuera de sus horas (${preferredHoursLabel(c)}). `}
                     Puedes asignarlo igualmente.
                   </div>}
                 </div>
@@ -2550,15 +2552,21 @@ function Espera(){
   const[loading,setLoading]=useState(true)
   const[rows,setRows]=useState([])
   const[fbMap,setFbMap]=useState({})
+  const[proxMap,setProxMap]=useState({})   // patient_id -> próxima cita real
   const[toast,setToast]=useState(null)
-  const[assignModal,setAssignModal]=useState(null) // {row, candidates: [{appt, fits}]}
+  const[assignModal,setAssignModal]=useState(null) // {row, candidates:[{key,starts_at,origen,…}]}
   const[editModal,setEditModal]=useState(null) // {row}
-  const[editForm,setEditForm]=useState({target_date:'',weeks_pautadas:'',preferred_hour:''})
+  const[editForm,setEditForm]=useState({target_date:'',weeks_pautadas:'',preferred_hours:[]})
+  // working_hours del profesional de la fila que se edita: define de qué hora a
+  // qué hora se ofrecen medias horas en el selector (no tiene sentido ofrecer
+  // las 19:00 de Marcos, que acaba a las 15:00).
+  const[editHours,setEditHours]=useState([])
   // Alta manual de paciente sin cita
   const[profs,setProfs]=useState([])
   const[services,setServices]=useState([])
   const[addModal,setAddModal]=useState(false)
-  const[addForm,setAddForm]=useState({prof_id:'',svc_id:'',target_date:'',preferred_hour:'',weeks_pautadas:''})
+  const[addForm,setAddForm]=useState({prof_id:'',svc_id:'',target_date:'',preferred_hours:[],weeks_pautadas:''})
+  const[addHours,setAddHours]=useState([])   // working_hours del prof elegido en el alta
   const[addPat,setAddPat]=useState(null)
   const[addPatSearch,setAddPatSearch]=useState('')
   const[addPatResults,setAddPatResults]=useState([])
@@ -2567,7 +2575,7 @@ function Espera(){
   const load=useCallback(async()=>{
     setLoading(true)
     const{data}=await sb.from('wait_queue')
-      .select('id,queue_type,priority_order,target_date,preferred_hour,weeks_pautadas,fallback_appointment_id,created_at,notes,patient_id,professional_id,service_id,patients(id,full_name,phone),services(name),professionals(name)')
+      .select('id,queue_type,priority_order,target_date,preferred_hour,preferred_hours,weeks_pautadas,fallback_appointment_id,created_at,notes,patient_id,professional_id,service_id,patients(id,full_name,phone),services(name,duration_minutes),professionals(name)')
       .eq('queue_type', tab)
       .order('priority_order',{ascending:true})
     const items = data||[]
@@ -2578,7 +2586,25 @@ function Espera(){
       const{data:fb}=await sb.from('appointments').select('id,starts_at,status').in('id',fbIds)
       map = Object.fromEntries((fb||[]).map(f=>[f.id, f]))
     }
-    setRows(items); setFbMap(map); setLoading(false)
+    // Próxima cita REAL de cada paciente. `fallback_appointment_id` solo se
+    // rellena cuando la fila nace de un follow-up; en las altas manuales y en
+    // las que crea el bot va NULL, y la columna pintaba "Sin cita" en rojo
+    // aunque el paciente tuviera cita. El 24-ago pasaba en las 4 filas de las
+    // dos listas: las 4 tenían cita futura y las 4 decían "Sin cita".
+    const patIds = [...new Set(items.map(r => r.patient_id).filter(Boolean))]
+    let proxMap = {}
+    if (patIds.length) {
+      const hoyStr = new Date().toLocaleDateString('en-CA')
+      const{data:prox}=await sb.from('appointments')
+        .select('id,patient_id,starts_at,status')
+        .in('patient_id', patIds)
+        .in('status',['pending','confirmed'])
+        .gte('starts_at', hoyStr+'T00:00:00')
+        .order('starts_at',{ascending:true})
+      // La primera de cada paciente (vienen ordenadas por fecha).
+      for (const a of prox||[]) if (!proxMap[a.patient_id]) proxMap[a.patient_id] = a
+    }
+    setRows(items); setFbMap(map); setProxMap(proxMap); setLoading(false)
   },[tab])
   useEffect(()=>{load()},[load])
 
@@ -2587,6 +2613,12 @@ function Espera(){
     sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name',{ascending:false}).then(({data})=>setProfs(data||[]))
     sb.from('services').select('id,name,duration_minutes,professional_id').eq('is_active',true).eq('section','osteopathy').order('duration_minutes',{ascending:false}).then(({data})=>setServices(data||[]))
   },[])
+  // Horario del profesional elegido en el alta, para acotar el selector de horas.
+  useEffect(()=>{
+    if(!addForm.prof_id){setAddHours([]);return}
+    sb.from('working_hours').select('start_time,end_time').eq('professional_id',addForm.prof_id)
+      .then(({data})=>setAddHours(data||[]))
+  },[addForm.prof_id])
   // Buscador de pacientes para el alta manual
   useEffect(()=>{
     if(!addPatSearch.trim()){setAddPatResults([]);return}
@@ -2605,13 +2637,14 @@ function Espera(){
       professional_id:addForm.prof_id,
       service_id:addForm.svc_id,
       target_date:addForm.target_date||null,
-      preferred_hour:addForm.preferred_hour!==''?Number(addForm.preferred_hour):null,
+      preferred_hour:null,
+      preferred_hours:(addForm.preferred_hours||[]).length ? [...addForm.preferred_hours].sort((a,b)=>a-b) : null,
       weeks_pautadas:addForm.weeks_pautadas!==''?Number(addForm.weeks_pautadas):null,
     })
     setAddSaving(false)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setAddModal(false)
-    setAddForm({prof_id:'',svc_id:'',target_date:'',preferred_hour:'',weeks_pautadas:''})
+    setAddForm({prof_id:'',svc_id:'',target_date:'',preferred_hours:[],weeks_pautadas:''})
     setAddPat(null);setAddPatSearch('');setAddPatResults([])
     setTab('waiting')
     setToast({msg:'Añadido a lista de espera',type:'ok'})
@@ -2667,7 +2700,12 @@ function Espera(){
     // ocupar con otro paciente, caer en un día/franja bloqueada, estar ya
     // ofrecida a otro de la lista, o simplemente haber pasado ya. Antes se
     // listaban todas y Marta veía horas que no existían (aviso de 19-ago).
-    const fbStart = row.fallback_appointment_id ? fbMap[row.fallback_appointment_id]?.starts_at : null
+    // Cita contra la que se compara "¿esto le adelanta?": la REAL del paciente.
+    // El fallback solo existe cuando la fila nace de un follow-up, y estaba a
+    // NULL en las 4 filas vivas del 24-ago, así que el aviso "posterior a su
+    // cita actual" no saltaba nunca y se ofrecían huecos que no adelantan nada.
+    const fbStart = proxMap[row.patient_id]?.starts_at
+      || (row.fallback_appointment_id ? fbMap[row.fallback_appointment_id]?.starts_at : null)
     const hoy = new Date().toISOString().slice(0,10)
     // target_date puede estar en el pasado: nunca bajamos de hoy.
     const minDate = (row.target_date && row.target_date > hoy) ? row.target_date : hoy
@@ -2708,8 +2746,20 @@ function Espera(){
     const ahora = new Date()
     const ahoraLocal = `${ahora.getFullYear()}-${String(ahora.getMonth()+1).padStart(2,'0')}-${String(ahora.getDate()).padStart(2,'0')}T${String(ahora.getHours()).padStart(2,'0')}:${String(ahora.getMinutes()).padStart(2,'0')}:00`
 
+    const dur = row.services?.duration_minutes || 60
+    const finDe = (startsAt) => {
+      const [f, h] = startsAt.split('T')
+      const mins = parseInt(h.slice(0,2))*60 + parseInt(h.slice(3,5)) + dur
+      return `${f}T${String(Math.floor(mins/60)).padStart(2,'0')}:${String(mins%60).padStart(2,'0')}:00`
+    }
+
     const vistos = new Set()
     const candidates = []
+
+    // (A) Cancelaciones que siguen libres. Son las que interesan para adelantar:
+    //     hueco cercano que acaba de soltarse. Incluye las que tienen un candado
+    //     vivo en cancellation_holds — están reservadas justo para esta lista, y
+    //     por eso la disponibilidad general del bot no las devuelve.
     for (const a of cancelled) {
       if (a.starts_at.slice(0,19) <= ahoraLocal) continue          // ya pasó
       if (diasBloqueados.has(a.starts_at.slice(0,10))) continue     // día cerrado
@@ -2719,33 +2769,90 @@ function Espera(){
       const clave = a.starts_at.slice(0,16)
       if (vistos.has(clave)) continue                               // dos cancelaciones del mismo slot
       vistos.add(clave)
-      const hour = parseInt(a.starts_at.slice(11,13))
-      const beforeFb = !fbStart || a.starts_at < fbStart.slice(0, 19)
-      const hourMatches = row.preferred_hour == null || row.preferred_hour === hour
-      candidates.push({ appt: a, beforeFb, hourMatches })
+      candidates.push({
+        key: clave, starts_at: a.starts_at, ends_at: a.ends_at || finDe(a.starts_at),
+        origen: 'cancelacion', cancelled_appt_id: a.id, service_id: a.service_id || row.service_id,
+      })
     }
+
+    // (B) Huecos LIBRES de verdad. Antes NO se miraban: la lista solo ofrecía
+    //     cancelaciones, así que los huecos normales de la agenda no aparecían
+    //     nunca. Medido el 24-ago: 25 huecos libres reales de Marcos en 45 días
+    //     que la lista no ofrecía. Se los pedimos al bot, que es quien calcula
+    //     la disponibilidad de verdad (working_hours − descansos − bloqueos −
+    //     citas), en vez de recalcularla aquí por tercera vez.
+    try {
+      const meses = []
+      const cursor = new Date(minDate + 'T12:00:00')
+      for (let i = 0; i < 3; i++) {
+        meses.push(`${cursor.getFullYear()}-${String(cursor.getMonth()+1).padStart(2,'0')}`)
+        cursor.setMonth(cursor.getMonth() + 1)
+      }
+      const respuestas = await Promise.all(meses.map(month =>
+        botFetch('/proposal-slot-options', { method: 'POST', body: JSON.stringify({
+          action_type: 'proponer_cita', professional_id: row.professional_id,
+          month, duration_minutes: dur, patient_id: row.patient_id,
+        })}).then(r => r.json()).catch(() => ({ ok: false }))
+      ))
+      for (const data of respuestas) {
+        if (!data?.ok) continue
+        for (const [dia, info] of Object.entries(data.days || {})) {
+          if (info?.status !== 'free') continue
+          for (const h of (info.hours || [])) {
+            const hora = typeof h === 'string' ? h : h.hour
+            if (!hora) continue
+            const startsAt = `${dia}T${hora}:00`
+            if (startsAt.slice(0,19) <= ahoraLocal) continue
+            const clave = startsAt.slice(0,16)
+            if (vistos.has(clave)) continue
+            vistos.add(clave)
+            candidates.push({
+              key: clave, starts_at: startsAt, ends_at: finDe(startsAt),
+              origen: 'libre', cancelled_appt_id: null, service_id: row.service_id,
+            })
+          }
+        }
+      }
+    } catch {
+      // Si el bot no responde, al menos quedan las cancelaciones (comportamiento
+      // anterior). Nunca dejamos la pantalla sin nada por un fallo de red.
+    }
+
+    // Preferencias: minutos desde medianoche, admitiendo varias horas
+    // (preferred_hours) y la columna antigua de una sola (preferred_hour).
+    const prefMin = preferredMinutesOf(row)
+    for (const c of candidates) {
+      const min = parseInt(c.starts_at.slice(11,13))*60 + parseInt(c.starts_at.slice(14,16))
+      c.hourMatches = !prefMin?.length || prefMin.includes(min)
+      c.beforeFb = !fbStart || c.starts_at < fbStart.slice(0, 19)
+    }
+    // Primero lo que adelanta la cita y encaja en su hora; a igualdad, lo más pronto.
     const score2 = c => (c.beforeFb?10:0) + (c.hourMatches?1:0)
-    candidates.sort((a,b) => score2(b) - score2(a))
-    setAssignModal({ row, candidates: candidates.slice(0, 15) })
+    candidates.sort((a,b) => score2(b) - score2(a) || a.starts_at.localeCompare(b.starts_at))
+    setAssignModal({ row, candidates: candidates.slice(0, 30) })
   }
 
-  const confirmAssign = async (cancelledAppt) => {
+  const confirmAssign = async (cand) => {
     const row = assignModal.row
     const proposedUntil = new Date(Date.now() + 36*60*60*1000).toISOString().slice(0,19)
-    // Crear nueva pending para el paciente WL en el mismo slot del cancelled
+    // Crear nueva pending para el paciente de la lista en ese hueco. Vale tanto
+    // si el hueco viene de una cancelación como si es un hueco libre normal.
     const { data: newAppt, error } = await sb.from('appointments').insert({
       patient_id: row.patient_id,
       professional_id: row.professional_id,
-      service_id: cancelledAppt.service_id || row.service_id,
-      starts_at: cancelledAppt.starts_at,
-      ends_at: cancelledAppt.ends_at,
+      service_id: cand.service_id || row.service_id,
+      starts_at: cand.starts_at,
+      ends_at: cand.ends_at,
       status: 'pending',
       proposed_until: proposedUntil,
       notes: 'Asignación manual desde lista',
     }).select('id').single()
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    // Marcar el hold con current_offer_id
-    await sb.from('cancellation_holds').update({ current_offer_id: newAppt.id }).eq('appointment_id', cancelledAppt.id)
+    // Solo las cancelaciones tienen candado que soltar. Un hueco libre no tiene
+    // cita detrás, así que no hay nada que marcar.
+    if (cand.cancelled_appt_id) {
+      await sb.from('cancellation_holds').update({ current_offer_id: newAppt.id }).eq('appointment_id', cand.cancelled_appt_id)
+    }
     // Disparar WhatsApp via endpoint del bot (Brecha 3)
     try {
       await botFetch('/notify-wl-assignment', {
@@ -2762,16 +2869,30 @@ function Espera(){
     setEditForm({
       target_date: row.target_date || '',
       weeks_pautadas: row.weeks_pautadas != null ? String(row.weeks_pautadas) : '',
-      preferred_hour: row.preferred_hour != null ? String(row.preferred_hour) : '',
+      // Se admiten VARIAS horas, como en el follow-up. preferredMinutesOf lee la
+      // columna nueva (preferred_hours, minutos) y convierte la antigua
+      // (preferred_hour, una sola hora en punto) para las filas viejas.
+      preferred_hours: preferredMinutesOf(row) || [],
     })
+    setEditHours([])
+    if (row.professional_id) {
+      sb.from('working_hours').select('start_time,end_time').eq('professional_id', row.professional_id)
+        .then(({data})=>setEditHours(data||[]))
+    }
     setEditModal(row)
   }
 
   const saveEdit = async () => {
+    const horas = editForm.preferred_hours || []
     const payload = {
       target_date: editForm.target_date || null,
       weeks_pautadas: editForm.weeks_pautadas !== '' ? Number(editForm.weeks_pautadas) : null,
-      preferred_hour: editForm.preferred_hour !== '' ? Number(editForm.preferred_hour) : null,
+      preferred_hours: horas.length ? [...horas].sort((a,b)=>a-b) : null,
+      // La columna antigua se limpia al guardar: si quedara puesta, y el bot
+      // leyera preferred_hour por lo que sea, mandaría una preferencia que Marta
+      // ya no quiere. preferredMinutesOf da prioridad a la plural, pero mejor no
+      // dejar dos fuentes de verdad vivas.
+      preferred_hour: null,
     }
     const{error}=await sb.from('wait_queue').update(payload).eq('id', editModal.id)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
@@ -2849,9 +2970,20 @@ function Espera(){
                     : <span style={{color:'var(--text-muted)',fontSize:11}}>Sin límite</span>}
                 </div>
                 <div>{(()=>{const fp=fechaPautada(r);if(!fp)return<span style={{color:'var(--text-muted)',fontSize:11}}>—</span>;const isLate=fp<new Date();return<span style={{fontWeight:600,color:isLate?'#dc2626':'var(--text)'}}>{fp.toLocaleDateString('es-ES',{day:'numeric',month:'short'})}{isLate?' ⚠':''}</span>})()}</div>
-                <div>{r.preferred_hour!=null ? `${pad(r.preferred_hour)}:00` : 'Cualquiera'}</div>
+                <div style={{fontSize:12}}>{preferredHoursLabel(r)}</div>
                 <div style={{minWidth:0}}>
-                  {fb ? <span style={fb.status==='cancelled'?{color:'#dc2626'}:{}}>{fDT(fb.starts_at)}</span> : <span style={{color:'#dc2626'}}>Sin cita</span>}
+                  {(()=>{
+                    // La cita REAL manda sobre el fallback: el fallback es solo
+                    // la cita de origen del follow-up y muchas filas no la tienen.
+                    const prox = proxMap[r.patient_id]
+                    if (prox) return <span style={prox.status==='pending'?{color:'#a16207'}:{}}>
+                      {fDT(prox.starts_at)}{prox.status==='pending'?' (sin confirmar)':''}
+                    </span>
+                    if (fb) return <span style={fb.status==='cancelled'?{color:'#dc2626'}:{}}>
+                      {fDT(fb.starts_at)}{fb.status==='cancelled'?' (cancelada)':''}
+                    </span>
+                    return <span style={{color:'#dc2626'}}>Sin cita</span>
+                  })()}
                 </div>
                 <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
                   <Btn variant="ghost" style={{padding:'6px 10px',fontSize:13,minHeight:34}} onClick={()=>moveUp(r, idx)} disabled={idx===0} title="Subir">⬆</Btn>
@@ -2869,24 +3001,40 @@ function Espera(){
     }
 
     {assignModal && <Modal title={`Asignar hueco a ${assignModal.row.patients?.full_name || ''}`} onClose={()=>setAssignModal(null)}>
+      {/* Contexto: sin esto Marta no sabe si lo que va a asignar adelanta la cita
+          o la retrasa, ni qué horas tenía pedidas. */}
+      <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:10,paddingBottom:8,borderBottom:'1px solid var(--border)'}}>
+        Cita actual: {proxMap[assignModal.row.patient_id]
+          ? <strong>{fDT(proxMap[assignModal.row.patient_id].starts_at)}</strong>
+          : <strong style={{color:'#dc2626'}}>ninguna</strong>}
+        {' · '}Horas admitidas: <strong>{preferredHoursLabel(assignModal.row)}</strong>
+        {assignModal.row.target_date ? <> · No antes del <strong>{assignModal.row.target_date}</strong></> : null}
+      </div>
       <div style={{maxHeight:400,overflowY:'auto'}}>
         {assignModal.candidates.length === 0
-          ? <Em icon="📭" title="No hay huecos cancelados disponibles"/>
-          : assignModal.candidates.map(({appt, beforeFb, hourMatches}) => {
-            const allMatch = beforeFb && hourMatches
+          ? <Em icon="📭" title="No hay ningún hueco libre para este profesional"/>
+          : assignModal.candidates.map(c => {
+            const allMatch = c.beforeFb && c.hourMatches
             const bg = allMatch ? '#ecfdf5' : '#fefce8'
             const border = allMatch ? '#10b981' : '#eab308'
             return (
-              <div key={appt.id} style={{
+              <div key={c.key} style={{
                 padding:'10px 12px',marginBottom:8,
                 background:bg,
                 border:`1px solid ${border}`,
                 borderRadius:6,cursor:'pointer'
-              }} onClick={() => confirmAssign(appt)}>
-                <div style={{fontSize:13,fontWeight:700}}>{fDT(appt.starts_at)}</div>
-                {!allMatch && <div style={{fontSize:10,color:'#a16207',fontWeight:600}}>
-                  ⚠ {!beforeFb && 'Posterior a su cita actual. '}
-                  {!hourMatches && 'Hora preferida distinta. '}
+              }} onClick={() => confirmAssign(c)}>
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  <span style={{fontSize:13,fontWeight:700}}>{fDT(c.starts_at)}</span>
+                  <span style={{fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,
+                    background: c.origen==='cancelacion' ? '#fee2e2' : '#e0f2fe',
+                    color: c.origen==='cancelacion' ? '#b91c1c' : '#075985'}}>
+                    {c.origen==='cancelacion' ? 'cancelación' : 'hueco libre'}
+                  </span>
+                </div>
+                {!allMatch && <div style={{fontSize:10,color:'#a16207',fontWeight:600,marginTop:2}}>
+                  ⚠ {!c.beforeFb && 'Posterior a su cita actual. '}
+                  {!c.hourMatches && 'Fuera de sus horas preferidas. '}
                   Puedes asignarlo igualmente.
                 </div>}
               </div>
@@ -2906,12 +3054,36 @@ function Espera(){
         placeholder="Ej: 4"
         value={editForm.weeks_pautadas}
         onChange={e=>setEditForm(f=>({...f,weeks_pautadas:e.target.value}))}/>
+      {/* Horas admitidas: MISMO selector que el follow-up. Antes era un desplegable
+          de una sola hora en punto, así que no se podía decir "me vale a las 8:30
+          o a las 13:00" — y las medias horas ni aparecían. */}
       <div className="field">
-        <label className="field-label">Hora preferida</label>
-        <select className="field-input" value={editForm.preferred_hour} onChange={e=>setEditForm(f=>({...f,preferred_hour:e.target.value}))}>
-          <option value="">Cualquier hora</option>
-          {Array.from({length:13},(_,i)=>i+7).map(h=><option key={h} value={h}>{pad(h)}:00</option>)}
-        </select>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
+          <label className="field-label" style={{marginBottom:0}}>Horas admitidas</label>
+          <div style={{display:'flex',gap:6}}>
+            <button type="button" onClick={()=>setEditForm(f=>({...f,preferred_hours:generateHalfHourSlots(computeHourRange(editHours)).map(s=>s.value)}))}
+              style={{fontSize:11,padding:'2px 8px',border:'1px solid var(--stone)',borderRadius:999,background:'#fff',cursor:'pointer'}}>Todas</button>
+            <button type="button" onClick={()=>setEditForm(f=>({...f,preferred_hours:[]}))}
+              style={{fontSize:11,padding:'2px 8px',border:'1px solid var(--stone)',borderRadius:999,background:'#fff',cursor:'pointer'}}>Limpiar</button>
+          </div>
+        </div>
+        <div style={{display:'flex',flexWrap:'wrap',gap:6,maxHeight:140,overflowY:'auto',padding:8,border:'1px solid var(--border)',borderRadius:8,background:'#fff'}}>
+          {generateHalfHourSlots(computeHourRange(editHours)).map(s => (
+            <label key={s.value} style={{display:'flex',alignItems:'center',gap:4,fontSize:12,cursor:'pointer',padding:'2px 6px',border:'1px solid var(--stone)',borderRadius:6,background:(editForm.preferred_hours||[]).includes(s.value)?'var(--sage-mist)':'#fff'}}>
+              <input type="checkbox" checked={(editForm.preferred_hours||[]).includes(s.value)} onChange={e=>{
+                setEditForm(f=>({...f, preferred_hours: e.target.checked
+                  ? [...(f.preferred_hours||[]), s.value]
+                  : (f.preferred_hours||[]).filter(v=>v!==s.value)}))
+              }} style={{cursor:'pointer'}} />
+              {s.label}
+            </label>
+          ))}
+        </div>
+        <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>
+          {(editForm.preferred_hours||[]).length
+            ? `${editForm.preferred_hours.length} hora(s): ${[...editForm.preferred_hours].sort((a,b)=>a-b).map(minutesToLabel).join(', ')}`
+            : 'Ninguna marcada = le vale cualquier hora'}
+        </div>
       </div>
       <div style={{display:'flex',gap:10,marginTop:4}}>
         <Btn variant="ghost" onClick={()=>setEditModal(null)} style={{flex:1}}>Cancelar</Btn>
@@ -2932,12 +3104,34 @@ function Espera(){
       <Sel label="Profesional" value={addForm.prof_id} onChange={e=>setAddForm(f=>({...f,prof_id:e.target.value,svc_id:''}))} options={[['','Seleccionar…'],...profs.map(p=>[p.id,p.name])]}/>
       <Sel label="Servicio" value={addForm.svc_id} onChange={e=>setAddForm(f=>({...f,svc_id:e.target.value}))} options={[['','Seleccionar…'],...services.filter(s=>!s.professional_id||s.professional_id===addForm.prof_id).map(s=>[s.id,`${s.name} (${s.duration_minutes}min)`])]}/>
       <Inp label="Fecha pautada (opcional — no ofrecer antes)" type="date" value={addForm.target_date} onChange={e=>setAddForm(f=>({...f,target_date:e.target.value}))}/>
+      {/* Mismo selector múltiple que el follow-up y que la edición de la fila. */}
       <div className="field">
-        <label className="field-label">Hora preferida (opcional)</label>
-        <select className="field-input" value={addForm.preferred_hour} onChange={e=>setAddForm(f=>({...f,preferred_hour:e.target.value}))}>
-          <option value="">Cualquier hora</option>
-          {Array.from({length:13},(_,i)=>i+7).map(h=><option key={h} value={h}>{pad(h)}:00</option>)}
-        </select>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
+          <label className="field-label" style={{marginBottom:0}}>Horas admitidas (opcional)</label>
+          <div style={{display:'flex',gap:6}}>
+            <button type="button" onClick={()=>setAddForm(f=>({...f,preferred_hours:generateHalfHourSlots(computeHourRange(addHours)).map(s=>s.value)}))}
+              style={{fontSize:11,padding:'2px 8px',border:'1px solid var(--stone)',borderRadius:999,background:'#fff',cursor:'pointer'}}>Todas</button>
+            <button type="button" onClick={()=>setAddForm(f=>({...f,preferred_hours:[]}))}
+              style={{fontSize:11,padding:'2px 8px',border:'1px solid var(--stone)',borderRadius:999,background:'#fff',cursor:'pointer'}}>Limpiar</button>
+          </div>
+        </div>
+        <div style={{display:'flex',flexWrap:'wrap',gap:6,maxHeight:140,overflowY:'auto',padding:8,border:'1px solid var(--border)',borderRadius:8,background:'#fff'}}>
+          {generateHalfHourSlots(computeHourRange(addHours)).map(s => (
+            <label key={s.value} style={{display:'flex',alignItems:'center',gap:4,fontSize:12,cursor:'pointer',padding:'2px 6px',border:'1px solid var(--stone)',borderRadius:6,background:(addForm.preferred_hours||[]).includes(s.value)?'var(--sage-mist)':'#fff'}}>
+              <input type="checkbox" checked={(addForm.preferred_hours||[]).includes(s.value)} onChange={e=>{
+                setAddForm(f=>({...f, preferred_hours: e.target.checked
+                  ? [...(f.preferred_hours||[]), s.value]
+                  : (f.preferred_hours||[]).filter(v=>v!==s.value)}))
+              }} style={{cursor:'pointer'}} />
+              {s.label}
+            </label>
+          ))}
+        </div>
+        <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>
+          {(addForm.preferred_hours||[]).length
+            ? `${addForm.preferred_hours.length} hora(s): ${[...addForm.preferred_hours].sort((a,b)=>a-b).map(minutesToLabel).join(', ')}`
+            : 'Ninguna marcada = le vale cualquier hora'}
+        </div>
       </div>
       <Inp label="Semanas pautadas (opcional)" type="number" min={1} max={52} placeholder="Ej: 4" value={addForm.weeks_pautadas} onChange={e=>setAddForm(f=>({...f,weeks_pautadas:e.target.value}))}/>
       <div style={{display:'flex',gap:10,marginTop:4}}>
@@ -4993,7 +5187,7 @@ function BotCoach() {
         throw new Error(text || `HTTP ${r.status}`)
       }
       if (!data.ok) throw new Error(data.error || 'fallo al previsualizar slot')
-      setDraft(data.proposed_text)
+      setDraft(data.proposed_text || '')
       setReviews(rs => rs.map(rv => rv.id === selPending.id ? { ...rv, proposed_action: data.proposed_action } : rv))
       setCalOpen(false)
       setToast({ msg: '✓ Fecha/hora actualizada en la propuesta', type: 'ok' })
@@ -5210,7 +5404,9 @@ function BotCoach() {
                                 <div key={'rv'+r.id} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 0',fontSize:12}}>
                                   <span style={{width:24}}>🧠</span>
                                   <span style={{flex:1}}>
-                                    Review pending: "{(r.proposed_text||'').slice(0,80)}{r.proposed_text?.length>80?'…':''}"
+                                    {r.proposed_text
+                                      ? `Review pending: "${r.proposed_text.slice(0,80)}${r.proposed_text.length>80?'…':''}"`
+                                      : `Review pending sin propuesta${r.intent_detected ? ` (${r.intent_detected})` : ''}`}
                                   </span>
                                   <Btn variant="ghost" onClick={()=>deleteOnePending('bot_coach_reviews', r.id)} title="Marcar como rechazada">🗑</Btn>
                                 </div>
@@ -5474,7 +5670,16 @@ function BotCoach() {
                   </div>
                 )
               })()}
-              {selPending && draft.trim()===(selPending.proposed_text||'').trim() && (
+              {selPending && !selPending.proposed_text && (
+                // El bot calló sin resolver (audio, dolencia, fallo, número
+                // desconocido). Antes esto no dejaba review y la conversación se
+                // quedaba sin bolito verde; ahora sí, y aquí se explica por qué.
+                <div style={{fontSize:12,color:'#7a5b00',background:'#fff8e1',border:'1px solid #f0d68a',borderRadius:8,padding:'6px 10px',marginBottom:6}}>
+                  🙋 El bot no ha propuesto nada — lo contestas tú.
+                  {selPending.intent_detected ? ` Motivo: ${selPending.intent_detected}.` : ''}
+                </div>
+              )}
+              {selPending && selPending.proposed_text && draft.trim()===(selPending.proposed_text||'').trim() && (
                 <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:4}}>🤖 borrador del bot — pulsa Enviar o edita</div>
               )}
               <textarea value={draft} onChange={e=>setDraft(e.target.value)}
@@ -5613,15 +5818,19 @@ function BotCoach() {
     </div>
   )}
 
-  {/* Modal "Cambiar acción" — Marta corrige la acción propuesta por el bot */}
-  {actionEditorOpen && selPending && (
+  {/* Modal "Cambiar acción" — Marta corrige la acción propuesta por el bot, o
+      crea una desde cero cuando el bot no propuso nada.
+      OJO: antes esto exigía `selPending`, así que en los chats SIN propuesta
+      pendiente el botón "Añadir acción" no abría nada — clic y no pasaba nada
+      (reportado el 24-ago). Basta con tener conversación y paciente. */}
+  {actionEditorOpen && (selPending || selConv) && (
     <ActionEditorModal
       patient={{
-        id: selPending?.conversations?.patients?.id,
-        full_name: selPending?.conversations?.patients?.full_name,
-        phone: selPending?.conversations?.patients?.phone || selPending?.patient_phone,
+        id: selPending?.conversations?.patients?.id || selConv?.patients?.id || selConv?.patient_id,
+        full_name: selPending?.conversations?.patients?.full_name || selConv?.patients?.full_name,
+        phone: selPending?.conversations?.patients?.phone || selPending?.patient_phone || selConv?.phone,
       }}
-      currentAction={overrideAction || selPending.proposed_action}
+      currentAction={overrideAction || selPending?.proposed_action || null}
       currentText={draft}
       services={services}
       professionals={professionals}

@@ -213,11 +213,33 @@ export function ActionEditorModal({
   const showServiceOnly = NEEDS_SERVICE.has(type)
 
   return (
+    // Layout en TRES bandas: título fijo arriba, cuerpo con scroll propio y
+    // botones fijos abajo. Antes todo iba en un bloque y se confiaba en el
+    // `overflow-y:auto` de la clase .modal; con el calendario abierto el
+    // contenido crecía tanto que en el portátil los botones quedaban fuera de
+    // pantalla (hubo que poner el zoom al 80% para llegar) y en el móvil no se
+    // podía bajar. Reportado el 24-ago.
+    //
+    // `100dvh` (dynamic viewport height) en vez de `vh`: en el móvil, `vh` cuenta
+    // la barra de direcciones aunque esté visible, así que el 90vh real se salía
+    // de la pantalla. dvh mide lo que de verdad se ve. `overflow: hidden` en el
+    // contenedor es lo que obliga al cuerpo a hacer su propio scroll.
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onCancel()}>
-      <div className="modal" style={{ maxWidth: 620 }}>
-        <div className="modal-title">✏️ Cambiar acción</div>
+      <div className="modal" style={{
+        maxWidth: 620,
+        maxHeight: 'min(90dvh, 900px)',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        padding: 0,
+      }}>
+        <div className="modal-title" style={{ flexShrink: 0, margin: 0, padding: '20px 24px 14px' }}>✏️ Cambiar acción</div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{
+          display: 'flex', flexDirection: 'column', gap: 12,
+          flex: 1, minHeight: 0, overflowY: 'auto', WebkitOverflowScrolling: 'touch',
+          padding: '4px 24px 16px',
+        }}>
           {/* Selector de tipo */}
           <label style={{ display: 'block' }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>Tipo de acción</div>
@@ -343,17 +365,24 @@ export function ActionEditorModal({
             )
           })()}
 
-          {/* Botones */}
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
-            <button onClick={onCancel}
-              style={{ padding: '8px 16px', border: '1px solid var(--border)', background: '#fff', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
-              Cancelar
-            </button>
-            <button onClick={handleSave} disabled={!canSave}
-              style={{ padding: '8px 16px', border: 'none', background: canSave ? 'var(--green)' : 'var(--stone)', color: '#fff', borderRadius: 8, cursor: canSave ? 'pointer' : 'default', fontSize: 13, fontWeight: 600 }}>
-              Guardar acción
-            </button>
-          </div>
+        </div>
+
+        {/* Botones FUERA del cuerpo con scroll: se ven siempre, por largo que sea
+            el formulario. Antes iban al final del contenido y con el calendario
+            desplegado quedaban fuera de la pantalla. minHeight 44 = tamaño de
+            toque cómodo en móvil. */}
+        <div style={{
+          flexShrink: 0, display: 'flex', gap: 8, justifyContent: 'flex-end',
+          padding: '12px 24px', borderTop: '1px solid var(--border)', background: '#fff',
+        }}>
+          <button onClick={onCancel}
+            style={{ padding: '10px 18px', minHeight: 44, border: '1px solid var(--border)', background: '#fff', borderRadius: 8, cursor: 'pointer', fontSize: 14 }}>
+            Cancelar
+          </button>
+          <button onClick={handleSave} disabled={!canSave}
+            style={{ padding: '10px 18px', minHeight: 44, border: 'none', background: canSave ? 'var(--green)' : 'var(--stone)', color: '#fff', borderRadius: 8, cursor: canSave ? 'pointer' : 'default', fontSize: 14, fontWeight: 600 }}>
+            Guardar acción
+          </button>
         </div>
       </div>
     </div>
