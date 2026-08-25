@@ -219,7 +219,10 @@ export function BotMovil({ sb, botFetch }) {
         // `proposed_action` es imprescindible: el bot solo ejecuta la acción si
         // recibe final_action Y action_approved. Sin ella se enviaría el texto
         // pero la cita no se confirmaría/cancelaría nunca.
-        .select('id, conversation_id, proposed_text, proposed_action, category, intent_detected')
+        // `context_snapshot` trae `future_appt.starts_at`: con él la respuesta rápida
+        // de confirmación dice el día correcto ("hasta el lunes") en vez del fijo
+        // "hasta mañana", que era falso la mitad de las veces. Auditoría A5.
+        .select('id, conversation_id, proposed_text, proposed_action, category, intent_detected, context_snapshot')
         .eq('verdict', 'pending')
       if (error) throw error
       setPendingReviews(data || [])
@@ -939,7 +942,7 @@ export function BotMovil({ sb, botFetch }) {
             la propuesta pendiente (genéricas si no hay). Sustituyen el texto de la
             caja que esté activa en ese momento: borrador o mensaje libre. */}
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-          {quickRepliesFor(pendingForSelected ? pendingForSelected.category : null).map((qr, i) => (
+          {quickRepliesFor(pendingForSelected ? pendingForSelected.category : null, { startsAt: pendingForSelected?.context_snapshot?.future_appt?.starts_at || pendingForSelected?.proposed_action?.starts_at || null }).map((qr, i) => (
             <button
               key={i}
               onClick={() => (showProposalBox ? setProposalDraft(qr) : setFreeText(qr))}
