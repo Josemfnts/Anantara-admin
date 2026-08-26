@@ -18,9 +18,13 @@ describe('generateActionText', () => {
     expect(t).not.toMatch(/apunto/i)
   })
 
-  it('confirmar_propuesta → "Listo, te apunto." (patrón #1 del prompt)', () => {
-    expect(generateActionText({ type: 'confirmar_propuesta' })).toBe('Listo, te apunto.')
-    expect(generateActionText({ type: 'confirmar_followup_oferta' })).toBe('Listo, te apunto.')
+  // PREMISAS-BOT.md §1.2: 'Perfecto, apuntado. Muchas gracias.' SUSTITUYE a
+  // 'Listo, te apunto.', que Marta reescribió 20 veces. El bot ya estaba migrado
+  // (deterministic-handler.js:280,305); el panel no, y este test fijaba el texto
+  // retirado. Auditoría 2026-08-25, hallazgo A4.
+  it('confirmar_propuesta → texto canónico de PREMISAS §1.2', () => {
+    expect(generateActionText({ type: 'confirmar_propuesta' })).toBe('Perfecto, apuntado. Muchas gracias.')
+    expect(generateActionText({ type: 'confirmar_followup_oferta' })).toBe('Perfecto, apuntado. Muchas gracias.')
   })
 
   it('proponer_cita: incluye día legible, hora y profesional', () => {
@@ -28,7 +32,6 @@ describe('generateActionText', () => {
       { type: 'proponer_cita', starts_at: '2026-09-15T10:30:00' },
       { patientName: 'María López', profName: 'Marcos' }
     )
-    expect(t).toMatch(/Hola María,/)
     expect(t).toMatch(/martes 15 de septiembre/)
     expect(t).toMatch(/10:30/)
     expect(t).toMatch(/Marcos/)
@@ -37,7 +40,6 @@ describe('generateActionText', () => {
 
   it('proponer_cita sin starts_at: fallback sin fecha', () => {
     const t = generateActionText({ type: 'proponer_cita' }, { patientName: 'Ana', profName: 'Lorena' })
-    expect(t).toMatch(/Hola Ana,/)
     expect(t).toMatch(/Lorena/)
     expect(t).not.toMatch(/undefined/)
     expect(t).not.toMatch(/NaN/)
@@ -52,7 +54,6 @@ describe('generateActionText', () => {
       },
       { patientName: 'Ricardo Sánchez', profName: 'Lorena' }
     )
-    expect(t).toMatch(/Hola Ricardo,/)
     expect(t).toMatch(/te muevo/i)
     expect(t).toMatch(/jueves 13 de agosto/)
     expect(t).toMatch(/18:00/)
@@ -64,7 +65,6 @@ describe('generateActionText', () => {
       { type: 'apuntar_lista_espera', service_name: 'Manicura' },
       { patientName: 'Elena' }
     )
-    expect(t).toMatch(/Hola Elena,/)
     expect(t).toMatch(/Manicura/)
     expect(t).toMatch(/aviso cuando tenga hueco/i)
   })
@@ -110,5 +110,37 @@ describe('generateActionText', () => {
       expect(t, `tipo=${type}`).not.toMatch(/undefined/)
       expect(t, `tipo=${type}`).not.toMatch(/NaN/)
     }
+  })
+
+  // Regla transversal de PREMISAS-BOT.md §1.2 (2026-08-14), orden de Josema:
+  // «el bot NUNCA llama al paciente por su nombre». Sale del corpus: de 98 mensajes
+  // escritos por Marta, los pocos que llevan nombre de pila son casi todos ediciones
+  // de un texto del bot que ya lo traía. El system prompt lo prohíbe explícitamente
+  // (v5/src/agent/system-prompt.js:33) y el panel lo hacía igualmente. Hallazgo A4.
+  it('NUNCA se dirige al paciente por su nombre de pila', () => {
+    const tipos = [
+      'cancelar_cita', 'descartar_propuesta', 'confirmar_propuesta',
+      'confirmar_followup_oferta', 'aceptar_oferta_cancelacion',
+      'rechazar_oferta_cancelacion', 'proponer_cita', 'rechazar_propuesta',
+      'reservar_clase', 'apuntar_lista_espera', 'apuntar_lista_adelantar',
+      'reprogramar', 'oferta_proactiva', 'anotar_cita',
+    ]
+    for (const type of tipos) {
+      const t = generateActionText(
+        { type, starts_at: '2026-09-15T10:30:00', next: { starts_at: '2026-09-16T09:30:00' }, propose: { starts_at: '2026-09-16T09:30:00' }, cancel: { appointment_id: 'x' } },
+        { patientName: 'María López', profName: 'Marcos', serviceName: 'Osteopatía' }
+      )
+      expect(t, `tipo=${type} → "${t}"`).not.toMatch(/María/)
+      expect(t, `tipo=${type} → "${t}"`).not.toMatch(/\bHola\s+[A-ZÁÉÍÓÚÑ]/)
+    }
+  })
+
+  // El profesional SÍ se nombra: es un dato de la cita, no un trato personal.
+  it('sí nombra al profesional', () => {
+    const t = generateActionText(
+      { type: 'proponer_cita', starts_at: '2026-09-15T10:30:00' },
+      { patientName: 'María López', profName: 'Marcos' }
+    )
+    expect(t).toMatch(/Marcos/)
   })
 })

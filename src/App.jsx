@@ -4912,7 +4912,8 @@ function BotCoach() {
     return () => mq.removeEventListener('change', h)
   }, [])
 
-  // Atajos globales: ↑/↓ navega conversaciones, / enfoca búsqueda, Esc = yo me ocupo
+  // Atajos globales: ↑/↓ navega conversaciones, / enfoca búsqueda.
+  // (Escape estuvo atado a "Yo me ocupo" y se quitó — ver el comentario de abajo.)
   useEffect(() => {
     const onKey = (e) => {
       const tag = (e.target.tagName||'').toUpperCase()
@@ -4924,7 +4925,13 @@ function BotCoach() {
         const idx = list.findIndex(c=>c.id===selConvRef.current)
         const ni = e.key==='ArrowDown' ? Math.min(list.length-1, idx+1) : Math.max(0, idx<0?0:idx-1)
         if (list[ni]) setSelConvId(list[ni].id)
-      } else if (e.key==='Escape' && !typing && selConvRef.current) { takeover() }
+      }
+      // Escape ya NO dispara "Yo me ocupo". Lo hacía, y "Yo me ocupo" BORRA la
+      // propuesta pendiente del paciente, su fila de lista de espera y sus búsquedas
+      // automáticas (/patient-pendings/clear). Sin confirmación y sin vuelta atrás.
+      // Encima el átomo Modal también escucha Escape en window: cerrar un modal con
+      // Esc borraba datos de propina. Ahora "Yo me ocupo" es solo el botón, y pide
+      // confirmación. Auditoría 2026-08-25, hallazgo C4.
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -4977,6 +4984,13 @@ function BotCoach() {
         ? `⚠️ NO se pudo resolver la cita (id ${actionLookupId(act) || '—'}). No la tengo en la agenda. Aprobar a ciegas.`
         : d.line
       approveAction = window.confirm(`Vas a ${d.label.toUpperCase()}:\n\n${detalle}\n\n¿Confirmas?`)
+      // ABORTAR DEL TODO si dice que no. Antes se seguía y el TEXTO salía igual:
+      // el paciente leía "Hecho, cancelada" con la cita viva en la agenda. Se
+      // presentaba a una cita que creía cancelada, o al revés. Auditoría C3.
+      if (!approveAction) {
+        setToast({ msg: 'Cancelado — no se ha enviado nada ni se ha tocado la cita', type: 'ok' })
+        return
+      }
     }
     setSending(true)
     try {
@@ -5030,6 +5044,15 @@ function BotCoach() {
     const chatId = toChatId(selPhoneRef.current)
     const phone9 = (selPhoneRef.current || '').replace(/\D/g, '').slice(-9)
     if (!chatId || !phone9) return
+    // Esto BORRA datos del paciente (propuestas pending, lista de espera, búsquedas
+    // de follow-up) y no se puede deshacer. Antes iba sin preguntar y además estaba
+    // atado a la tecla Escape. Auditoría C4.
+    if (!window.confirm(
+      'Vas a tomar el control de esta conversación.\n\n' +
+      '• El bot se calla 30 minutos.\n' +
+      '• Se BORRAN sus propuestas pendientes, su sitio en la lista de espera y sus búsquedas automáticas.\n\n' +
+      'Esto no se puede deshacer. ¿Continúas?'
+    )) return
     try {
       // 1) Pausa 30 min
       const r1 = await fetch(`${BOT_HTTP_URL}/secretary-active`, {
@@ -5607,7 +5630,7 @@ function BotCoach() {
             {/* Quick replies + input + acciones */}
             <div style={{borderTop:'1px solid var(--border)',background:'#fff',padding:'10px 14px'}}>
               <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8,alignItems:'center'}}>
-                {(selPending ? quickRepliesFor(selPending.category) : quickRepliesFor(null)).map((qr,i) => (
+                {(selPending ? quickRepliesFor(selPending.category, { startsAt: selPending.context_snapshot?.future_appt?.starts_at || selPending.proposed_action?.starts_at || null }) : quickRepliesFor(null)).map((qr,i) => (
                   <button key={i} onClick={()=>setDraft(qr)} style={{padding:'4px 10px',borderRadius:999,fontSize:11,border:'1px solid var(--stone)',background:'var(--cream)',cursor:'pointer'}}>{qr}</button>
                 ))}
               </div>

@@ -7,6 +7,8 @@
 // El día/hora se formatean respetando la zona horaria del sistema; usamos
 // mediodía como ancla para evitar desfases de día (mismo patrón que el bot).
 
+import { saludoSegunHora } from './followupMessage.js'
+
 const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado']
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
 
@@ -25,12 +27,17 @@ function primerNombre(fullName) {
 }
 
 // action: descriptor con type + campos.
-// ctx.patientName: nombre del paciente (para "Hola X,").
 // ctx.appt: fila resuelta (day/time/prof) si la acción va por lookup.
+// ctx.now: inyectable para tests (decide "Buenos días" / "Buenas tardes").
+//
+// OJO — regla transversal de PREMISAS-BOT.md §1.2 (2026-08-14, orden de Josema):
+// el bot NUNCA llama al paciente por su nombre de pila. Aquí se hacía ("Hola María,")
+// y contradecía al propio system prompt del bot. Ahora abre con el saludo por hora,
+// igual que el bot (v5/src/tools/helpers/proposal-text.js). Auditoría A4.
+// `ctx.patientName` se sigue aceptando por compatibilidad, pero NO se usa.
 export function generateActionText(action, ctx = {}) {
   if (!action || !action.type) return ''
-  const nombre = primerNombre(ctx.patientName)
-  const saludo = nombre ? `Hola ${nombre}, ` : ''
+  const saludo = `${saludoSegunHora(ctx.now ?? new Date())}, `
 
   switch (action.type) {
     case 'cancelar_cita':
@@ -39,7 +46,7 @@ export function generateActionText(action, ctx = {}) {
       return 'Vale, si quieres cita otro día me dices.'
     case 'confirmar_propuesta':
     case 'confirmar_followup_oferta':
-      return 'Listo, te apunto.'
+      return 'Perfecto, apuntado. Muchas gracias.'
     case 'aceptar_oferta_cancelacion': {
       const dia = ctx.appt?.day || null
       const hora = ctx.appt?.time || null
