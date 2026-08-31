@@ -25,6 +25,7 @@
 //   - onToast({msg, type}): type 'ok' | 'error'. Puede no venir.
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import { clasificarVerdict, calcularAcierto } from '../lib/autonomiaStats.js'
 
 // ─── Catálogo de casuísticas (copia manual — ver cabecera) ─────────────────
 const CASUISTICAS = {
@@ -255,7 +256,9 @@ export function AutonomiaPage({ sb, onToast }) {
     setReviewsLoading(true); setReviewsError(null)
     try {
       const { data, error } = await sb.from('bot_coach_reviews')
-        .select('casuistica, verdict, created_at')
+        // rejection_reason hace falta para reclasificar las filas anteriores a
+        // sql/0018, que estan guardadas como 'rejected' con su motivo.
+        .select('casuistica, verdict, rejection_reason, created_at')
         .gte('created_at', cutoffIso(Number(weeks)))
         .limit(5000)
       if (error) throw error
@@ -318,13 +321,22 @@ export function AutonomiaPage({ sb, onToast }) {
     const m = {}
     for (const r of reviews) {
       const key = r.casuistica || 'otra'
-      if (!m[key]) m[key] = { total: 0, sent: 0, auto: 0, modified: 0, rejected: 0 }
+      // OJO con el nombre: NO puede llamarse `auto`. displayRows hace
+      // { ...row, ...s } y el CONTADOR pisaria el FLAG booleano de bot_autonomy,
+      // dejando el interruptor encendido aunque lo apagues (bug latente cazado
+      // el 31-ago-2026: no se veia porque todos los contadores estaban a 0).
+      if (!m[key]) m[key] = { total: 0, sent: 0, autoEnviados: 0, modified: 0, rejected: 0, superseded: 0 }
       const s = m[key]
       // 'pending' no cuenta en el total: aún no está resuelto.
-      if (r.verdict === 'sent') { s.total++; s.sent++ }
-      else if (r.verdict === 'auto_sent') { s.total++; s.auto++ }
-      else if (r.verdict === 'modified') { s.total++; s.modified++ }
-      else if (r.verdict === 'rejected') { s.total++; s.rejected++ }
+      // 'superseded' TAMPOCO: el bot habia acertado, solo que un humano llego
+      // antes. Contarlo como fallo mantenia confirmar_d1 en 80% cuando va al 86%,
+      // y es justo el numero que mira el freno para dejar graduar a automatico.
+      const v = clasificarVerdict(r)
+      if (v === 'sent') { s.total++; s.sent++ }
+      else if (v === 'auto_sent') { s.total++; s.autoEnviados++ }
+      else if (v === 'modified') { s.total++; s.modified++ }
+      else if (v === 'rejected') { s.total++; s.rejected++ }
+      else if (v === 'superseded') { s.superseded++ }
     }
     return m
   }, [reviews])
@@ -334,10 +346,9 @@ export function AutonomiaPage({ sb, onToast }) {
     return [...autonomyRows]
       .sort((a, b) => (order.has(a.casuistica) ? order.get(a.casuistica) : 999) - (order.has(b.casuistica) ? order.get(b.casuistica) : 999))
       .map(row => {
-        const s = statsByCasuistica[row.casuistica] || { total: 0, sent: 0, auto: 0, modified: 0, rejected: 0 }
-        const aciertos = s.sent + s.auto
-        const pct = s.total > 0 ? Math.round((aciertos / s.total) * 1000) / 10 : null
-        return { ...row, ...s, pct }
+        const s = statsByCasuistica[row.casuistica] || { total: 0, sent: 0, autoEnviados: 0, modified: 0, rejected: 0, superseded: 0 }
+        const { pct, noImputables } = calcularAcierto({ ...s, auto: s.autoEnviados })
+        return { ...row, ...s, pct, noImputables }
       })
   }, [autonomyRows, statsByCasuistica])
 
@@ -351,12 +362,16 @@ export function AutonomiaPage({ sb, onToast }) {
       if (r.casuistica !== selectedCasuistica || r.verdict === 'pending') continue
       const wk = mondayKey(r.created_at)
       if (!wk) continue
+      // Mismo criterio que la tabla principal: el adelantamiento humano no es un
+      // fallo del bot y no entra en el denominador.
+      const v = clasificarVerdict(r)
+      if (v === 'superseded') continue
       if (!byWeek[wk]) byWeek[wk] = { total: 0, sent: 0, modified: 0, rejected: 0 }
       const s = byWeek[wk]
       s.total++
-      if (r.verdict === 'sent' || r.verdict === 'auto_sent') s.sent++
-      else if (r.verdict === 'modified') s.modified++
-      else if (r.verdict === 'rejected') s.rejected++
+      if (v === 'sent' || v === 'auto_sent') s.sent++
+      else if (v === 'modified') s.modified++
+      else if (v === 'rejected') s.rejected++
     }
     return Object.entries(byWeek)
       .map(([week, s]) => ({ week, ...s, pct: s.total > 0 ? Math.round((s.sent / s.total) * 1000) / 10 : null }))
@@ -449,6 +464,7 @@ export function AutonomiaPage({ sb, onToast }) {
                   <th style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700, whiteSpace: 'nowrap' }}>Auto</th>
                   <th style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700, whiteSpace: 'nowrap' }}>Modificado</th>
                   <th style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700, whiteSpace: 'nowrap' }}>Rechazado</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700, whiteSpace: 'nowrap' }} title="Un humano se adelantó al bot: respondió a mano o tomó el control. El texto del bot era correcto, así que no cuenta como fallo.">No imputable</th>
                   <th style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700, whiteSpace: 'nowrap' }}>% acierto</th>
                   <th style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700, whiteSpace: 'nowrap' }}>Automático</th>
                   <th style={{ padding: '10px 12px', textAlign: 'left', fontWeight: 700, whiteSpace: 'nowrap' }}>Nota</th>
@@ -476,9 +492,10 @@ export function AutonomiaPage({ sb, onToast }) {
                       </td>
                       <td style={{ padding: '8px 12px', textAlign: 'center' }}>{row.total}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'center' }}>{row.sent}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'center' }}>{row.auto}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'center' }}>{row.autoEnviados}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'center' }}>{row.modified}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'center' }}>{row.rejected}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'center', color: 'var(--text-muted)' }}>{row.noImputables || '—'}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'center' }}>{pctChip(row.pct)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'center' }}>
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
