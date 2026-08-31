@@ -44,7 +44,13 @@ export function generateActionText(action, ctx = {}) {
     case 'cancelar_cita':
       return 'Hecho, cancelada. Si quieres otra fecha, dime.'
     case 'descartar_propuesta':
-      return 'Vale, si quieres cita otro día me dices.'
+      // PREMISAS-BOT.md 4.3sexies (31-ago-2026). El texto viejo era
+      // "Vale, si quieres cita otro dia me dices." y Marta lo corrigio 4 de 4
+      // veces: deja al paciente sin saber si sigue teniendo cita o no.
+      // Aqui el panel no sabe si le queda alguna cita confirmada (eso lo mira la
+      // tool del bot), asi que se usa la variante activa, que al menos no es
+      // vaga. Si le queda cita, Marta lo ajusta en el cuadro.
+      return 'Vale. Dime qué día te viene bien y te busco hueco.'
     case 'confirmar_propuesta':
     case 'confirmar_followup_oferta':
       // PREMISAS-BOT.md 4.3quater (31-ago-2026): concuerda con el genero del

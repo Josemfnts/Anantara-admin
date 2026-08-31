@@ -14,7 +14,7 @@ describe('generateActionText', () => {
 
   it('descartar_propuesta → texto neutro sin proponer otro hueco', () => {
     const t = generateActionText({ type: 'descartar_propuesta' })
-    expect(t).toMatch(/si quieres cita otro día/i)
+    expect(t).toMatch(/te busco hueco/i)
     expect(t).not.toMatch(/apunto/i)
   })
 
