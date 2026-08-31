@@ -14,7 +14,7 @@ describe('generateActionText', () => {
 
   it('descartar_propuesta → texto neutro sin proponer otro hueco', () => {
     const t = generateActionText({ type: 'descartar_propuesta' })
-    expect(t).toMatch(/si quieres cita otro día/i)
+    expect(t).toMatch(/te busco hueco/i)
     expect(t).not.toMatch(/apunto/i)
   })
 
@@ -142,5 +142,29 @@ describe('generateActionText', () => {
       { patientName: 'María López', profName: 'Marcos' }
     )
     expect(t).toMatch(/Marcos/)
+  })
+})
+
+// PREMISAS-BOT.md §4.3quater (31-ago-2026) — el panel también escribe al
+// paciente, así que el texto canónico tiene que concordar aquí igual que en el
+// bot. Antes Marta corregía "apuntada" a mano justo en este cuadro.
+describe('concordancia de género en el texto canónico', () => {
+  it('usa el femenino con pacientes mujeres', () => {
+    expect(generateActionText({ type: 'confirmar_propuesta' }, { patientName: 'Inmaculada Lapuerta' }))
+      .toBe('Perfecto, apuntada. Muchas gracias.')
+    expect(generateActionText({ type: 'confirmar_followup_oferta' }, { patientName: 'Pilar' }))
+      .toBe('Perfecto, apuntada. Muchas gracias.')
+  })
+
+  it('mantiene el masculino con hombres, incluidos los acabados en -a', () => {
+    expect(generateActionText({ type: 'confirmar_propuesta' }, { patientName: 'Jorge Delcazo' }))
+      .toBe('Perfecto, apuntado. Muchas gracias.')
+    expect(generateActionText({ type: 'confirmar_propuesta' }, { patientName: 'Borja' }))
+      .toBe('Perfecto, apuntado. Muchas gracias.')
+  })
+
+  it('sin nombre, masculino — que es lo que hacía antes', () => {
+    expect(generateActionText({ type: 'confirmar_propuesta' }))
+      .toBe('Perfecto, apuntado. Muchas gracias.')
   })
 })
