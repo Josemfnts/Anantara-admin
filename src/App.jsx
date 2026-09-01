@@ -4556,13 +4556,13 @@ function BotCoach() {
   const [reviews, setReviews] = useState([])
   const [loading, setLoading] = useState(true)
   const [botCfg, setBotCfg] = useState({
-    paused_all: false, modo_training: true, use_legacy_pipeline: false,
-    confirmaciones_auto: false, cancelaciones_auto: false,
-    ambiguas_auto: false, otras_auto: false, notify_enabled: true,
+    paused_all: false, modo_training: true, notify_enabled: true,
+    // confirmaciones_auto/cancelaciones_auto/ambiguas_auto/otras_auto: las 4
+    // categorías gruesas de la Fase 4 vieja. Las sustituyó bot_autonomy (por
+    // casuística). Se quedan en la BD por compatibilidad pero ya no mandan.
   })
   const [togglingMode, setTogglingMode] = useState(false)
   const [togglingPause, setTogglingPause] = useState(false)
-  const [togglingLegacy, setTogglingLegacy] = useState(false)
   const [metrics, setMetrics] = useState([])
   const [filter, setFilter] = useState('pending')   // pending | all | confirmacion | cancelacion | ambigua | otra
   const [stats, setStats] = useState({ pending:0, sent:0, rejected:0, modified:0 })
@@ -4778,17 +4778,6 @@ function BotCoach() {
     setBotCfg(c => ({ ...c, modo_training: newVal }))
     notifyBotRefresh()
     setToast({msg: newVal ? '🤖 Modo training ACTIVADO — bot propone, tú validas' : '⚡ Modo training DESACTIVADO — bot responde automático (Fase 3)', type:'ok'})
-  }
-
-  const toggleLegacyPipeline = async () => {
-    setTogglingLegacy(true)
-    const newVal = !botCfg.use_legacy_pipeline
-    const { error } = await sb.from('bot_config').update({ use_legacy_pipeline: newVal, updated_at: new Date().toISOString() }).eq('id', 1)
-    setTogglingLegacy(false)
-    if (error) { setToast({msg:'Error: '+error.message, type:'error'}); return }
-    setBotCfg(c => ({ ...c, use_legacy_pipeline: newVal }))
-    notifyBotRefresh()
-    setToast({msg: newVal ? '⚠ Pipeline LEGACY activa (Fase 2 — sin FSM)' : '✓ Pipeline Fase 3 activa (NLU+FSM)', type:'ok'})
   }
 
   const togglePausedAll = async () => {
@@ -5320,15 +5309,6 @@ function BotCoach() {
           {togglingPause && <span style={{fontSize:11,color:'var(--text-muted)'}}>…</span>}
         </div>
       )}
-
-      <div className="card" style={{padding:'12px 16px',display:'flex',alignItems:'center',gap:12}} title="Forzar pipeline antigua Fase 2 (sin NLU+FSM) — solo para rollback rápido">
-        <div style={{fontSize:13,fontWeight:700}}>Pipeline</div>
-        <Toggle on={!botCfg.use_legacy_pipeline} onChange={toggleLegacyPipeline}/>
-        {togglingLegacy && <span style={{fontSize:11,color:'var(--text-muted)'}}>…</span>}
-        <div style={{fontSize:11,color:'var(--text-muted)',marginLeft:8}}>
-          {botCfg.use_legacy_pipeline ? '⚠ Legacy (Fase 2 viejo)' : 'Definitiva (NLU+tools+Haiku)'}
-        </div>
-      </div>
 
       {/* Filtros */}
       <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
