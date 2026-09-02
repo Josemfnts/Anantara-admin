@@ -6144,6 +6144,10 @@ export default function App(){
   // (canal 'bot_alerts_only'). RLS permite SELECT a usuarios autenticados.
   const [alerts,setAlerts]=useState([])
   const [alertsSeenAt,setAlertsSeenAt]=useState(()=>localStorage.getItem('alerts_seen_at')||'1970-01-01T00:00:00Z')
+  // 'bot_alerts_only' = fila de auditoría anti-spam, no se enseña.
+  // 'panel' = no se mandó por WhatsApp pero SÍ hay que verlo aquí: un recordatorio
+  // que falló al enviar, o un mensaje aprobado que se quedó a medias en la cola.
+  // Antes solo existía el primero y estos avisos no los veía nadie (auditoría A8).
   const isShownAlert=(a)=>a&&a.canal!=='bot_alerts_only'
   useEffect(()=>{
     if(!user)return
