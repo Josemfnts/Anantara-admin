@@ -9,6 +9,7 @@ import { quickRepliesFor } from './lib/quickReplies.js'
 import { buildFollowupMessage, weekText, buildNextAppointmentReminder } from './lib/followupMessage.js'
 import { importeCita, buildNoShowMessage } from './lib/noShow.js'
 import { parseCompanions, textoAcompanantes as textoAcompanantesPreview } from './lib/companions.js'
+import { detectarConflictos, textoConflictos } from './lib/conflictos.js'
 import { AusenciasPage } from './components/AusenciasPage.jsx'
 import { BotMovil } from './components/BotMovil.jsx'
 import { AutonomiaPage } from './components/AutonomiaPage.jsx'
@@ -53,6 +54,43 @@ function nextWorkingDay(from = new Date()) {
 }
 
 function pad(n) { return String(n).padStart(2,'0') }
+
+// Caducidad de una propuesta pending. UNA sola convención: UTC y 72 h, igual que
+// el bot (v5/src/tools/proponer-cita.js). Antes el panel usaba tres formas
+// distintas y 36 h, así que sus propuestas caducaban a la mitad y el bot y la
+// agenda discrepaban en 1-2 h sobre cuándo. Auditoría M2.
+const PROPUESTA_HORAS = 72
+function nuevoProposedUntil() {
+  return new Date(Date.now() + PROPUESTA_HORAS * 3600 * 1000).toISOString().slice(0, 19)
+}
+
+// Lee las CINCO fuentes que mira el bot y devuelve los choques del hueco.
+// Antes el panel solo miraba las citas que EMPIEZAN dentro del hueco (así que una
+// cita larga previa no se veía) y, al crear, solo blocked_days. Auditoría A6.
+async function buscarConflictos(sbc, { profId, startsAt, endsAt, excludeId = null }) {
+  const dia = startsAt.slice(0,10)
+  const desde = dia + 'T00:00:00', hasta = dia + 'T23:59:59'
+  const [citas, bloqueos, descansos, diaBlk, holds] = await Promise.all([
+    sbc.from('appointments').select('id,starts_at,ends_at,status,patients(full_name)')
+      .eq('professional_id', profId).gte('starts_at', desde).lte('starts_at', hasta),
+    sbc.from('blocked_slots').select('starts_at,ends_at,reason')
+      .eq('professional_id', profId).gte('starts_at', desde).lte('starts_at', hasta),
+    sbc.from('recurring_breaks').select('day_of_week,start_time,end_time').eq('professional_id', profId),
+    sbc.from('blocked_days').select('id').eq('professional_id', profId).eq('date', dia).maybeSingle(),
+    sbc.from('cancellation_holds').select('appointment_id,hold_until'),
+  ])
+  // Si alguna consulta falla no podemos afirmar que esté libre: se avisa igual.
+  const fallo = [citas, bloqueos, descansos, diaBlk, holds].some(r => r?.error)
+  const vivos = (holds.data || []).filter(h => !h.hold_until || new Date(h.hold_until) > new Date())
+  const idsRet = new Set(vivos.map(h => h.appointment_id).filter(Boolean))
+  const retenidos = (citas.data || []).filter(c => idsRet.has(c.id))
+  const conflictos = detectarConflictos({
+    citas: citas.data || [], bloqueos: bloqueos.data || [],
+    descansos: descansos.data || [], diaBloqueado: !!diaBlk.data, retenidos,
+  }, { startsAt, endsAt, excludeId })
+  if (fallo) conflictos.push({ tipo: 'error', texto: 'No he podido comprobar del todo la agenda (fallo de red)' })
+  return conflictos
+}
 function toK(d) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}` }
 function localDT(d) { return `${toK(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` }
 function toIsoStr(iso){ if(!iso)return null; if(typeof iso==='string')return iso; return new Date(iso).toISOString() }
@@ -1143,7 +1181,7 @@ function Agenda(){
   const confirmAssignToWL = async (candidate) => {
     const appt = assignModal.appointment
     // 1. Crear nueva fila pending para el paciente WL
-    const proposedUntil = localDT(new Date(Date.now() + 36*60*60*1000))
+    const proposedUntil = nuevoProposedUntil()
     const pid = candidate.patient_id || candidate.patients?.id
     if (!pid) { setToast({msg:'Error: paciente sin id',type:'error'}); return }
     const { data: newAppt, error: insertErr } = await sb.from('appointments').insert({
@@ -1209,14 +1247,13 @@ function Agenda(){
       }
       const startDT = new Date(`${dateStr}T${timeStr}:00`)
       const endDT = new Date(startDT.getTime() + dur*60000)
-      // Comprobar solape con OTRAS citas del mismo profesional
+      // Choques con las CINCO fuentes. Avisa, no bloquea (decisión de Josema).
       const targetProfId = editProfId || modal.professional_id
-      const { data: overlap } = await sb.from('appointments').select('id')
-        .eq('professional_id', targetProfId).neq('status','cancelled').neq('id', modal.id)
-        .gte('starts_at', localDT(startDT)).lt('starts_at', localDT(endDT))
-      if (overlap?.length) {
+      const conflictos = await buscarConflictos(sb, {
+        profId: targetProfId, startsAt: localDT(startDT), endsAt: localDT(endDT), excludeId: modal.id,
+      })
+      if (conflictos.length && !window.confirm(textoConflictos(conflictos))) {
         setSaving(false)
-        setToast({msg:'Ese horario ya está ocupado por otra cita',type:'error'})
         return
       }
       update.starts_at = localDT(startDT)
@@ -1289,13 +1326,19 @@ function Agenda(){
       if (hoursAhead > 72)      { holdType = 'normal';     holdUntil = null }
       else if (hoursAhead > 24) { holdType = 'urgent_72h'; holdUntil = new Date(Date.now() + 4*60*60*1000).toISOString() }
       else                       { holdType = 'urgent_24h'; holdUntil = new Date(Date.now() + 1*60*60*1000).toISOString() }
-      await sb.from('cancellation_holds').insert({
+      const holdRes = await sb.from('cancellation_holds').insert({
         appointment_id: id,
         hold_until: holdUntil,
         hold_type: holdType,
         notified_secretary: true,  // ya está aquí mirándolo
       })
-      setModal(null); setToast({msg:'Cita cancelada — retenida para lista de espera',type:'ok'}); load()
+      // Sin el hold, el hueco no entra en el flujo de lista de espera y el
+      // Dashboard tampoco lo cuenta: no se puede decir "retenida" sin comprobarlo.
+      setModal(null)
+      setToast(holdRes?.error
+        ? {msg:'Cita cancelada, pero NO se pudo retener para la lista de espera: '+holdRes.error.message,type:'error'}
+        : {msg:'Cita cancelada — retenida para lista de espera',type:'ok'})
+      load()
       return
     }
     setToast({msg:'Esa cita no se puede cancelar',type:'error'})
@@ -1309,18 +1352,14 @@ function Agenda(){
     const dur=esCustom?(Number(form.custom_min)||60):(svc?.duration_minutes||60)
     const startDT=new Date(`${form.date}T${form.time}:00`)
     const endDT=new Date(startDT.getTime()+dur*60000)
-    // Blocked day check
-    const{data:blk}=await sb.from('blocked_days').select('id').eq('professional_id',form.prof_id).eq('date',form.date).maybeSingle()
-    if(blk){setToast({msg:'Ese día está bloqueado para este profesional.',type:'error'});return}
-    // Overlap check
-    const{data:overlap}=await sb.from('appointments').select('id')
-      .eq('professional_id',form.prof_id).neq('status','cancelled')
-      .gte('starts_at',localDT(startDT)).lt('starts_at',localDT(endDT))
-    if(overlap?.length){setToast({msg:'El profesional ya tiene una cita en ese horario.',type:'error'});return}
+    // Choques con las CINCO fuentes (antes aquí solo se miraba blocked_days).
+    // Avisa, no bloquea: Marta puede seguir si sabe lo que hace. Auditoría A6.
+    const conflictos = await buscarConflictos(sb, {
+      profId: form.prof_id, startsAt: localDT(startDT), endsAt: localDT(endDT),
+    })
+    if(conflictos.length && !window.confirm(textoConflictos(conflictos))) return
     const status = form.leave_pending ? 'pending' : 'confirmed'
-    const proposedUntil = form.leave_pending
-      ? localDT(new Date(Date.now() + 36 * 60 * 60 * 1000))
-      : null
+    const proposedUntil = form.leave_pending ? nuevoProposedUntil() : null
     const acompanantes = parseCompanions(form.companions)
     const fila = {
       // En personalizada no hay servicio: la duración la fija la secretaria.
@@ -1485,7 +1524,10 @@ function Agenda(){
       ? {bg:'#7c3aed',border:'#5b21b6',text:'#f5f3ff'}   // MORADO OSCURO: pasada + próxima cita gestionada (se dio a Aceptar)
       : {bg:'#e9d5ff',border:'#a855f7',text:'#581c87'}   // MORADO CLARO: cita pasada, sin gestionar
     if(status==='pending') {
-      const caducada = !!proposedUntil && new Date(proposedUntil.slice(0,19)) <= new Date()
+      // proposed_until se guarda en UTC (misma convención que el bot). Hay que
+      // leerlo como UTC: parsearlo como hora local pintaba la cita amarilla 1-2 h
+      // antes de que el bot la diera por caducada. Auditoría M2.
+      const caducada = !!proposedUntil && new Date(proposedUntil.slice(0,19) + 'Z') <= new Date()
       return caducada
         ? {bg:'#fef08a',border:'#ca8a04',text:'#713f12'}   // AMARILLO: pending caducada (>3d), actúa como confirmada — responsabilidad de la secretaria
         : {bg:'#fed7aa',border:'#ea580c',text:'#7c2d12'}   // NARANJA: pending en plazo, sin confirmar
@@ -2314,38 +2356,49 @@ function Horarios(){
 
   const save=async()=>{
     setSaving(true)
+    // Ninguna de estas 5 escrituras comprobaba `error`, y el toast de éxito era
+    // incondicional. El bot lee working_hours como FUENTE DE VERDAD para calcular
+    // huecos, así que Marta podía creer que había cambiado el horario mientras el
+    // bot seguía ofreciendo con el viejo. Auditoría 2026-08-25, hallazgo M5.
+    const fallos=[]
+    const reg=(r,que)=>{ if(r?.error) fallos.push(`${que}: ${r.error.message}`); return r }
     for(const row of rows){
       if(row.active){
-        await sb.from('working_hours').upsert(
+        reg(await sb.from('working_hours').upsert(
           {professional_id:selProf.id,day_of_week:row.day_of_week,start_time:row.start_time,end_time:row.end_time},
           {onConflict:'professional_id,day_of_week'}
-        )
+        ), `horario del día ${row.day_of_week}`)
       } else {
-        await sb.from('working_hours').delete()
-          .eq('professional_id',selProf.id).eq('day_of_week',row.day_of_week)
+        reg(await sb.from('working_hours').delete()
+          .eq('professional_id',selProf.id).eq('day_of_week',row.day_of_week), `quitar el día ${row.day_of_week}`)
       }
 
       // Gestión del descanso del día
       const hasBreak = row.break_start && row.break_end && row.break_end > row.break_start
       if (hasBreak) {
         if (row.break_id) {
-          await sb.from('recurring_breaks').update({
+          reg(await sb.from('recurring_breaks').update({
             start_time: row.break_start, end_time: row.break_end,
-          }).eq('id', row.break_id)
+          }).eq('id', row.break_id), `descanso del día ${row.day_of_week}`)
         } else {
-          await sb.from('recurring_breaks').insert({
+          reg(await sb.from('recurring_breaks').insert({
             professional_id: selProf.id,
             day_of_week: row.day_of_week,
             start_time: row.break_start, end_time: row.break_end,
-          })
+          }), `descanso del día ${row.day_of_week}`)
         }
       } else if (row.break_id) {
         // Vaciaron los campos → borrar la fila existente
-        await sb.from('recurring_breaks').delete().eq('id', row.break_id)
+        reg(await sb.from('recurring_breaks').delete().eq('id', row.break_id), `quitar descanso del día ${row.day_of_week}`)
       }
     }
-    try{await sb.from('professionals').update({slot_duration:slotDur}).eq('id',selProf.id)}catch{}
-    setSaving(false); setToast({msg:'Horarios guardados',type:'ok'})
+    reg(await sb.from('professionals').update({slot_duration:slotDur}).eq('id',selProf.id), 'duración de slot')
+    setSaving(false)
+    if(fallos.length){
+      setToast({msg:`NO se guardó todo (${fallos.length} error${fallos.length>1?'es':''}): ${fallos[0]}`,type:'error'})
+    } else {
+      setToast({msg:'Horarios guardados',type:'ok'})
+    }
     // Recargar para refrescar break_ids tras inserts
     if (selProf) {
       const tmp = selProf
@@ -2834,7 +2887,7 @@ function Espera(){
 
   const confirmAssign = async (cand) => {
     const row = assignModal.row
-    const proposedUntil = new Date(Date.now() + 36*60*60*1000).toISOString().slice(0,19)
+    const proposedUntil = nuevoProposedUntil()
     // Crear nueva pending para el paciente de la lista en ese hueco. Vale tanto
     // si el hueco viene de una cancelación como si es un hueco libre normal.
     const { data: newAppt, error } = await sb.from('appointments').insert({
