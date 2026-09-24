@@ -284,7 +284,7 @@ export function ActionEditorModal({
           {/* Selectores de prof + servicio + calendario del slot nuevo */}
           {showSlotPicker && (
             <>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <div className="action-editor-grid-prof-servicio" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <label>
                   <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>Profesional</div>
                   <select value={profId} onChange={e => { setProfId(e.target.value); setSlotIso(null); setUserEditedText(false) }}

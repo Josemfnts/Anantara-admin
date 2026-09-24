@@ -1164,14 +1164,19 @@ export function BotMovil({ sb, botFetch }) {
                 Ahora el modal se desplaza por dentro (cabecera y botones fijos,
                 cuerpo con scroll — ver ActionEditorModal) y aquí solo se ajusta
                 lo propio del móvil: ancho completo y letra de 16px en los campos,
-                que es el mínimo que evita que iOS haga zoom al enfocar. */}
+                que es el mínimo que evita que iOS haga zoom al enfocar.
+                El apilado de Profesional/Servicio iba antes por un selector de
+                atributo `[style*="grid-template-columns"]` que también cazaba el
+                grid de 7 columnas del calendario (ProposalCalendar) y lo dejaba
+                en 1 columna. Ahora apunta a la clase propia de ese grid
+                (ver ActionEditorModal) y el calendario ya no se toca. */}
             <style>{`
               .bot-movil-editor .modal { max-width: 100% !important; width: 100% !important;
                 border-radius: 12px !important; }
               .bot-movil-editor .modal-overlay { padding: 8px !important; }
               .bot-movil-editor input, .bot-movil-editor select, .bot-movil-editor textarea { font-size: 16px !important; }
               @media (max-width: 480px) {
-                .bot-movil-editor .modal [style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+                .bot-movil-editor .modal .action-editor-grid-prof-servicio { grid-template-columns: 1fr !important; }
               }
             `}</style>
             <ActionEditorModal
