@@ -965,6 +965,13 @@ function Agenda(){
     }
   }
 
+  // Marca una cita pasada como "próxima cita gestionada" → la agenda la pinta
+  // en morado OSCURO (vs claro = pasada sin gestionar). Decisión 2026-09-23
+  // (7.3): se marca cuando el mensaje de seguimiento SALE de verdad, no al
+  // prepararlo — antes se marcaba al preparar la oferta aunque no hubiera
+  // hueco (data.slot null) o aunque Marta acabara cancelando sin enviar.
+  const markFollowupHandled = (apptId) => sb.from('appointments').update({ followup_handled_at: new Date().toISOString() }).eq('id', apptId)
+
   const handleAcceptFollowup = async () => {
     const weeks = parseInt(followupWeeks)
     const hasWeeks = !isNaN(weeks) && weeks > 0
@@ -975,11 +982,6 @@ function Agenda(){
     const chatId = `${patientPhone.startsWith('34') ? patientPhone : `34${patientPhone}`}@c.us`
     const serviceId = followupServiceId || modal.service_id || (await sb.from('appointments').select('service_id').eq('id',modal.id).maybeSingle()).data?.service_id
 
-    // Marca la cita pasada como "próxima cita gestionada" → la agenda la pinta en
-    // morado OSCURO (vs claro = pasada sin gestionar). Se marca al darle a Aceptar,
-    // en cualquiera de las ramas (con/ sin próxima cita), porque la decisión ya se tomó.
-    const markHandled = () => sb.from('appointments').update({ followup_handled_at: new Date().toISOString() }).eq('id', modal.id)
-
     if (!hasWeeks && !hasWaitlist) {
       if (!followupMessage.trim()) { setToast({msg:'Escribe el mensaje para el paciente',type:'error'}); return }
       setFollowupBusy(true)
@@ -989,7 +991,7 @@ function Agenda(){
           body: JSON.stringify({ chat_id: chatId, text: followupMessage.trim(), by: 'secretaria' })
         })
         if (!r.ok) throw new Error(await r.text())
-        await markHandled()
+        await markFollowupHandled(modal.id)
         setToast({msg:'Mensaje enviado',type:'ok'})
       } catch (e) { setToast({msg:'Error: '+e.message,type:'error'}) }
       finally { setFollowupBusy(false); setModal(null) }
@@ -1023,7 +1025,7 @@ function Agenda(){
           body: JSON.stringify({ chat_id: chatId, text: followupMessage.trim(), by: 'secretaria' })
         })
         if (!r.ok) throw new Error(await r.text())
-        await markHandled()
+        await markFollowupHandled(modal.id)
         setToast({msg:'Añadido a lista de espera y mensaje enviado',type:'ok'})
         setModal(null)
         setFollowupBusy(false)
@@ -1047,9 +1049,10 @@ function Agenda(){
       })
       const data = await r.json().catch(() => ({}))
       if (!r.ok || !data.ok) throw new Error(data.error || `HTTP ${r.status}`)
-      await markHandled()
       setModal(null)
       if (!data.slot) {
+        // Sin hueco: queda en la búsqueda, pero no se mandó nada, así que la
+        // cita NO se marca como gestionada (morado claro sigue en la agenda).
         setToast({ msg: 'No hay hueco disponible ahora; queda en la búsqueda y te avisaré.', type: 'ok' })
         return
       }
@@ -1063,6 +1066,9 @@ function Agenda(){
         prof: modal.professionals?.name || 'el equipo',
         patient_id: modal.patients.id,
         duration: dur,
+        // Cita de origen del seguimiento: se marca gestionada solo si sendOffer
+        // consigue mandar el mensaje (ver /confirm-offer más abajo).
+        followup_source_id: modal.id,
       })
       setOfferMsg(data.message || '')
     } catch (e) {
@@ -1109,6 +1115,9 @@ function Agenda(){
       const r = await botFetch('/confirm-offer', { method:'POST', body: JSON.stringify({ chat_id: offerModal.chat_id, text: offerMsg.trim() })})
       const data = await r.json().catch(()=>({}))
       if (!r.ok || !data.ok) throw new Error(data.error || `HTTP ${r.status}`)
+      // El mensaje SALIÓ de verdad: ahora sí se marca la cita de origen como
+      // gestionada (morado oscuro). Si esto fallara arriba, no se marca.
+      if (offerModal.followup_source_id) await markFollowupHandled(offerModal.followup_source_id)
       setToast({msg:'Oferta enviada. La conversación está en Bot Coach.', type:'ok'})
       setOfferModal(null)
     } catch (e) { setToast({msg:'Error: '+e.message, type:'error'}) }
