@@ -42,6 +42,7 @@ import { describeProposedAction, isDestructiveAction, actionLookupId } from '../
 import { quickRepliesFor } from '../lib/quickReplies.js'
 import { ActionEditorModal } from './ActionEditorModal.jsx'
 import { conversationPayloadFor } from '../lib/newConversation.js'
+import { normBusqueda } from '../lib/busqueda.js'
 
 // ─── Paleta WhatsApp adaptada al verde del centro ─────────────────────────
 // Súbelo a mano en cada cambio visible de esta pantalla. Se muestra junto al
@@ -330,7 +331,7 @@ export function BotMovil({ sb, botFetch }) {
       try {
         const { data, error } = await sb.from('patients')
           .select('id, full_name, phone')
-          .or(`full_name.ilike.%${q}%,phone.ilike.%${q}%`)
+          .or(`full_name_busqueda.ilike.%${normBusqueda(q)}%,phone.ilike.%${q}%`)
           .limit(6)
         if (error) throw error
         setNewChatResults(data || [])
@@ -594,10 +595,10 @@ export function BotMovil({ sb, botFetch }) {
   }
 
   const filteredConversations = useMemo(() => {
-    const q = search.trim().toLowerCase()
+    const q = normBusqueda(search.trim())
     if (!q) return conversations
     return conversations.filter(c => {
-      const name = (c.patients?.full_name || '').toLowerCase()
+      const name = normBusqueda(c.patients?.full_name)
       const phone = String(c.phone || '')
       return name.includes(q) || phone.includes(q)
     })

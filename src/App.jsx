@@ -15,6 +15,7 @@ import { AusenciasPage } from './components/AusenciasPage.jsx'
 import { BotMovil } from './components/BotMovil.jsx'
 import { AutonomiaPage } from './components/AutonomiaPage.jsx'
 import { conversationPayloadFor } from './lib/newConversation.js'
+import { normBusqueda } from './lib/busqueda.js'
 import { ProposalCalendar } from './components/ProposalCalendar.jsx'
 
 const sb = createClient(
@@ -751,7 +752,7 @@ function Agenda(){
   useEffect(()=>{
     if(!patSearch.trim()){setPatResults([]);return}
     const t=setTimeout(async()=>{
-      const{data}=await sb.from('patients').select('id,full_name,phone').or(`full_name.ilike.%${patSearch}%,phone.ilike.%${patSearch}%`).limit(6)
+      const{data}=await sb.from('patients').select('id,full_name,phone').or(`full_name_busqueda.ilike.%${normBusqueda(patSearch)}%,phone.ilike.%${patSearch}%`).limit(6)
       setPatResults(data||[])
     },250)
     return()=>clearTimeout(t)
@@ -761,7 +762,7 @@ function Agenda(){
   useEffect(()=>{
     if(!editPatSearch.trim()){setEditPatResults([]);return}
     const t=setTimeout(async()=>{
-      const{data}=await sb.from('patients').select('id,full_name,phone').or(`full_name.ilike.%${editPatSearch}%,phone.ilike.%${editPatSearch}%`).limit(6)
+      const{data}=await sb.from('patients').select('id,full_name,phone').or(`full_name_busqueda.ilike.%${normBusqueda(editPatSearch)}%,phone.ilike.%${editPatSearch}%`).limit(6)
       setEditPatResults(data||[])
     },250)
     return()=>clearTimeout(t)
@@ -1590,7 +1591,7 @@ function Agenda(){
     // Orden descendente para priorizar citas recientes/próximas sobre antiguas.
     const { data } = await sb.from('appointments')
       .select('starts_at, patients!inner(id, full_name)')
-      .ilike('patients.full_name', `%${q}%`)
+      .ilike('patients.full_name_busqueda', `%${normBusqueda(q)}%`)
       .neq('status', 'cancelled')
       .order('starts_at', { ascending: false })
       .limit(200)
@@ -2720,7 +2721,7 @@ function Espera(){
   useEffect(()=>{
     if(!addPatSearch.trim()){setAddPatResults([]);return}
     const t=setTimeout(async()=>{
-      const{data}=await sb.from('patients').select('id,full_name,phone').or(`full_name.ilike.%${addPatSearch}%,phone.ilike.%${addPatSearch}%`).limit(6)
+      const{data}=await sb.from('patients').select('id,full_name,phone').or(`full_name_busqueda.ilike.%${normBusqueda(addPatSearch)}%,phone.ilike.%${addPatSearch}%`).limit(6)
       setAddPatResults(data||[])
     },250)
     return()=>clearTimeout(t)
@@ -3437,7 +3438,7 @@ function Pacientes(){
   const fetchPats=async(q,p)=>{
     setLoading(true)
     let req=sb.from('patients').select('id,full_name,phone,created_at',{count:'exact'}).order('full_name').range(p*PAGE_SIZE,(p+1)*PAGE_SIZE-1)
-    if(q.trim()) req=req.or(`full_name.ilike.%${q}%,phone.ilike.%${q}%`)
+    if(q.trim()) req=req.or(`full_name_busqueda.ilike.%${normBusqueda(q)}%,phone.ilike.%${q}%`)
     const{data,count}=await req
     setPatients(data||[]);setTotal(count||0);setPage(p);setLoading(false)
   }
@@ -4832,7 +4833,7 @@ function BotCoach() {
     if (!newConvQuery.trim()) { setNewConvResults([]); return }
     const t = setTimeout(async () => {
       const { data } = await sb.from('patients').select('id,full_name,phone')
-        .or(`full_name.ilike.%${newConvQuery}%,phone.ilike.%${newConvQuery}%`).limit(6)
+        .or(`full_name_busqueda.ilike.%${normBusqueda(newConvQuery)}%,phone.ilike.%${newConvQuery}%`).limit(6)
       setNewConvResults(data || [])
     }, 250)
     return () => clearTimeout(t)
@@ -4961,7 +4962,7 @@ function BotCoach() {
   // las vacías no lo toca. Cero queries extra.
   const convFiltered = conversations.filter(c =>
     c.last_message_at &&
-    (!q || (c.patients?.full_name||'').toLowerCase().includes(q) || (c.phone||'').includes(q)))
+    (!q || normBusqueda(c.patients?.full_name).includes(normBusqueda(q)) || (c.phone||'').includes(q)))
   const selConv = conversations.find(c => c.id === selConvId) || null
   const pendingByConv = {}
   for (const rv of reviews) if (rv.verdict==='pending' && rv.conversation_id) pendingByConv[rv.conversation_id] = (pendingByConv[rv.conversation_id]||0)+1
