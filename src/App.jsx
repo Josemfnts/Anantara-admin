@@ -10,6 +10,7 @@ import { buildFollowupMessage, weekText, buildNextAppointmentReminder } from './
 import { importeCita, buildNoShowMessage } from './lib/noShow.js'
 import { parseCompanions, textoAcompanantes as textoAcompanantesPreview } from './lib/companions.js'
 import { detectarConflictos, textoConflictos } from './lib/conflictos.js'
+import { assignConfirmText } from './lib/assignConfirmText.js'
 import { AusenciasPage } from './components/AusenciasPage.jsx'
 import { BotMovil } from './components/BotMovil.jsx'
 import { AutonomiaPage } from './components/AutonomiaPage.jsx'
@@ -617,6 +618,8 @@ function Agenda(){
   const[cancelConfirm,setCancelConfirm]=useState(false)
   const[assignModal,setAssignModal]=useState(null) // {appointment, candidates: []}
   const[assignTab,setAssignTab]=useState('waiting') // 'waiting' | 'expedite'
+  const[confirmCandidate,setConfirmCandidate]=useState(null) // candidato pendiente de confirmar (encargo 1.2: un clic ya no asigna directo)
+  const[assigning,setAssigning]=useState(false)
   const[patSearch,setPatSearch]=useState('')
   const[patResults,setPatResults]=useState([])
   const[selPat,setSelPat]=useState(null)
@@ -1215,6 +1218,21 @@ function Agenda(){
     setAssignModal(null)
     setToast({msg: waSent ? 'Asignación creada. WhatsApp enviado al paciente.' : 'Asignación creada. ⚠️ WhatsApp no enviado (bot apagado?)', type: waSent ? 'ok' : 'error'})
     load()
+  }
+
+  // Envuelve confirmAssignToWL para el paso de confirmación: deshabilita el
+  // botón mientras se ejecuta (evita doble envío de WhatsApp con doble clic) y
+  // vuelve a la lista de candidatos si algo falla (confirmAssignToWL ya avisa
+  // con un toast; aquí no se toca su lógica).
+  const runAssignToWL = async () => {
+    if (!confirmCandidate) return
+    setAssigning(true)
+    try {
+      await confirmAssignToWL(confirmCandidate)
+    } finally {
+      setAssigning(false)
+      setConfirmCandidate(null)
+    }
   }
 
   const saveApptChanges=async()=>{
@@ -2135,7 +2153,21 @@ function Agenda(){
       const waitCount = assignModal.candidates.filter(c=>c.queue_type==='waiting').length
       const expedCount = assignModal.candidates.filter(c=>c.queue_type==='expedite').length
       const visible = assignModal.candidates.filter(c=>c.queue_type===assignTab)
-      return <Modal title="Asignar hueco vacante" onClose={()=>setAssignModal(null)}>
+      return <Modal title="Asignar hueco vacante" onClose={()=>{setAssignModal(null);setConfirmCandidate(null)}}>
+      {confirmCandidate ? (
+        // Tarjeta de confirmación (mismo patrón que la de cancelar cita más abajo):
+        // un clic sobre el candidato ya no inserta la cita ni manda el WhatsApp
+        // directamente, hay que confirmar aquí primero.
+        <div style={{background:'var(--cream)',border:'1px solid var(--border)',borderRadius:8,padding:'12px 14px'}}>
+          <p style={{fontSize:13,color:'var(--ink)',marginBottom:12,fontWeight:600}}>
+            {assignConfirmText(confirmCandidate.patients?.full_name, assignModal.appointment.starts_at)}
+          </p>
+          <div style={{display:'flex',gap:8}}>
+            <Btn variant="ghost" disabled={assigning} onClick={()=>setConfirmCandidate(null)} style={{flex:1}}>Cancelar</Btn>
+            <Btn disabled={assigning} onClick={runAssignToWL} style={{flex:1}}>{assigning?'Asignando…':'Confirmar'}</Btn>
+          </div>
+        </div>
+      ) : (<>
       <div style={{marginBottom:12,fontSize:13,color:'var(--text-muted)'}}>
         Hueco del <strong>{fDT(assignModal.appointment.starts_at)}</strong>. Selecciona paciente de la cola:
       </div>
@@ -2161,7 +2193,7 @@ function Agenda(){
                 cursor:'pointer',
                 display:'flex',alignItems:'center',gap:10
               }}
-              onClick={()=>confirmAssignToWL(c)}>
+              onClick={()=>setConfirmCandidate(c)}>
                 {c.isSuggestion && <span style={{fontSize:18}}>✨</span>}
                 <div style={{flex:1}}>
                   <div style={{fontWeight:700,fontSize:13}}>
@@ -2187,6 +2219,7 @@ function Agenda(){
         <Btn variant="danger" onClick={freeHole} style={{flex:1}}>Liberar hueco</Btn>
         <Btn variant="ghost" onClick={()=>setAssignModal(null)} style={{flex:1}}>Cerrar</Btn>
       </div>
+      </>)}
     </Modal>
     })()}
   </>
@@ -2608,6 +2641,8 @@ function Espera(){
   const[proxMap,setProxMap]=useState({})   // patient_id -> próxima cita real
   const[toast,setToast]=useState(null)
   const[assignModal,setAssignModal]=useState(null) // {row, candidates:[{key,starts_at,origen,…}]}
+  const[confirmCandidate,setConfirmCandidate]=useState(null) // candidato pendiente de confirmar (encargo 1.2: un clic ya no asigna directo)
+  const[assigning,setAssigning]=useState(false)
   const[editModal,setEditModal]=useState(null) // {row}
   const[editForm,setEditForm]=useState({target_date:'',weeks_pautadas:'',preferred_hours:[]})
   // working_hours del profesional de la fila que se edita: define de qué hora a
@@ -2918,6 +2953,21 @@ function Espera(){
     setAssignModal(null); setToast({msg:'Hueco asignado. Esperando confirmación del paciente.',type:'ok'}); load()
   }
 
+  // Envuelve confirmAssign para el paso de confirmación: deshabilita el botón
+  // mientras se ejecuta (evita doble envío de WhatsApp con doble clic) y vuelve
+  // a la lista de candidatos si algo falla (confirmAssign ya avisa con un toast;
+  // aquí no se toca su lógica).
+  const runConfirmAssign = async () => {
+    if (!confirmCandidate) return
+    setAssigning(true)
+    try {
+      await confirmAssign(confirmCandidate)
+    } finally {
+      setAssigning(false)
+      setConfirmCandidate(null)
+    }
+  }
+
   const openEdit = (row) => {
     setEditForm({
       target_date: row.target_date || '',
@@ -3053,7 +3103,21 @@ function Espera(){
       </div>
     }
 
-    {assignModal && <Modal title={`Asignar hueco a ${assignModal.row.patients?.full_name || ''}`} onClose={()=>setAssignModal(null)}>
+    {assignModal && <Modal title={`Asignar hueco a ${assignModal.row.patients?.full_name || ''}`} onClose={()=>{setAssignModal(null);setConfirmCandidate(null)}}>
+      {confirmCandidate ? (
+        // Tarjeta de confirmación (mismo patrón que la de cancelar cita en Agenda):
+        // un clic sobre el candidato ya no inserta la cita ni manda el WhatsApp
+        // directamente, hay que confirmar aquí primero.
+        <div style={{background:'var(--cream)',border:'1px solid var(--border)',borderRadius:8,padding:'12px 14px'}}>
+          <p style={{fontSize:13,color:'var(--ink)',marginBottom:12,fontWeight:600}}>
+            {assignConfirmText(assignModal.row.patients?.full_name, confirmCandidate.starts_at)}
+          </p>
+          <div style={{display:'flex',gap:8}}>
+            <Btn variant="ghost" disabled={assigning} onClick={()=>setConfirmCandidate(null)} style={{flex:1}}>Cancelar</Btn>
+            <Btn disabled={assigning} onClick={runConfirmAssign} style={{flex:1}}>{assigning?'Asignando…':'Confirmar'}</Btn>
+          </div>
+        </div>
+      ) : (<>
       {/* Contexto: sin esto Marta no sabe si lo que va a asignar adelanta la cita
           o la retrasa, ni qué horas tenía pedidas. */}
       <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:10,paddingBottom:8,borderBottom:'1px solid var(--border)'}}>
@@ -3076,7 +3140,7 @@ function Espera(){
                 background:bg,
                 border:`1px solid ${border}`,
                 borderRadius:6,cursor:'pointer'
-              }} onClick={() => confirmAssign(c)}>
+              }} onClick={() => setConfirmCandidate(c)}>
                 <div style={{display:'flex',alignItems:'center',gap:8}}>
                   <span style={{fontSize:13,fontWeight:700}}>{fDT(c.starts_at)}</span>
                   <span style={{fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,
@@ -3096,6 +3160,7 @@ function Espera(){
         }
       </div>
       <Btn variant="ghost" onClick={()=>setAssignModal(null)} style={{marginTop:8,width:'100%'}}>Cerrar</Btn>
+      </>)}
     </Modal>}
 
     {editModal&&<Modal title="Editar parámetros de espera" onClose={()=>setEditModal(null)}>
