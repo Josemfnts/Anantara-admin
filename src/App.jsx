@@ -11,6 +11,7 @@ import { importeCita, buildNoShowMessage } from './lib/noShow.js'
 import { parseCompanions, textoAcompanantes as textoAcompanantesPreview } from './lib/companions.js'
 import { detectarConflictos, textoConflictos } from './lib/conflictos.js'
 import { assignConfirmText } from './lib/assignConfirmText.js'
+import { mergeProfNotifs } from './lib/profNotifs.js'
 import { AusenciasPage } from './components/AusenciasPage.jsx'
 import { BotMovil } from './components/BotMovil.jsx'
 import { AutonomiaPage } from './components/AutonomiaPage.jsx'
@@ -2373,11 +2374,16 @@ function Horarios(){
   },[selProf])
 
   const saveProfNotifs=async()=>{
-    const{error}=await sb.from('professionals').update({
+    const updates={
       whatsapp_phone: waPhone || null,
       daily_agenda_time: agendaTime || null,
-    }).eq('id', selProf.id)
+    }
+    const{error}=await sb.from('professionals').update(updates).eq('id', selProf.id)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    // Antes esto no tocaba `profs`/`selProf`: al cambiar de profesional y volver
+    // se repintaba la hora vieja aunque en BD ya estuviera la nueva.
+    setProfs(ps=>mergeProfNotifs(ps, selProf.id, updates))
+    setSelProf(sp=>sp?{...sp,...updates}:sp)
     setToast({msg:'Datos guardados',type:'ok'})
   }
 
