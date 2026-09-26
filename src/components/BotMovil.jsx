@@ -223,7 +223,9 @@ export function BotMovil({ sb, botFetch }) {
         // `context_snapshot` trae `future_appt.starts_at`: con él la respuesta rápida
         // de confirmación dice el día correcto ("hasta el lunes") en vez del fijo
         // "hasta mañana", que era falso la mitad de las veces. Auditoría A5.
-        .select('id, conversation_id, proposed_text, proposed_action, category, intent_detected, context_snapshot')
+        // casuistica: encargo 3.1 (26/09) — para distinguir la review silenciosa
+        // 'duda' (emoji/sticker dudoso) del resto de derivaciones.
+        .select('id, conversation_id, proposed_text, proposed_action, category, casuistica, intent_detected, context_snapshot')
         .eq('verdict', 'pending')
       if (error) throw error
       setPendingReviews(data || [])
@@ -985,6 +987,14 @@ export function BotMovil({ sb, botFetch }) {
               // cuando calla sin resolver (audio, dolencia, fallo, desconocido).
               <div style={{ fontSize: 13, color: '#7a5b00', background: '#fff8e1', border: '1px solid #f0d68a', borderRadius: 8, padding: '8px 10px', marginBottom: 8 }}>
                 Lo tienes que contestar tú.
+                {pendingForSelected.casuistica === 'duda' && (
+                  // Encargo 3.1: emoji/sticker dudoso con algo pendiente. Se
+                  // distingue del resto de derivaciones porque aquí NO hace
+                  // falta tocar la cita, solo contestar.
+                  <span style={{ marginLeft: 6, display: 'inline-block', fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 999, background: '#ede9fe', border: '1px solid #c4b5fd', color: '#5b21b6', verticalAlign: 'middle' }}>
+                    ❓ Duda · no toca la cita
+                  </span>
+                )}
                 {pendingForSelected.intent_detected ? ` Motivo: ${pendingForSelected.intent_detected}.` : ''}
               </div>
             )}

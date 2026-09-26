@@ -2248,6 +2248,12 @@ function Horarios(){
   const[agendaTime,setAgendaTime]=useState('')
   const[reminderTime,setReminderTime]=useState('10:00')
   const[savingReminder,setSavingReminder]=useState(false)
+  // Encargo 3.4: texto libre que Marta añade al final del recordatorio D-1
+  // SOLO en la primera cita del paciente (lo aplica el bot, en otro encargo).
+  // Vacío = no se añade nada. app_config.key='d1_info_primera_cita'.
+  const D1_INFO_MAX=500
+  const[d1Info,setD1Info]=useState('')
+  const[savingD1Info,setSavingD1Info]=useState(false)
   const[sendingAgenda,setSendingAgenda]=useState(false)
   // Envío manual de recordatorios para un día concreto (plan vacaciones):
   // se eligen las citas de ese día y se mandan YA (el texto del bot ya dice
@@ -2263,6 +2269,10 @@ function Horarios(){
   useEffect(()=>{
     sb.from('app_config').select('value').eq('key','reminder_time').maybeSingle()
       .then(({data})=>{ if(data?.value) setReminderTime(data.value) })
+    // ?? y no ||: si ya se guardó vacío a propósito (= no añadir nada), que no
+    // se pierda por tratar '' como falsy.
+    sb.from('app_config').select('value').eq('key','d1_info_primera_cita').maybeSingle()
+      .then(({data})=>{ setD1Info(data?.value ?? '') })
     sb.from('bot_config').select('vacation_mode,vacation_message').eq('id',1).maybeSingle()
       .then(({data})=>{
         if(!data)return
@@ -2317,6 +2327,19 @@ function Horarios(){
     setSavingReminder(false)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setToast({msg:`Recordatorios a las ${reminderTime}`,type:'ok'})
+  }
+
+  // Guardar vacío es un guardado válido (borra el texto extra, no la fila): por
+  // eso value siempre va como string, nunca null, y con recorte de espacios.
+  const saveD1Info = async () => {
+    setSavingD1Info(true)
+    const trimmed = d1Info.trim().slice(0, D1_INFO_MAX)
+    const{error}=await sb.from('app_config')
+      .upsert({key:'d1_info_primera_cita', value:trimmed}, {onConflict:'key'})
+    setSavingD1Info(false)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setD1Info(trimmed)
+    setToast({msg:trimmed?'Información de la primera cita guardada':'Información de la primera cita vaciada — ya no se añade nada',type:'ok'})
   }
   const WORK_DAYS=[1,2,3,4,5,6]
   const DAY_NAMES=['','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
@@ -2476,6 +2499,29 @@ function Horarios(){
         <input className="field-input" type="date" style={{width:'auto',minHeight:34}} value={manualDate} onChange={e=>setManualDate(e.target.value)} title="Día de las citas que quieres recordar"/>
         <Btn variant="ghost" onClick={sendManualReminders} disabled={!manualDate||manualBusy}>{manualBusy?'Enviando…':'Enviar'}</Btn>
         <span style={{fontSize:11,color:'var(--text-muted)'}}>Manda ahora los recordatorios de las citas de ese día</span>
+      </div>
+
+      {/* Encargo 3.4: texto extra SOLO en el D-1 de la primera cita del
+          paciente. Lo añade el bot al final del recordatorio (otro encargo);
+          aquí solo se edita y guarda. Con el bot viejo la clave no se lee. */}
+      <div style={{flexBasis:'100%',marginTop:4,paddingTop:12,borderTop:'1px solid var(--border)'}}>
+        <label className="field-label">Información extra en el recordatorio de la primera cita</label>
+        <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:6}}>
+          Se añade al final del recordatorio del día antes solo en la primera cita del paciente. Vacío = no se añade nada.
+        </div>
+        <textarea
+          className="notes-area"
+          rows={3}
+          maxLength={D1_INFO_MAX}
+          value={d1Info}
+          onChange={e=>setD1Info(e.target.value)}
+          style={{width:'100%'}}
+          placeholder="Ej: dónde estamos, cómo llegar, dónde aparcar…"
+        />
+        <div style={{display:'flex',gap:8,marginTop:6,alignItems:'center',flexWrap:'wrap'}}>
+          <Btn variant="ghost" onClick={saveD1Info} disabled={savingD1Info}>{savingD1Info?'Guardando…':'Guardar información'}</Btn>
+          <span style={{fontSize:11,color:'var(--text-muted)'}}>{d1Info.length}/{D1_INFO_MAX}</span>
+        </div>
       </div>
     </div>
 
@@ -4812,7 +4858,9 @@ function BotCoach() {
     setStats(s)
     // Reviews con filtros + join con patients vía conversation_id
     let q = sb.from('bot_coach_reviews')
-      .select('id,conversation_id,patient_phone,patient_message,context_snapshot,intent_detected,nlu_source,category,proposed_text,proposed_action,final_text,final_action,action_approved,action_executed,verdict,rejection_reason,quick_reply_used,flagged,created_at,reviewed_at,reviewed_by,conversations(patient_id,patients(id,full_name,phone))')
+      // casuistica: encargo 3.1 (26/09) — para distinguir en el panel las reviews
+      // silenciosas de tipo 'duda' (emoji/sticker dudoso) del resto de derivaciones.
+      .select('id,conversation_id,patient_phone,patient_message,context_snapshot,intent_detected,nlu_source,category,casuistica,proposed_text,proposed_action,final_text,final_action,action_approved,action_executed,verdict,rejection_reason,quick_reply_used,flagged,created_at,reviewed_at,reviewed_by,conversations(patient_id,patients(id,full_name,phone))')
       .order('created_at', { ascending: true })
       .limit(200)
     if (filter === 'pending') q = q.eq('verdict','pending')
@@ -5813,6 +5861,14 @@ function BotCoach() {
                 // quedaba sin bolito verde; ahora sí, y aquí se explica por qué.
                 <div style={{fontSize:12,color:'#7a5b00',background:'#fff8e1',border:'1px solid #f0d68a',borderRadius:8,padding:'6px 10px',marginBottom:6}}>
                   🙋 El bot no ha propuesto nada — lo contestas tú.
+                  {selPending.casuistica === 'duda' && (
+                    // Encargo 3.1: emoji/sticker dudoso con algo pendiente. Se
+                    // distingue del resto de derivaciones porque aquí NO hace
+                    // falta tocar la cita, solo contestar.
+                    <span style={{marginLeft:6,display:'inline-block',fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:'#ede9fe',border:'1px solid #c4b5fd',color:'#5b21b6',verticalAlign:'middle'}}>
+                      ❓ Duda · no toca la cita
+                    </span>
+                  )}
                   {selPending.intent_detected ? ` Motivo: ${selPending.intent_detected}.` : ''}
                 </div>
               )}

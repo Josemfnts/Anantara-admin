@@ -52,6 +52,13 @@ const CASUISTICAS = {
   lista_espera:        { label: 'Apunta en lista de espera', muta: true },
   // Derivación y resto.
   avisar_secretaria:   { label: 'Deriva a la secretaria', muta: false },
+  // Encargo 3.1 (26/09): el paciente contestó solo con emojis/sticker (o un "sí"
+  // dudoso) con algo pendiente; el bot calla y avisa a Marta, pero NO toca la
+  // cita. Es una review silenciosa igual que avisar_secretaria. NUNCA se
+  // suelta en automático: adrede no tiene fila en bot_autonomy, así que no
+  // aparece en la tabla de abajo (displayRows sale de autonomyRows, no de este
+  // catálogo) — no hace falta ningún freno extra aquí.
+  duda:                { label: 'Duda (no toca la cita)', muta: false },
   otra:                { label: 'Otra', muta: false },
 }
 const CASUISTICA_KEYS = Object.keys(CASUISTICAS)
