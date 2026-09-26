@@ -2298,6 +2298,11 @@ function Horarios(){
   const[vacMode,setVacMode]=useState(false)
   const[vacMsg,setVacMsg]=useState(VACATION_DEFAULT)
   const[vacBusy,setVacBusy]=useState(false)
+  // Mensaje de bienvenida (encargo 5.1): a diferencia de vacaciones, NO tiene
+  // texto por defecto — vacío es un valor válido que significa "no mandar nada"
+  // (el aviso a Marta se manda igual). bot_config.welcome_message, fila única id=1.
+  const[welcomeMsg,setWelcomeMsg]=useState('')
+  const[welcomeBusy,setWelcomeBusy]=useState(false)
 
   useEffect(()=>{
     sb.from('app_config').select('value').eq('key','reminder_time').maybeSingle()
@@ -2306,11 +2311,12 @@ function Horarios(){
     // se pierda por tratar '' como falsy.
     sb.from('app_config').select('value').eq('key','d1_info_primera_cita').maybeSingle()
       .then(({data})=>{ setD1Info(data?.value ?? '') })
-    sb.from('bot_config').select('vacation_mode,vacation_message').eq('id',1).maybeSingle()
+    sb.from('bot_config').select('vacation_mode,vacation_message,welcome_message').eq('id',1).maybeSingle()
       .then(({data})=>{
         if(!data)return
         setVacMode(data.vacation_mode===true)
         if(data.vacation_message)setVacMsg(data.vacation_message)
+        setWelcomeMsg(data.welcome_message ?? '')
       })
   },[])
 
@@ -2335,6 +2341,17 @@ function Horarios(){
     setVacBusy(false)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setToast({msg:'Mensaje de vacaciones guardado',type:'ok'})
+  }
+  // Guardar vacío es válido aquí (= no mandar nada), igual que saveD1Info.
+  const saveWelcomeMsg=async()=>{
+    setWelcomeBusy(true)
+    const trimmed=welcomeMsg.trim()
+    const{error}=await sb.from('bot_config').update({welcome_message:trimmed,updated_at:new Date().toISOString()}).eq('id',1)
+    setWelcomeBusy(false)
+    if(error){setToast({msg:'Error (¿falta la columna welcome_message en bot_config?): '+error.message,type:'error'});return}
+    setWelcomeMsg(trimmed)
+    try{await botFetch('/training-mode-refresh',{method:'POST'})}catch{/* el bot refresca por TTL igualmente */}
+    setToast({msg:trimmed?'Mensaje de bienvenida guardado':'Mensaje de bienvenida vaciado — ya no se manda nada',type:'ok'})
   }
 
   const sendManualReminders=async()=>{
@@ -2571,6 +2588,24 @@ function Horarios(){
         <div style={{display:'flex',gap:8,marginTop:6,alignItems:'center',flexWrap:'wrap'}}>
           <Btn variant="ghost" onClick={saveVacMsg} disabled={vacBusy}>Guardar mensaje</Btn>
           <span style={{fontSize:11,color:'var(--text-muted)'}}>La sugerencia del bot para el día de vuelta se genera con los mensajes del paciente, sin este texto.</span>
+        </div>
+      </div>
+
+      <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid var(--border)'}}>
+        <label className="field-label">Mensaje de bienvenida</label>
+        <textarea
+          className="notes-area"
+          rows={3}
+          value={welcomeMsg}
+          onChange={e=>setWelcomeMsg(e.target.value)}
+          style={{width:'100%'}}
+          placeholder="Ej: Gracias por escribir a Centro Anantara, en breve te atiende alguien del equipo."
+        />
+        <div style={{display:'flex',gap:8,marginTop:6,alignItems:'center',flexWrap:'wrap'}}>
+          <Btn variant="ghost" onClick={saveWelcomeMsg} disabled={welcomeBusy}>{welcomeBusy?'Guardando…':'Guardar mensaje'}</Btn>
+        </div>
+        <div style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>
+          Se manda UNA vez, al momento, a un número que escribe y no es paciente; el bot avisa a Marta y no le gestiona citas hasta que lo dé de alta. Vacío = no se manda nada (el aviso a Marta sale igual). Con vacaciones activas, al número nuevo solo le llega el de vacaciones.
         </div>
       </div>
     </div>
