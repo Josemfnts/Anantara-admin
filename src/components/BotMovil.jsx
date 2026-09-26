@@ -43,6 +43,7 @@ import { quickRepliesFor } from '../lib/quickReplies.js'
 import { ActionEditorModal } from './ActionEditorModal.jsx'
 import { conversationPayloadFor } from '../lib/newConversation.js'
 import { normBusqueda } from '../lib/busqueda.js'
+import { featuresBot } from '../lib/featuresBot.js'
 
 // ─── Paleta WhatsApp adaptada al verde del centro ─────────────────────────
 // Súbelo a mano en cada cambio visible de esta pantalla. Se muestra junto al
@@ -147,6 +148,9 @@ export function BotMovil({ sb, botFetch }) {
   const [actionEditorOpen, setActionEditorOpen] = useState(false)
   const [services, setServices] = useState([])
   const [professionals, setProfessionals] = useState([])
+  // Encargo 4.4: mismo flag que Bot Coach (app_config.features_bot) para
+  // destapar "Cita personalizada" en el editor compartido.
+  const [personalizadaEnabled, setPersonalizadaEnabled] = useState(false)
   const [manualMode, setManualMode] = useState(false)          // true: fuerza la caja de texto libre aunque haya propuesta pendiente
   const [confirmDelete, setConfirmDelete] = useState(false)    // confirmación propia de borrado (nunca window.confirm)
   const [deletingConv, setDeletingConv] = useState(false)
@@ -412,7 +416,7 @@ export function BotMovil({ sb, botFetch }) {
       let appt = null
       if (apptId) {
         const { data } = await sb.from('appointments')
-          .select('id, starts_at, status, professionals(name), services(name, duration_minutes)')
+          .select('id, starts_at, status, para_quien, professionals(name), services(name, duration_minutes)')
           .eq('id', apptId).maybeSingle()
         appt = data || null
       }
@@ -441,6 +445,14 @@ export function BotMovil({ sb, botFetch }) {
         setProfessionals(pr.data || [])
       } catch { /* el editor avisará si faltan datos */ }
     })()
+    return () => { vivo = false }
+  }, [sb])
+
+  // Flag de app_config.features_bot. Fila ausente (hoy) → Set vacío → oculta.
+  useEffect(() => {
+    let vivo = true
+    sb.from('app_config').select('value').eq('key', 'features_bot').maybeSingle()
+      .then(({ data }) => { if (vivo) setPersonalizadaEnabled(featuresBot(data?.value).has('cita_personalizada')) })
     return () => { vivo = false }
   }, [sb])
 
@@ -1198,6 +1210,7 @@ export function BotMovil({ sb, botFetch }) {
               professionals={professionals}
               sb={sb}
               botFetch={botFetch}
+              personalizadaEnabled={personalizadaEnabled}
               onCancel={() => setActionEditorOpen(false)}
               onConfirm={(nuevaAccion, nuevoTexto) => {
                 setOverrideAction(nuevaAccion)

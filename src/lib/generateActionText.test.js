@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { generateActionText } from './generateActionText.js'
+import { buildPersonalizadaDescriptor } from './citaPersonalizada.js'
 
 describe('generateActionText', () => {
   it('acción null/vacía → cadena vacía', () => {
@@ -142,6 +143,37 @@ describe('generateActionText', () => {
       { patientName: 'María López', profName: 'Marcos' }
     )
     expect(t).toMatch(/Marcos/)
+  })
+
+  // Encargo 4.4: la cita "Personalizada" es una proponer_cita sin service_id
+  // (ctx.serviceName no llega — no hay servicio). generateActionText no la
+  // trata distinto: no mira duration_minutes ni service_id, así que el texto
+  // de siempre ya vale sin tocar el código; esto lo deja verificado con el
+  // descriptor REAL que produce el editor (buildPersonalizadaDescriptor).
+  it('proponer_cita personalizada (sin serviceName): mismo texto que una normal, hablando de tú', () => {
+    const personalizada = buildPersonalizadaDescriptor({
+      patientId: 'pt1', professionalId: 'p1', startsAt: '2026-09-15T10:30:00',
+      durationMinutes: 45, paraQuien: 'Agustín',
+    })
+    const t = generateActionText(personalizada, { patientName: 'María López', profName: 'Marcos' })
+    expect(t).toMatch(/martes 15 de septiembre/)
+    expect(t).toMatch(/10:30/)
+    expect(t).toMatch(/Marcos/)
+    expect(t).toMatch(/¿Te viene bien\?/)
+    // Se habla SIEMPRE con quien escribe, nunca con el tercero para el que es
+    // la cita: nunca "¿le viene bien?" ni menciones de "Agustín" en el texto.
+    expect(t).not.toMatch(/le viene bien/i)
+    expect(t).not.toMatch(/Agustín/)
+  })
+
+  it('proponer_cita personalizada sin profName: no revienta ni saca undefined/NaN', () => {
+    const personalizada = buildPersonalizadaDescriptor({
+      patientId: 'pt1', professionalId: 'p1', startsAt: '2026-09-15T10:30:00', durationMinutes: 45,
+    })
+    const t = generateActionText(personalizada, {})
+    expect(t).not.toMatch(/undefined/)
+    expect(t).not.toMatch(/NaN/)
+    expect(t).toMatch(/el equipo/)
   })
 })
 

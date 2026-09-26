@@ -107,9 +107,12 @@ function selfDescribedSlot(action) {
   }
 }
 
-function composeLine({ unresolved, patient, day, time, prof, service, extra }) {
+function composeLine({ unresolved, patient, day, time, prof, service, duration, paraQuien, extra }) {
   if (unresolved) return '⚠️ No se pudo resolver la cita'
-  const parts = [patient, day, time, prof || service].filter(Boolean)
+  const parts = [patient, day, time, prof || service, duration].filter(Boolean)
+  // Encargo 4.3/4.4: a quién es la cita cuando no es para quien escribe — el
+  // dato viene de la columna appointments.para_quien o del propio action.
+  if (paraQuien) parts.push(`para ${paraQuien}`)
   if (extra) parts.push(extra)
   return parts.join(' · ')
 }
@@ -121,12 +124,23 @@ export function describeProposedAction(action, { patientName = null, appt = null
   if (!action || !action.type) {
     return { type: null, label: 'Acción', icon: '⚙️', family: 'neutral', destructive: false,
       patient: patientName, day: null, time: null, prof: null, service: null,
-      line: composeLine({ unresolved: false, patient: patientName }), unresolved: false, note: null }
+      line: composeLine({ unresolved: false, patient: patientName }), unresolved: false, note: null,
+      paraQuien: null }
   }
 
+  // Encargo 4.4: una proponer_cita con duración libre y sin servicio (la crea
+  // Marta desde el editor, el bot nunca la propone). Mismo `type` que la cita
+  // normal — se distingue por el flag — así el commit del bot no cambia.
+  const isPersonalizada = action.type === 'proponer_cita' && action.personalizada === true
+
   const meta = META[action.type] || { label: action.type, icon: '⚙️', family: 'neutral' }
+  const label = isPersonalizada ? 'Cita personalizada' : meta.label
   const destructive = DESTRUCTIVE.has(action.type)
   const patient = action.patient_name || patientName || null
+  // El campo viaja en el action (el bot ya lo rellena en pedir_cita/anotar) o,
+  // si la identidad de la cita se resolvió por lookup, en la fila de appointments.
+  const paraQuien = action.para_quien || appt?.para_quien || null
+  const duration = isPersonalizada && action.duration_minutes ? `${action.duration_minutes} min` : null
 
   let day = null, time = null, prof = null, service = null
   let unresolved = false, note = null, extra = null
@@ -173,11 +187,11 @@ export function describeProposedAction(action, { patientName = null, appt = null
     }
   }
 
-  const line = composeLine({ unresolved, patient, day, time, prof, service, extra })
+  const line = composeLine({ unresolved, patient, day, time, prof, service, duration, paraQuien, extra })
 
   return {
     type: action.type,
-    label: meta.label,
+    label,
     icon: meta.icon,
     family: meta.family,
     destructive,
@@ -189,5 +203,6 @@ export function describeProposedAction(action, { patientName = null, appt = null
     line,
     unresolved,
     note,
+    paraQuien,
   }
 }

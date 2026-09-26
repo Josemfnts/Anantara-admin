@@ -12,6 +12,7 @@ import { parseCompanions, textoAcompanantes as textoAcompanantesPreview } from '
 import { detectarConflictos, textoConflictos } from './lib/conflictos.js'
 import { assignConfirmText } from './lib/assignConfirmText.js'
 import { mergeProfNotifs } from './lib/profNotifs.js'
+import { featuresBot } from './lib/featuresBot.js'
 import { AusenciasPage } from './components/AusenciasPage.jsx'
 import { BotMovil } from './components/BotMovil.jsx'
 import { AutonomiaPage } from './components/AutonomiaPage.jsx'
@@ -628,8 +629,13 @@ function Agenda(){
   // `svc_id:'custom'` = cita PERSONALIZADA: duración libre en tramos de 15 min y
   // acompañantes. El titular sigue siendo un único paciente (decisión Josema):
   // los acompañantes son solo nombres para que el recordatorio los mencione.
-  const[form,setForm]=useState({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:'',leave_pending:true,custom_min:60,companions:''})
+  const[form,setForm]=useState({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:'',leave_pending:true,custom_min:60,companions:'',para_quien:''})
   const[editNotes,setEditNotes]=useState('')
+  // Encargo 4.3: a quién es la cita cuando no es para quien la pide (columna
+  // appointments.para_quien). Texto libre, distinto de companions ("viene
+  // acompañado de"): aquí la cita queda a nombre del titular igual, pero es
+  // para otra persona.
+  const[editParaQuien,setEditParaQuien]=useState('')
   const[editProfId,setEditProfId]=useState('')
   const[editPayment,setEditPayment]=useState('')
   const[editDate,setEditDate]=useState('')
@@ -682,7 +688,7 @@ function Agenda(){
     setLoading(true)
     const from=toK(days[0])+'T00:00:00', to=toK(days[days.length-1])+'T23:59:59'
     const[appts,profsR,blks,holdsR]=await Promise.all([
-      sb.from('appointments').select('id,starts_at,ends_at,status,patient_id,service_id,professional_id,notes,payment_method,reminder_sent_at,reminder_confirmed_at,proposed_until,followup_handled_at,no_show_at,no_show_charge_pct,patients(id,full_name,phone),services(name,price,duration_minutes),professionals(name)')
+      sb.from('appointments').select('id,starts_at,ends_at,status,patient_id,service_id,professional_id,notes,para_quien,payment_method,reminder_sent_at,reminder_confirmed_at,proposed_until,followup_handled_at,no_show_at,no_show_charge_pct,patients(id,full_name,phone),services(name,price,duration_minutes),professionals(name)')
         .gte('starts_at',from).lte('starts_at',to),
       sb.from('professionals').select('id,name').eq('is_active',true).eq('section','osteopathy').order('name',{ascending:false}),
       sb.from('blocked_slots').select('id,professional_id,starts_at,ends_at,reason')
@@ -773,6 +779,7 @@ function Agenda(){
   useEffect(()=>{
     if(modal&&modal!=='create'){
       setEditNotes(modal.notes||'')
+      setEditParaQuien(modal.para_quien||'')
       setEditProfId(modal.professional_id||'')
       const isPast = modal.starts_at && new Date(modal.starts_at.slice(0,19)) < new Date()
       setEditPayment(modal.payment_method || (isPast ? 'efectivo' : ''))
@@ -832,6 +839,7 @@ function Agenda(){
       status,
       payment_method:editPayment||null,
       notes:editNotes||null,
+      para_quien:editParaQuien?.trim()||null,
       professional_id:editProfId||modal.professional_id,
     }
     if (status === 'confirmed') updates.proposed_until = null
@@ -1251,6 +1259,7 @@ function Agenda(){
     // Construir update con fecha/hora/servicio/paciente si han cambiado
     const update = {
       notes: editNotes || null,
+      para_quien: editParaQuien?.trim() || null,
       professional_id: editProfId || modal.professional_id,
       payment_method: editPayment || null,
     }
@@ -1394,6 +1403,7 @@ function Agenda(){
       // En personalizada no hay servicio: la duración la fija la secretaria.
       patient_id:selPat.id,professional_id:form.prof_id,service_id:esCustom?null:form.svc_id,
       starts_at:localDT(startDT),ends_at:localDT(endDT),notes:form.notes||null,
+      para_quien:form.para_quien?.trim()||null,
       payment_method:form.payment_method||null,
       status,
       proposed_until: proposedUntil,
@@ -1410,7 +1420,7 @@ function Agenda(){
       if(!error) setToast({msg:'Cita creada, pero los acompañantes no se guardaron: falta aplicar sql/0016',type:'error'})
     }
     if(error){setToast({msg:error.message,type:'error'});return}
-    setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:'',leave_pending:true,custom_min:60,companions:''})
+    setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:'',leave_pending:true,custom_min:60,companions:'',para_quien:''})
     // Si se dejó en pending, notificar al paciente por WhatsApp
     if(status==='pending' && newAppt?.id){
       try{
@@ -1731,7 +1741,7 @@ function Agenda(){
                 return<div key={a.id} className={`appt-block${isCancelled ? ' cancelled' : ''}`}
                   onClick={ev=>{ev.stopPropagation(); a.status==='cancelled' ? openAssignModal(a) : setModal(a)}}
                   style={{top:timeToYLocal(t),height:Math.max(durToH(dur)-2,18),...cancelledStyle}}
-                  title={a.notes || ''}>
+                  title={[a.notes, a.para_quien ? `Para: ${a.para_quien}` : null].filter(Boolean).join(' · ')}>
                   <div style={{fontWeight:700,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>
                     {isCancelled ? `🚫 ${t} Vacante WL` : `${t} ${a.patients?.full_name||''}`}
                   </div>
@@ -1739,6 +1749,13 @@ function Agenda(){
                     {isCancelled ? a.patients?.full_name : a.services?.name}
                     {filterProf==='all'&&a.professionals?.name?` · ${a.professionals.name}`:''}
                   </div>
+                  {/* Encargo 4.3: discreto, igual que la nota — la columna es la
+                      fuente de verdad de "para quién" (no se saca de notes). */}
+                  {!isCancelled && a.para_quien && (
+                    <div style={{fontSize:9,opacity:.75,fontStyle:'italic',overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis',marginTop:1}}>
+                      🙋 para {a.para_quien}
+                    </div>
+                  )}
                   {!isCancelled && a.notes && (
                     <div style={{fontSize:9,opacity:.75,fontStyle:'italic',overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis',marginTop:1}}>
                       📝 {a.notes}
@@ -1812,6 +1829,15 @@ function Agenda(){
             ? `El recordatorio dirá "…tienes cita con ${profs.find(p=>p.id===form.prof_id)?.name||'el profesional'}${textoAcompanantesPreview(parseCompanions(form.companions))}".`
             : 'Van con el titular pero no son pacientes. Solo se usan en el recordatorio.'}
         </div>
+      </div>
+      {/* Encargo 4.3: la cita queda a nombre de quien la pide (selPat) igual;
+          esto es solo para quién ES la cita cuando no coincide (p.ej. "su
+          hija", "Agustín"). No crea fichas ni toca companions. */}
+      <div className="field" style={{marginBottom:14}}>
+        <label className="field-label">Para (otra persona) — opcional</label>
+        <input className="field-input" value={form.para_quien}
+          onChange={e=>setForm(f=>({...f,para_quien:e.target.value}))}
+          placeholder="Vacío = para el propio paciente"/>
       </div>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
         <Inp label="Fecha"type="date"value={form.date}onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>
@@ -1918,6 +1944,13 @@ function Agenda(){
           <option value="bizum">Bizum</option>
           <option value="transferencia">Transferencia</option>
         </select>
+      </div>
+
+      {/* Encargo 4.3: para quién es la cita, cuando no es para quien la pidió
+          (columna appointments.para_quien). No confundir con acompañantes. */}
+      <div className="field">
+        <label className="field-label">Para (otra persona) — opcional</label>
+        <input className="field-input"value={editParaQuien}onChange={e=>setEditParaQuien(e.target.value)}placeholder="Vacío = para el propio paciente"/>
       </div>
 
       {/* Notas editables */}
@@ -4791,6 +4824,13 @@ function BotCoach() {
       setProfessionals(pr.data || [])
     })()
   }, [])
+  // Encargo 4.4: flag de app_config que destapa "Cita personalizada" en el
+  // editor. Fila ausente (hoy) → featuresBot(undefined) = Set vacío = oculta.
+  const [personalizadaEnabled, setPersonalizadaEnabled] = useState(false)
+  useEffect(() => {
+    sb.from('app_config').select('value').eq('key', 'features_bot').maybeSingle()
+      .then(({ data }) => setPersonalizadaEnabled(featuresBot(data?.value).has('cita_personalizada')))
+  }, [])
   // NOTA: el useEffect que resetea `overrideAction` al cambiar de review se define
   // MÁS ABAJO, cerca de la declaración de `selPending` (línea ~4300), porque
   // `selPending` no existe todavía a esta altura del componente (Temporal Dead
@@ -5065,7 +5105,7 @@ function BotCoach() {
       let appt = null
       if (apptId) {
         const { data } = await sb.from('appointments')
-          .select('id, starts_at, status, professionals(name), services(name, duration_minutes)')
+          .select('id, starts_at, status, para_quien, professionals(name), services(name, duration_minutes)')
           .eq('id', apptId).maybeSingle()
         appt = data || null
       }
@@ -6029,6 +6069,7 @@ function BotCoach() {
       professionals={professionals}
       sb={sb}
       botFetch={(path, init) => botFetch(path, init)}
+      personalizadaEnabled={personalizadaEnabled}
       onCancel={()=> setActionEditorOpen(false)}
       onConfirm={(newAction, newText) => {
         setOverrideAction(newAction)

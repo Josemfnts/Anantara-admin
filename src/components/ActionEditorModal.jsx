@@ -16,10 +16,22 @@
 //   - onConfirm(newAction, newText): cierra guardando; el consumidor actualiza
 //     su estado local (draft + action override) y aprueba con /send-validated.
 //   - botFetch: fetch al bot ya autenticado (para /proposal-slot-options)
+//   - personalizadaEnabled: encargo 4.4 — si app_config.features_bot incluye
+//     "cita_personalizada", el selector de servicio de "Proponer cita nueva"
+//     ofrece "Personalizada" (duración libre 10-240 min + "para quién"). El
+//     padre (App.jsx BotCoach y BotMovil.jsx) lo lee con featuresBot.js.
 
 import React, { useEffect, useMemo, useState } from 'react'
 import { ProposalCalendar } from './ProposalCalendar.jsx'
 import { generateActionText } from '../lib/generateActionText.js'
+import {
+  addMinutes, isValidCustomDuration, buildPersonalizadaDescriptor, esPersonalizada,
+  CUSTOM_DURATION_MIN, CUSTOM_DURATION_MAX, CUSTOM_DURATION_STEP, CUSTOM_DURATION_DEFAULT,
+} from '../lib/citaPersonalizada.js'
+
+// Sentinel del <select> de servicio para la opción "Personalizada" (encargo
+// 4.4). No colisiona con un id real (los service_id son uuid).
+const PERSONALIZADA_SENTINEL = 'personalizada'
 
 // Opciones del selector de tipo. Orden pensado para las correcciones más comunes.
 const ACTION_OPTIONS = [
@@ -73,14 +85,25 @@ export function ActionEditorModal({
   onConfirm,
   botFetch,
   sb,                      // cliente Supabase inyectado desde el padre
+  // Encargo 4.4: la opción "Personalizada" del selector de servicio va detrás
+  // de app_config.features_bot ("cita_personalizada") — el bot del OptiPlex de
+  // hoy la crearía pero perdería `para_quien` en silencio (ver citaPersonalizada.js).
+  // Si la acción que llega YA es personalizada (currentAction), el modal arranca
+  // en ese modo aunque el flag esté apagado: el dato es el que es.
+  personalizadaEnabled = false,
 }) {
+  const currentEsPersonalizada = esPersonalizada(currentAction)
   const [type, setType] = useState(currentAction?.type || 'proponer_cita')
   const [selectedApptId, setSelectedApptId] = useState(null)
   const [profId, setProfId] = useState(currentAction?.professional_id || '')
-  const [svcId, setSvcId] = useState(currentAction?.service_id || '')
+  const [svcId, setSvcId] = useState(currentEsPersonalizada ? PERSONALIZADA_SENTINEL : (currentAction?.service_id || ''))
   const [slotIso, setSlotIso] = useState(currentAction?.starts_at || null)
   const [text, setText] = useState(currentText || '')
   const [userEditedText, setUserEditedText] = useState(false)
+  // Duración y "para quién" de la Personalizada. La duración parte de la del
+  // currentAction si ya la traía, o del default si no.
+  const [personalizadaMin, setPersonalizadaMin] = useState(currentAction?.duration_minutes || CUSTOM_DURATION_DEFAULT)
+  const [personalizadaParaQuien, setPersonalizadaParaQuien] = useState(currentAction?.para_quien || '')
 
   // Calendario del slot nuevo (mismo patrón que el cuadro de oferta).
   const [calMonth, setCalMonth] = useState(new Date())
@@ -108,10 +131,19 @@ export function ActionEditorModal({
   // ─── Servicio y profesional derivados / seleccionados ────────────────────
   const profObj = useMemo(() => professionals.find(p => p.id === profId), [profId, professionals])
   const svcObj = useMemo(() => services.find(s => s.id === svcId), [svcId, services])
+  // Personalizada: no hay servicio real seleccionado (svcObj no resuelve, el
+  // sentinel no está en `services`), así que "hay servicio elegido" y "qué
+  // duración usar" se calculan aparte para no tratarla como si faltara el dato.
+  const isPersonalizadaSel = type === 'proponer_cita' && svcId === PERSONALIZADA_SENTINEL
+  const hasServiceSelected = isPersonalizadaSel || !!svcObj
+  const effectiveDuration = isPersonalizadaSel ? Number(personalizadaMin) : (svcObj?.duration_minutes || 60)
 
   // ─── Cargar el calendario del slot cuando corresponda ────────────────────
   const loadCal = async (date) => {
-    if (!profId || !svcObj) { setCalDays({}); return }
+    if (!profId || !hasServiceSelected) { setCalDays({}); return }
+    // Con duración inválida no pedimos calendario: el bot respondería con algo
+    // sin sentido o vacío. Mejor un calendario en blanco que huecos mentirosos.
+    if (isPersonalizadaSel && !isValidCustomDuration(personalizadaMin)) { setCalDays({}); return }
     setCalLoading(true)
     try {
       const month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
@@ -119,7 +151,7 @@ export function ActionEditorModal({
         method: 'POST',
         body: JSON.stringify({
           action_type: 'proponer_cita', professional_id: profId, month,
-          duration_minutes: svcObj?.duration_minutes || 60, patient_id: patient.id,
+          duration_minutes: effectiveDuration || 60, patient_id: patient.id,
         }),
       })
       const data = await r.json().catch(() => ({}))
@@ -128,9 +160,9 @@ export function ActionEditorModal({
     finally { setCalLoading(false) }
   }
   useEffect(() => {
-    if (NEEDS_SLOT.has(type) && profId && svcObj) loadCal(calMonth)
+    if (NEEDS_SLOT.has(type) && profId && hasServiceSelected) loadCal(calMonth)
     // eslint-disable-next-line
-  }, [type, profId, svcId, calMonth?.getTime()])
+  }, [type, profId, svcId, personalizadaMin, calMonth?.getTime()])
 
   // ─── Descriptor y texto auto ─────────────────────────────────────────────
   // Construye el descriptor a partir del estado del modal (puro, testeable a ojo).
@@ -154,9 +186,20 @@ export function ActionEditorModal({
       case 'reservar_clase':
         // Requiere slot_id, que no elegimos aquí — texto libre.
         return { type }
-      case 'proponer_cita':
+      case 'proponer_cita': {
+        if (isPersonalizadaSel) {
+          if (!profId || !slotIso) return null
+          const personalizada = buildPersonalizadaDescriptor({
+            patientId: patient.id, professionalId: profId, startsAt: slotIso,
+            durationMinutes: personalizadaMin, paraQuien: personalizadaParaQuien,
+          })
+          // La nota clínica de la propuesta del bot ("le duele la rodilla") no
+          // se pierde al pasarla a personalizada.
+          if (personalizada && currentAction?.notes) personalizada.notes = currentAction.notes
+          return personalizada
+        }
         if (!profId || !svcObj || !slotIso) return null
-        return {
+        const descriptor = {
           type,
           patient_id: patient.id,
           professional_id: profId,
@@ -165,6 +208,13 @@ export function ActionEditorModal({
           ends_at: addMinutes(slotIso, svcObj.duration_minutes || 60),
           duration_minutes: svcObj.duration_minutes || 60,
         }
+        // Encargo 4.3: si la propuesta original del bot ya traía quién es el
+        // tercero (columna para_quien o, con el bot de hoy, notes), que no se
+        // pierda solo por corregir el tipo/hueco desde este editor.
+        if (currentAction?.para_quien) descriptor.para_quien = currentAction.para_quien
+        if (currentAction?.notes) descriptor.notes = currentAction.notes
+        return descriptor
+      }
       case 'reprogramar':
         if (!selectedApptId || !profId || !svcObj || !slotIso) return null
         return {
@@ -295,14 +345,49 @@ export function ActionEditorModal({
                 </label>
                 <label>
                   <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>Servicio</div>
-                  <select value={svcId} onChange={e => { setSvcId(e.target.value); setSlotIso(null); setUserEditedText(false) }}
+                  <select value={svcId} onChange={e => {
+                    const v = e.target.value
+                    // Al pasar a Personalizada, parte de la duración del servicio que
+                    // hubiera elegido (si había uno) en vez de siempre 60 por defecto.
+                    if (v === PERSONALIZADA_SENTINEL) setPersonalizadaMin(svcObj?.duration_minutes || personalizadaMin || CUSTOM_DURATION_DEFAULT)
+                    setSvcId(v); setSlotIso(null); setUserEditedText(false)
+                  }}
                     className="field-input" style={{ width: '100%' }}>
                     <option value="">— elige —</option>
                     {services.map(s => <option key={s.id} value={s.id}>{s.name} ({s.duration_minutes}m)</option>)}
+                    {/* Encargo 4.4: oculta tras el flag, salvo que la acción ya viniera
+                        así (currentEsPersonalizada) — el dato manda sobre el flag. */}
+                    {type === 'proponer_cita' && (personalizadaEnabled || currentEsPersonalizada) && (
+                      <option value={PERSONALIZADA_SENTINEL}>✏️ Personalizada (duración y para quién libres)</option>
+                    )}
                   </select>
                 </label>
               </div>
-              {profId && svcObj ? (
+
+              {/* Duración libre + "para quién" — solo con Personalizada elegida. */}
+              {isPersonalizadaSel && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  <label>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>Duración (min)</div>
+                    <input type="number" min={CUSTOM_DURATION_MIN} max={CUSTOM_DURATION_MAX} step={CUSTOM_DURATION_STEP}
+                      value={personalizadaMin}
+                      onChange={e => { setPersonalizadaMin(e.target.value); setUserEditedText(false) }}
+                      className="field-input" style={{ width: '100%' }} />
+                    {!isValidCustomDuration(personalizadaMin) && (
+                      <div style={{ fontSize: 11, color: '#b45309', marginTop: 2 }}>Entre {CUSTOM_DURATION_MIN} y {CUSTOM_DURATION_MAX} min.</div>
+                    )}
+                  </label>
+                  <label>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>Para quién (opcional)</div>
+                    <input type="text" value={personalizadaParaQuien}
+                      onChange={e => setPersonalizadaParaQuien(e.target.value)}
+                      placeholder="Nombre — vacío = para el paciente"
+                      className="field-input" style={{ width: '100%' }} />
+                  </label>
+                </div>
+              )}
+
+              {profId && hasServiceSelected ? (
                 <div style={{ padding: 10, border: '1px solid var(--border)', borderRadius: 8, background: '#fafaf7' }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.3 }}>Elige día y hora</div>
                   <ProposalCalendar
@@ -347,6 +432,7 @@ export function ActionEditorModal({
               if (['proponer_cita', 'reprogramar'].includes(type)) {
                 if (!profId) falta.push('profesional')
                 if (!svcId) falta.push('servicio')
+                else if (isPersonalizadaSel && !isValidCustomDuration(personalizadaMin)) falta.push('una duración válida (10-240 min)')
                 if (!slotIso) falta.push('día y hora')
               }
               if (['reprogramar', 'cancelar_cita', 'confirmar_propuesta', 'descartar_propuesta'].includes(type) && !selectedApptId) {
@@ -387,15 +473,4 @@ export function ActionEditorModal({
       </div>
     </div>
   )
-}
-
-// 'YYYY-MM-DDTHH:MM(:SS)' + N min → mismo formato con offset. Pura.
-function addMinutes(iso, minutes) {
-  if (!iso || !iso.includes('T')) return iso
-  const [date, time] = iso.split('T')
-  const [hh, mm] = time.split(':').map(Number)
-  const total = hh * 60 + mm + minutes
-  const nh = String(Math.floor(total / 60) % 24).padStart(2, '0')
-  const nm = String(total % 60).padStart(2, '0')
-  return `${date}T${nh}:${nm}:00`
 }

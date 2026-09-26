@@ -138,6 +138,71 @@ describe('describeProposedAction — IDENTIDAD POR LOOKUP', () => {
   })
 })
 
+describe('describeProposedAction — para_quien (encargo 4.3)', () => {
+  it('lo toma del propio action (proponer_cita, self-described) y lo mete en la line', () => {
+    const action = { type: 'proponer_cita', starts_at: '2026-06-30T12:00:00', professional_id: 'p1', para_quien: 'Agustín' }
+    const d = describeProposedAction(action, { patientName: 'Lucía' })
+    expect(d.paraQuien).toBe('Agustín')
+    expect(d.line).toMatch(/para Agustín/)
+  })
+
+  it('si no viene en el action, lo saca de la fila resuelta por lookup', () => {
+    const d = describeProposedAction({ type: 'confirmar_propuesta', appointment_id: 'appt-1' },
+      { patientName: 'Lucía', appt: apptRow({ para_quien: 'su hija' }) })
+    expect(d.paraQuien).toBe('su hija')
+    expect(d.line).toMatch(/para su hija/)
+  })
+
+  it('el action manda sobre la fila si ambos lo traen', () => {
+    const d = describeProposedAction({ type: 'confirmar_propuesta', appointment_id: 'appt-1', para_quien: 'del action' },
+      { patientName: 'Lucía', appt: apptRow({ para_quien: 'de la fila' }) })
+    expect(d.paraQuien).toBe('del action')
+  })
+
+  it('sin para_quien en ningún sitio → null, sin "para" colado en la line', () => {
+    const d = describeProposedAction({ type: 'proponer_cita', starts_at: '2026-06-30T12:00:00' }, { patientName: 'Lucía' })
+    expect(d.paraQuien).toBeNull()
+    expect(d.line).not.toMatch(/para /)
+  })
+
+  it('unresolved no muestra para_quien en la line (el aviso manda)', () => {
+    const d = describeProposedAction({ type: 'cancelar_cita', appointment_id: 'x', para_quien: 'Agustín' }, { patientName: 'Lucía', appt: null })
+    expect(d.line).toMatch(/no se pudo resolver/i)
+  })
+})
+
+describe('describeProposedAction — proponer_cita personalizada (encargo 4.4)', () => {
+  const personalizada = {
+    type: 'proponer_cita',
+    patient_id: 'pt1',
+    professional_id: 'p1',
+    service_id: null,
+    starts_at: '2026-06-30T12:00:00',
+    ends_at: '2026-06-30T12:45:00',
+    duration_minutes: 45,
+    para_quien: 'Agustín',
+    personalizada: true,
+  }
+
+  it('se etiqueta como Cita personalizada, no como Proponer cita', () => {
+    const d = describeProposedAction(personalizada, { patientName: 'Lucía' })
+    expect(d.label).toBe('Cita personalizada')
+  })
+
+  it('la line muestra la duración y el para quién', () => {
+    const d = describeProposedAction(personalizada, { patientName: 'Lucía' })
+    expect(d.line).toMatch(/45 min/)
+    expect(d.line).toMatch(/para Agustín/)
+    expect(d.unresolved).toBe(false)
+  })
+
+  it('un proponer_cita normal (sin personalizada) conserva la etiqueta de siempre y no muestra duración', () => {
+    const d = describeProposedAction({ type: 'proponer_cita', starts_at: '2026-06-30T12:00:00', duration_minutes: 60 }, { patientName: 'Lucía' })
+    expect(d.label).toBe('Proponer cita')
+    expect(d.line).not.toMatch(/min/)
+  })
+})
+
 describe('describeProposedAction — NO RESUELTO NO RELLENA (la regla crítica)', () => {
   it('cancelar_cita (Haiku) sin appt → unresolved, sin día/hora, sin caer a patient_name como cita', () => {
     const d = describeProposedAction({ type: 'cancelar_cita', appointment_id: 'appt-borrado', patient_id: 'pt1' }, { patientName: 'Lucía Pérez', appt: null })
