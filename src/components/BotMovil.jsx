@@ -574,7 +574,14 @@ export function BotMovil({ sb, botFetch }) {
       }
       if (r.status === 404) throw new Error(BOT_VIEJO_MSG)
       const out = await r.json().catch(() => null)
-      if (!r.ok || !out || out.ok === false) throw new Error(out?.error || 'El bot no pudo mandar el aviso de prueba')
+      if (!r.ok || !out || out.ok === false) {
+        const ERRORES = {
+          not_configured: 'Al bot le faltan las claves de avisos (VAPID) en su .env',
+          suscripcion_no_encontrada: 'Este móvil no consta como activado: desactiva y vuelve a activar',
+          send_failed: 'El servicio de avisos del móvil rechazó el envío',
+        }
+        throw new Error(ERRORES[out?.error] || 'El bot no pudo mandar el aviso de prueba')
+      }
       setAvisosMsg({ text: `Aviso de prueba enviado${out.enviados != null ? ` (${out.enviados})` : ''}`, type: 'ok' })
     } catch (e) {
       setAvisosMsg({ text: e?.message || BOT_VIEJO_MSG, type: 'error' })
