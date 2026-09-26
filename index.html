@@ -10,8 +10,11 @@
     <meta name="theme-color" content="#2C4A35" />
     <title>Centro Anantara — Admin</title>
     <!-- PWA "Bot móvil" (pantalla nueva para la secretaria, ver src/components/BotMovil.jsx).
-         No lleva service worker a propósito: uno mal hecho serviría versiones
-         viejas del panel, y para "añadir a inicio" no hace falta. -->
+         Desde el encargo 5.2 SÍ hay un service worker, public/sw-push.js, pero
+         SOLO para avisos push: sin handler de `fetch` ni Cache API, precisamente
+         para no caer en lo que se quería evitar antes (uno mal hecho sirviendo
+         versiones viejas del panel). Se registra solo cuando alguien pulsa
+         "Activar avisos" en Bot Móvil (src/lib/push.js), nunca al cargar la app. -->
     <link rel="manifest" href="/manifest.webmanifest">
     <meta name="theme-color" content="#1d5c2e">
     <meta name="apple-mobile-web-app-capable" content="yes">

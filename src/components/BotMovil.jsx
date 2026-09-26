@@ -44,11 +44,12 @@ import { ActionEditorModal } from './ActionEditorModal.jsx'
 import { conversationPayloadFor } from '../lib/newConversation.js'
 import { normBusqueda } from '../lib/busqueda.js'
 import { featuresBot } from '../lib/featuresBot.js'
+import { leerEstadoActual, estadoAvisos, activarAvisos, desactivarAvisos } from '../lib/push.js'
 
 // ─── Paleta WhatsApp adaptada al verde del centro ─────────────────────────
 // Súbelo a mano en cada cambio visible de esta pantalla. Se muestra junto al
 // título para saber qué build tiene el móvil sin adivinar.
-const BUILD = 'v11'
+const BUILD = 'v12'
 
 const HEADER_BG = '#1d5c2e'
 const THREAD_BG = '#efe7dd'
@@ -88,6 +89,50 @@ function Spinner() {
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 32 }}>
       <div style={{ width: 28, height: 28, border: '3px solid #cbd5c0', borderTopColor: HEADER_BG, borderRadius: '50%', animation: 'botMovilSpin .7s linear infinite' }} />
       <style>{'@keyframes botMovilSpin{to{transform:rotate(360deg)}}'}</style>
+    </div>
+  )
+}
+
+// Control discreto de avisos push (encargo 5.2). El bot manda el aviso; esta
+// pieza solo activa/desactiva la suscripción del navegador. `estado` viene de
+// src/lib/push.js:estadoAvisos — 'no_soportado' no pinta nada (línea gris no
+// aporta en un móvil que nunca va a poder activarlos).
+function AvisosPush({ estado, busy, msg, onActivar, onProbar, onDesactivar }) {
+  if (!estado || estado === 'no_soportado') return null
+  const btnStyle = { minHeight: 28, padding: '3px 10px', borderRadius: 999, fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer' }
+  return (
+    <div style={{ marginTop: 8, marginBottom: 2 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12 }}>
+        {estado === 'ios_instalar' && (
+          <span style={{ color: 'rgba(255,255,255,0.8)' }}>
+            📲 En iPhone: añade el panel a la pantalla de inicio (Compartir → Añadir a pantalla de inicio) y activa los avisos desde ahí.
+          </span>
+        )}
+        {estado === 'bloqueado' && (
+          <span style={{ color: '#fecaca' }}>🔕 Bloqueados en el navegador: actívalos en los ajustes del navegador.</span>
+        )}
+        {estado === 'inactivo' && (
+          <button
+            onClick={onActivar}
+            disabled={busy}
+            style={{ ...btnStyle, background: 'rgba(255,255,255,0.18)', color: '#fff', opacity: busy ? 0.6 : 1 }}
+          >
+            {busy ? 'Activando…' : '🔔 Activar avisos'}
+          </button>
+        )}
+        {estado === 'activo' && (
+          <>
+            <span style={{ color: 'rgba(255,255,255,0.9)', fontWeight: 600 }}>🔔 Avisos activados en este móvil</span>
+            <button onClick={onProbar} disabled={busy} style={{ ...btnStyle, background: 'rgba(255,255,255,0.18)', color: '#fff', opacity: busy ? 0.6 : 1 }}>
+              {busy ? '…' : 'Probar'}
+            </button>
+            <button onClick={onDesactivar} disabled={busy} style={{ ...btnStyle, background: 'transparent', color: '#fecaca', border: '1px solid rgba(254,202,202,0.6)', opacity: busy ? 0.6 : 1 }}>
+              Desactivar
+            </button>
+          </>
+        )}
+      </div>
+      {msg && <div style={{ fontSize: 11, marginTop: 4, color: msg.type === 'error' ? '#fecaca' : '#d9fdd3' }}>{msg.text}</div>}
     </div>
   )
 }
@@ -154,6 +199,13 @@ export function BotMovil({ sb, botFetch }) {
   const [manualMode, setManualMode] = useState(false)          // true: fuerza la caja de texto libre aunque haya propuesta pendiente
   const [confirmDelete, setConfirmDelete] = useState(false)    // confirmación propia de borrado (nunca window.confirm)
   const [deletingConv, setDeletingConv] = useState(false)
+
+  // ─── Avisos push (encargo 5.2) ─────────────────────────────────────────
+  // Los manda el propio bot (web-push+VAPID); aquí solo se activa/desactiva
+  // la suscripción del navegador. null = todavía sin comprobar el entorno.
+  const [avisosEstado, setAvisosEstado] = useState(null)
+  const [avisosBusy, setAvisosBusy] = useState(false)
+  const [avisosMsg, setAvisosMsg] = useState(null)   // {text,type} — se autolimpia
 
   const selectedConvIdRef = useRef(null)
   useEffect(() => { selectedConvIdRef.current = selectedConv?.id || null }, [selectedConv])
@@ -456,6 +508,81 @@ export function BotMovil({ sb, botFetch }) {
     return () => { vivo = false }
   }, [sb])
 
+  // Estado de avisos push al abrir la pantalla: SIN pedir permisos ni
+  // registrar nada (leerEstadoActual solo mira lo que ya hay). Los permisos
+  // solo se piden al pulsar "Activar avisos", nunca aquí.
+  const refreshAvisosEstado = useCallback(async () => {
+    try {
+      const env = await leerEstadoActual()
+      setAvisosEstado(estadoAvisos(env))
+    } catch {
+      setAvisosEstado('no_soportado')
+    }
+  }, [])
+  useEffect(() => { refreshAvisosEstado() }, [refreshAvisosEstado])
+
+  useEffect(() => {
+    if (!avisosMsg) return
+    const t = setTimeout(() => setAvisosMsg(null), 5000)
+    return () => clearTimeout(t)
+  }, [avisosMsg])
+
+  const onActivarAvisos = async () => {
+    if (avisosBusy) return
+    setAvisosBusy(true); setAvisosMsg(null)
+    try {
+      await activarAvisos(sb)
+      setAvisosMsg({ text: 'Avisos activados en este móvil', type: 'ok' })
+    } catch (e) {
+      setAvisosMsg({ text: e?.message || 'No se pudieron activar los avisos', type: 'error' })
+    } finally {
+      setAvisosBusy(false)
+      refreshAvisosEstado()
+    }
+  }
+
+  const onDesactivarAvisos = async () => {
+    if (avisosBusy) return
+    setAvisosBusy(true); setAvisosMsg(null)
+    try {
+      await desactivarAvisos(sb)
+      setAvisosMsg({ text: 'Avisos desactivados en este móvil', type: 'ok' })
+    } catch (e) {
+      setAvisosMsg({ text: e?.message || 'No se pudieron desactivar', type: 'error' })
+    } finally {
+      setAvisosBusy(false)
+      refreshAvisosEstado()
+    }
+  }
+
+  // Prueba end-to-end contra el bot (POST /push-prueba). Con el bot viejo del
+  // mini PC el endpoint no existe: 404 o fallo de red, y se avisa sin romper
+  // nada (el bot nuevo con esto todavía no está en producción).
+  const onProbarAvisos = async () => {
+    if (avisosBusy) return
+    setAvisosBusy(true); setAvisosMsg(null)
+    const BOT_VIEJO_MSG = 'El bot aún no manda avisos (falta actualizarlo en el mini PC)'
+    try {
+      const reg = await navigator.serviceWorker.getRegistration('/')
+      const sub = await reg?.pushManager?.getSubscription()
+      if (!sub) throw new Error('No hay suscripción activa en este móvil')
+      let r
+      try {
+        r = await botFetch('/push-prueba', { method: 'POST', body: JSON.stringify({ endpoint: sub.endpoint }) })
+      } catch {
+        throw new Error(BOT_VIEJO_MSG)
+      }
+      if (r.status === 404) throw new Error(BOT_VIEJO_MSG)
+      const out = await r.json().catch(() => null)
+      if (!r.ok || !out || out.ok === false) throw new Error(out?.error || 'El bot no pudo mandar el aviso de prueba')
+      setAvisosMsg({ text: `Aviso de prueba enviado${out.enviados != null ? ` (${out.enviados})` : ''}`, type: 'ok' })
+    } catch (e) {
+      setAvisosMsg({ text: e?.message || BOT_VIEJO_MSG, type: 'error' })
+    } finally {
+      setAvisosBusy(false)
+    }
+  }
+
   // La corrección es de ESTA propuesta: al cambiar de chat o de propuesta, fuera.
   useEffect(() => { setOverrideAction(null); setActionEditorOpen(false) }, [selectedConv?.id, pendingForSelected?.id])
 
@@ -670,6 +797,16 @@ export function BotMovil({ sb, botFetch }) {
               ← Salir al panel
             </button>
           </div>
+
+          <AvisosPush
+            estado={avisosEstado}
+            busy={avisosBusy}
+            msg={avisosMsg}
+            onActivar={onActivarAvisos}
+            onProbar={onProbarAvisos}
+            onDesactivar={onDesactivarAvisos}
+          />
+
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <input
               type="text"
