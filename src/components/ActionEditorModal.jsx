@@ -20,6 +20,12 @@
 //     "cita_personalizada", el selector de servicio de "Proponer cita nueva"
 //     ofrece "Personalizada" (duración libre 10-240 min + "para quién"). El
 //     padre (App.jsx BotCoach y BotMovil.jsx) lo lee con featuresBot.js.
+//   - variasEnabled: encargo 6.2 — con "varias_acciones" en features_bot y
+//     tipo proponer_cita, ofrece "anular también" las propuestas vivas del
+//     paciente; onConfirm puede entonces devolver una acción type:'varias'.
+//   - excluirIds: ids de `appointments` que otras sub-acciones de la MISMA
+//     varias ya usan (los calcula el padre con variasAcciones.js:idsYaUsados),
+//     para no duplicar la misma cita en dos filas.
 
 import React, { useEffect, useMemo, useState } from 'react'
 import { ProposalCalendar } from './ProposalCalendar.jsx'
@@ -28,6 +34,11 @@ import {
   addMinutes, isValidCustomDuration, buildPersonalizadaDescriptor, esPersonalizada,
   CUSTOM_DURATION_MIN, CUSTOM_DURATION_MAX, CUSTOM_DURATION_STEP, CUSTOM_DURATION_DEFAULT,
 } from '../lib/citaPersonalizada.js'
+// Encargo 6.2 (varias acciones): "anular también" al proponer una cita nueva,
+// gateado por app_config.features_bot ("varias_acciones") — mismo mecanismo
+// que "cita_personalizada" arriba, hasta que el bot del OptiPlex entienda
+// type:'varias' (ver docs/CONTRATO-BOTCOACH-API.md).
+import { propuestasAnulables, conAnulaciones } from '../lib/variasAcciones.js'
 
 // Sentinel del <select> de servicio para la opción "Personalizada" (encargo
 // 4.4). No colisiona con un id real (los service_id son uuid).
@@ -50,9 +61,12 @@ const ACTION_OPTIONS = [
 ]
 
 // Tipos que necesitan seleccionar una cita EXISTENTE del paciente.
+// `descartar_propuesta` se añadió en el encargo 6.2: antes el descriptor se
+// mandaba sin id (bug — ver buildDescriptor) y el bot no anulaba nada.
 const NEEDS_APPT_SELECT = new Set([
   'cancelar_cita', 'confirmar_propuesta', 'confirmar_followup_oferta',
   'aceptar_oferta_cancelacion', 'rechazar_oferta_cancelacion', 'oferta_proactiva',
+  'descartar_propuesta',
 ])
 
 // Tipos que necesitan elegir profesional + slot en el calendario.
@@ -91,6 +105,14 @@ export function ActionEditorModal({
   // Si la acción que llega YA es personalizada (currentAction), el modal arranca
   // en ese modo aunque el flag esté apagado: el dato es el que es.
   personalizadaEnabled = false,
+  // Encargo 6.2: "anular también la del X" al proponer una cita nueva, detrás
+  // de app_config.features_bot ("varias_acciones") — el bot anterior a la fase
+  // 6.1 no entiende type:'varias' (ver CONTRATO-BOTCOACH-API.md).
+  variasEnabled = false,
+  // Ids de `appointments` que otras sub-acciones de la MISMA varias ya usan
+  // (los pone el padre con variasAcciones.js:idsYaUsados) — para no ofrecer
+  // aquí una propuesta que otra fila ya está anulando o confirmando.
+  excluirIds = [],
 }) {
   const currentEsPersonalizada = esPersonalizada(currentAction)
   const [type, setType] = useState(currentAction?.type || 'proponer_cita')
@@ -104,12 +126,19 @@ export function ActionEditorModal({
   // currentAction si ya la traía, o del default si no.
   const [personalizadaMin, setPersonalizadaMin] = useState(currentAction?.duration_minutes || CUSTOM_DURATION_DEFAULT)
   const [personalizadaParaQuien, setPersonalizadaParaQuien] = useState(currentAction?.para_quien || '')
+  // "Anular también" (encargo 6.2): ids de propuestas vivas del paciente que
+  // Marta marca para descartar junto con la proponer_cita. Set de appointment_id.
+  const [anularIds, setAnularIds] = useState(() => new Set())
 
   // Calendario del slot nuevo (mismo patrón que el cuadro de oferta).
   const [calMonth, setCalMonth] = useState(new Date())
   const [calDays, setCalDays] = useState({})
   const [calLoading, setCalLoading] = useState(false)
   const [selDay, setSelDay] = useState(null)
+
+  // Cambiar de tipo deja atrás cualquier "anular también" a medio marcar: solo
+  // tiene sentido con proponer_cita, y si se vuelve a él debe partir en blanco.
+  useEffect(() => { setAnularIds(new Set()) }, [type])
 
   // ─── Citas del paciente (para los selectores de cita) ────────────────────
   const [patAppts, setPatAppts] = useState([])
@@ -118,7 +147,9 @@ export function ActionEditorModal({
     let alive = true
     ;(async () => {
       const { data } = await sb.from('appointments')
-        .select('id, starts_at, status, professionals(name)')
+        // cancellation_hold_id (6.2): distingue una propuesta viva (sin hold,
+        // anulable) de una que ya tiene un proceso de cancelación en curso.
+        .select('id, starts_at, status, professionals(name), cancellation_hold_id')
         .eq('patient_id', patient.id)
         .in('status', ['pending', 'confirmed'])
         .gte('starts_at', new Date().toISOString())
@@ -127,6 +158,28 @@ export function ActionEditorModal({
     })()
     return () => { alive = false }
   }, [patient?.id])
+
+  // Lista del selector "Cita a la que aplicar": para descartar_propuesta (bug
+  // arreglado en el 6.2) solo tiene sentido elegir entre las propuestas VIVAS
+  // del paciente (pending, sin hold) — el resto de tipos siguen viendo todas
+  // las pending/confirmed futuras, como hasta ahora.
+  const apptOptions = useMemo(() => (
+    type === 'descartar_propuesta' ? propuestasAnulables(patAppts, { excluirIds }) : patAppts
+  ), [type, patAppts, excluirIds])
+
+  // Propuestas vivas anulables desde el bloque "anular también" (solo con
+  // proponer_cita y el flag activo).
+  const anulables = useMemo(() => (
+    variasEnabled && type === 'proponer_cita' ? propuestasAnulables(patAppts, { excluirIds }) : []
+  ), [variasEnabled, type, patAppts, excluirIds])
+
+  const toggleAnular = (id) => {
+    setAnularIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
 
   // ─── Servicio y profesional derivados / seleccionados ────────────────────
   const profObj = useMemo(() => professionals.find(p => p.id === profId), [profId, professionals])
@@ -177,7 +230,10 @@ export function ActionEditorModal({
       case 'oferta_proactiva':
         return selectedApptId ? { type, appointment_id: selectedApptId, patient_id: patient.id } : null
       case 'descartar_propuesta':
-        return { type }
+        // Bug arreglado en el 6.2: esto mandaba `{type}` sin id y el bot hacía
+        // `if (!commit?.old_proposal_id) return {ok:true}` — Marta creía que la
+        // había descartado y la pending seguía viva. Ahora exige elegir CUÁL.
+        return selectedApptId ? { type, patient_id: patient.id, old_proposal_id: selectedApptId } : null
       case 'apuntar_lista_espera':
       case 'apuntar_lista_adelantar':
         return svcObj ? { type, service_name: svcObj.name, patient_id: patient.id } : null
@@ -254,7 +310,14 @@ export function ActionEditorModal({
 
   const handleSave = () => {
     if (!canSave) return
-    onConfirm(descriptor, text.trim())
+    // "Anular también" (6.2): el texto se generó SOLO para la propuesta nueva
+    // (conAnulaciones no lo toca); la varias solo envuelve lo que se manda a
+    // /send-validated. Sin ids marcados, conAnulaciones devuelve el descriptor
+    // tal cual — ningún bot deja de entenderlo.
+    const final = (variasEnabled && type === 'proponer_cita' && anularIds.size > 0)
+      ? conAnulaciones(descriptor, [...anularIds], patient.id)
+      : descriptor
+    onConfirm(final, text.trim())
   }
 
   // ─── Render ──────────────────────────────────────────────────────────────
@@ -299,21 +362,25 @@ export function ActionEditorModal({
             </select>
           </label>
 
-          {/* Selector de cita — para tipos que la necesitan */}
+          {/* Selector de cita — para tipos que la necesitan. descartar_propuesta
+              (6.2) solo ofrece propuestas VIVAS (pending sin hold): es la cita
+              que se va a anular, no cualquier cita futura del paciente. */}
           {showApptSelect && (
             <label>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
-                {type === 'reprogramar' ? 'Cita a mover' : 'Cita a la que aplicar'}
+                {type === 'reprogramar' ? 'Cita a mover' : type === 'descartar_propuesta' ? 'Propuesta a descartar' : 'Cita a la que aplicar'}
               </div>
-              {patAppts.length === 0 ? (
+              {apptOptions.length === 0 ? (
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '6px 10px', border: '1px dashed var(--border)', borderRadius: 6 }}>
-                  Este paciente no tiene citas pending/confirmed futuras.
+                  {type === 'descartar_propuesta'
+                    ? 'Este paciente no tiene propuestas vivas (pending sin hold) que descartar.'
+                    : 'Este paciente no tiene citas pending/confirmed futuras.'}
                 </div>
               ) : (
                 <select value={selectedApptId || ''} onChange={e => { setSelectedApptId(e.target.value || null); setUserEditedText(false) }}
                   className="field-input" style={{ width: '100%' }}>
                   <option value="">— elige una cita —</option>
-                  {patAppts.map(a => <option key={a.id} value={a.id}>{fmtAppt(a)}</option>)}
+                  {apptOptions.map(a => <option key={a.id} value={a.id}>{fmtAppt(a)}</option>)}
                 </select>
               )}
             </label>
@@ -407,6 +474,24 @@ export function ActionEditorModal({
               ) : (
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 8 }}>
                   Elige profesional y servicio para ver el calendario.
+                </div>
+              )}
+
+              {/* "Anular también" (encargo 6.2) — bajo el calendario, solo con el
+                  flag activo y si el paciente tiene propuestas vivas que anular.
+                  Desmarcado por defecto: proponer una cita nueva NUNCA anula nada
+                  a menos que Marta lo pida explícitamente. */}
+              {anulables.length > 0 && (
+                <div style={{ padding: 10, border: '1px dashed var(--border)', borderRadius: 8, background: 'var(--cream)' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--body)', marginBottom: 6 }}>
+                    El paciente ya tiene propuesta(s) viva(s). ¿Anular también?
+                  </div>
+                  {anulables.map(a => (
+                    <label key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '3px 0', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={anularIds.has(a.id)} onChange={() => toggleAnular(a.id)} />
+                      {fmtAppt(a)}
+                    </label>
+                  ))}
                 </div>
               )}
             </>

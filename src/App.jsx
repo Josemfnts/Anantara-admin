@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { actionLookupId, describeProposedAction, isDestructiveAction } from './lib/proposedAction.js'
+import { esVarias, accionesDe, finalActionDe, reemplazarAccion, hayDestructivaMarcada, idsYaUsados } from './lib/variasAcciones.js'
 import { ActionEditorModal } from './components/ActionEditorModal.jsx'
 import { fClock, fClockDT, fDayLabel, madridDay } from './lib/datetime.js'
 import { moveItem } from './lib/listOrder.js'
@@ -4847,6 +4848,17 @@ function BotCoach() {
   // recibirá final_action = la acción corregida (queda como training data).
   const [actionEditorOpen, setActionEditorOpen] = useState(false)
   const [overrideAction, setOverrideAction] = useState(null)  // null → usar proposed_action del bot
+  // Encargo 6.2 (varias acciones): idx de la sub-acción que se está editando
+  // en el modal cuando la acción efectiva es `varias` — null = se edita la
+  // acción entera (el caso de siempre: acción suelta, o "Añadir acción" sin
+  // propuesta previa). Ver marcadasVarias/variasDescs más abajo.
+  const [variasEditIdx, setVariasEditIdx] = useState(null)
+  // Casilla por sub-acción (marcada por defecto — Marta desmarca lo que NO
+  // quiere enviar). Paralelo a accionesDe(overrideAction||selPending.proposed_action).
+  const [marcadasVarias, setMarcadasVarias] = useState([])
+  // describeProposedAction resuelto por sub-acción (lookup async, igual que
+  // actionDesc pero uno por fila) — ver el useEffect que lo rellena más abajo.
+  const [variasDescs, setVariasDescs] = useState([])
   const [services, setServices] = useState([])
   const [professionals, setProfessionals] = useState([])
   useEffect(() => {
@@ -4861,10 +4873,19 @@ function BotCoach() {
   }, [])
   // Encargo 4.4: flag de app_config que destapa "Cita personalizada" en el
   // editor. Fila ausente (hoy) → featuresBot(undefined) = Set vacío = oculta.
+  // Encargo 6.2: misma fila, misma query — "varias_acciones" destapa "anular
+  // también" en el editor. El TIPO de tarjeta (fila por sub-acción) no depende
+  // de este flag: solo un bot migrado emite `varias`, y esconder la tarjeta
+  // haría aprobar a ciegas (ver docs/CONTRATO-BOTCOACH-API.md).
   const [personalizadaEnabled, setPersonalizadaEnabled] = useState(false)
+  const [variasEnabled, setVariasEnabled] = useState(false)
   useEffect(() => {
     sb.from('app_config').select('value').eq('key', 'features_bot').maybeSingle()
-      .then(({ data }) => setPersonalizadaEnabled(featuresBot(data?.value).has('cita_personalizada')))
+      .then(({ data }) => {
+        const flags = featuresBot(data?.value)
+        setPersonalizadaEnabled(flags.has('cita_personalizada'))
+        setVariasEnabled(flags.has('varias_acciones'))
+      })
   }, [])
   // NOTA: el useEffect que resetea `overrideAction` al cambiar de review se define
   // MÁS ABAJO, cerca de la declaración de `selPending` (línea ~4300), porque
@@ -5099,7 +5120,14 @@ function BotCoach() {
   // Al cambiar de review, resetear el override de acción (cada propuesta parte
   // del bot). Declarado AQUÍ porque `selPending` acaba de definirse; ponerlo
   // arriba con los demás hooks daba Temporal Dead Zone y rompía la pantalla.
-  useEffect(() => { setOverrideAction(null); setActionEditorOpen(false) }, [selPending?.id])
+  // Encargo 6.2: engancha aquí también el reset de la tarjeta de `varias` —
+  // las casillas parten todas marcadas (lo que proponga el bot, tal cual).
+  useEffect(() => {
+    setOverrideAction(null)
+    setActionEditorOpen(false)
+    setVariasEditIdx(null)
+    setMarcadasVarias(accionesDe(selPending?.proposed_action).map(() => true))
+  }, [selPending?.id]) // eslint-disable-line
   const MIN30 = 30*60*1000
   const pendingConvs = convFiltered.filter(c => (pendingByConv[c.id]||0) > 0)
   convFilteredRef.current = convFiltered
@@ -5149,6 +5177,33 @@ function BotCoach() {
     })()
     return () => { cancelled = true }
   }, [selPending?.id, selPending?.proposed_action]) // eslint-disable-line
+
+  // Encargo 6.2: cuando la acción EFECTIVA (override de Marta, o si no hay
+  // override, la proposed_action del bot) es `varias`, resuelve cada
+  // sub-acción por separado — mismo criterio de arriba (una fila que no
+  // resuelve se marca `unresolved`, nunca se inventa qué cita es).
+  useEffect(() => {
+    const efectiva = overrideAction || selPending?.proposed_action
+    if (!esVarias(efectiva)) { setVariasDescs([]); return }
+    const acciones = accionesDe(efectiva)
+    const patientName = selPending?.conversations?.patients?.full_name || null
+    let cancelled = false
+    ;(async () => {
+      const resueltas = await Promise.all(acciones.map(async (sub) => {
+        const apptId = actionLookupId(sub)
+        let appt = null
+        if (apptId) {
+          const { data } = await sb.from('appointments')
+            .select('id, starts_at, status, para_quien, professionals(name), services(name, duration_minutes)')
+            .eq('id', apptId).maybeSingle()
+          appt = data || null
+        }
+        return describeProposedAction(sub, { patientName, appt })
+      }))
+      if (!cancelled) setVariasDescs(resueltas)
+    })()
+    return () => { cancelled = true }
+  }, [selPending?.id, selPending?.proposed_action, overrideAction]) // eslint-disable-line
 
   // Responsive: una columna a la vez por debajo de 1024px
   useEffect(() => {
@@ -5215,26 +5270,66 @@ function BotCoach() {
     // El bot lo ejecuta como si el bot lo hubiera propuesto originalmente, y el
     // par (proposed_action, final_action) queda como training data del loop.
     const act = overrideAction || selPending.proposed_action
-    const actionChanged = !!overrideAction && overrideAction.type !== selPending.proposed_action?.type
+    const esVariasAct = esVarias(act)
+    // Encargo 6.2: acciones + marcas de la varias, con longitud garantizada
+    // (si algo dejó marcadasVarias desincronizada, se trata como "todo marcado"
+    // en vez de reventar por índices fuera de rango).
+    const acciones = esVariasAct ? accionesDe(act) : []
+    const marks = esVariasAct
+      ? (marcadasVarias.length === acciones.length ? marcadasVarias : acciones.map(() => true))
+      : []
+
+    // Con `varias`, lo que se manda depende de qué casillas deja Marta marcadas
+    // (finalActionDe aplica la regla 0/1/≥2 de CONTRATO-BOTCOACH-API.md). Sin
+    // varias, es el comportamiento de siempre.
+    let finalAction, actionApproved, actionChanged
+    if (esVariasAct) {
+      const r = finalActionDe(acciones, marks)
+      finalAction = r.final_action
+      actionApproved = r.action_approved
+      // "cambió" = Marta tocó alguna fila (overrideAction ya refleja cualquier
+      // edición de sub-acción) o desmarcó alguna — cualquiera es una corrección.
+      actionChanged = !!overrideAction || marks.some(m => !m)
+    } else {
+      finalAction = act || null
+      actionApproved = !!act
+      actionChanged = !!overrideAction && overrideAction.type !== selPending.proposed_action?.type
+    }
+
     const textChanged = draft.trim() !== (selPending.proposed_text||'').trim()
     const verdict = (textChanged || actionChanged) ? 'modified' : 'sent'
-    let approveAction = !!act
-    // Confirm SOLO en acciones destructivas (cancelar/descartar/rechazar). El
-    // resto se aprueba con la tarjeta ya visible. El texto del confirm repite el
-    // detalle ya resuelto; si no se pudo resolver la cita, se avisa de la duda.
-    if (act && isDestructiveAction(act)) {
-      const d = actionDesc && actionDesc.type === act.type ? actionDesc : describeProposedAction(act, {
-        patientName: selPending?.conversations?.patients?.full_name || act.patient_name || null,
-      })
-      const detalle = d.unresolved
-        ? `⚠️ NO se pudo resolver la cita (id ${actionLookupId(act) || '—'}). No la tengo en la agenda. Aprobar a ciegas.`
-        : d.line
-      approveAction = window.confirm(`Vas a ${d.label.toUpperCase()}:\n\n${detalle}\n\n¿Confirmas?`)
+    let approveAction = actionApproved
+    // Confirm SOLO en acciones destructivas (cancelar/descartar/rechazar), o en
+    // una varias con alguna MARCADA destructiva (hayDestructivaMarcada). El
+    // resto se aprueba con la tarjeta ya visible. El texto del confirm repite
+    // el detalle ya resuelto; si no se pudo resolver la cita, se avisa de la
+    // duda en vez de inventar nada.
+    const necesitaConfirm = esVariasAct ? hayDestructivaMarcada(acciones, marks) : isDestructiveAction(finalAction)
+    if (necesitaConfirm) {
+      if (esVariasAct) {
+        // Un solo confirm que lista TODAS las acciones marcadas (no solo la
+        // destructiva): Marta tiene que ver el conjunto completo antes de decidir.
+        const lineas = acciones.map((sub, i) => {
+          if (!marks[i]) return null
+          const d = variasDescs[i] || describeProposedAction(sub, {})
+          const linea = d.unresolved ? `⚠️ NO se pudo resolver la cita (id ${actionLookupId(sub) || '—'})` : d.line
+          return `• ${d.label}: ${linea}`
+        }).filter(Boolean).join('\n')
+        approveAction = window.confirm(`Vas a ejecutar VARIAS ACCIONES:\n\n${lineas}\n\n¿Confirmas?`)
+      } else {
+        const d = actionDesc && actionDesc.type === finalAction.type ? actionDesc : describeProposedAction(finalAction, {
+          patientName: selPending?.conversations?.patients?.full_name || finalAction.patient_name || null,
+        })
+        const detalle = d.unresolved
+          ? `⚠️ NO se pudo resolver la cita (id ${actionLookupId(finalAction) || '—'}). No la tengo en la agenda. Aprobar a ciegas.`
+          : d.line
+        approveAction = window.confirm(`Vas a ${d.label.toUpperCase()}:\n\n${detalle}\n\n¿Confirmas?`)
+      }
       // ABORTAR DEL TODO si dice que no. Antes se seguía y el TEXTO salía igual:
       // el paciente leía "Hecho, cancelada" con la cita viva en la agenda. Se
       // presentaba a una cita que creía cancelada, o al revés. Auditoría C3.
       if (!approveAction) {
-        setToast({ msg: 'Cancelado — no se ha enviado nada ni se ha tocado la cita', type: 'ok' })
+        setToast({ msg: 'Cancelado — no se ha enviado nada ni se ha tocado ninguna cita', type: 'ok' })
         return
       }
     }
@@ -5242,7 +5337,7 @@ function BotCoach() {
     try {
       const resp = await fetch(`${BOT_HTTP_URL}/send-validated`, {
         method:'POST', headers: botCoachHeaders(),
-        body: JSON.stringify({ review_id: selPending.id, verdict, final_text: draft.trim()||null, final_action: approveAction?act:null, action_approved: approveAction, reviewed_by:'secretaria' }),
+        body: JSON.stringify({ review_id: selPending.id, verdict, final_text: draft.trim()||null, final_action: approveAction?finalAction:null, action_approved: approveAction, reviewed_by:'secretaria' }),
       })
       const out = await resp.json(); if (!out.ok) throw new Error(out.error||'fail')
       setToast({msg:'✓ Enviada a cola — el bot ya manda', type:'ok'}); setDraft('')
@@ -5343,6 +5438,16 @@ function BotCoach() {
   // review sintética y la pasa por el mismo camino gateado (/secretary-action).
   const sendSecretaryAction = async () => {
     if (!selConv || !overrideAction) return
+    // Encargo 6.2: si lo que Marta montó desde cero es una `varias` (proponer
+    // + "anular también"), respeta las casillas que haya desmarcado en la
+    // tarjeta igual que en sendProposal — si no, esto ignoraría el desmarcado.
+    const accionAEnviar = esVarias(overrideAction)
+      ? finalActionDe(
+          accionesDe(overrideAction),
+          marcadasVarias.length === accionesDe(overrideAction).length ? marcadasVarias : accionesDe(overrideAction).map(() => true),
+        ).final_action
+      : overrideAction
+    if (!accionAEnviar) { setToast({ msg: 'No queda ninguna acción marcada', type: 'error' }); return }
     setSending(true)
     try {
       // El último mensaje del PACIENTE es la mitad izquierda del par de
@@ -5354,7 +5459,7 @@ function BotCoach() {
         body: JSON.stringify({
           phone: selConv.phone,
           text: draft.trim() || null,
-          action: overrideAction,
+          action: accionAEnviar,
           patient_message: ultimoEntrante?.text || null,
           reviewed_by: 'secretaria',
         }),
@@ -5377,9 +5482,18 @@ function BotCoach() {
     else sendFree()
   }
 
+  // Encargo 6.2: la acción EFECTIVA es el override de Marta si lo hay, si no la
+  // que propuso el bot. `varias` cambia la tarjeta entera a vista de filas (una
+  // por sub-acción) — ver el bloque de render más abajo. El TIPO manda, no el
+  // flag `variasEnabled`: solo un bot migrado emite `varias`, y esconderla tras
+  // el flag haría aprobar a ciegas si alguna vez llega antes de tiempo.
+  const efectivaAccion = overrideAction || selPending?.proposed_action || null
+  const efectivaEsVarias = esVarias(efectivaAccion)
+  const efectivaAcciones = efectivaEsVarias ? accionesDe(efectivaAccion) : []
+
   // ─── Mini calendario de edición de propuesta ───────────────────────────────
   const calendarActionTypes = new Set(['proponer_cita', 'rechazar_propuesta', 'reservar_clase'])
-  const canEditSlot = selPending?.proposed_action && calendarActionTypes.has(selPending.proposed_action.type)
+  const canEditSlot = !efectivaEsVarias && selPending?.proposed_action && calendarActionTypes.has(selPending.proposed_action.type)
 
   const openCalendar = () => {
     if (!canEditSlot) return
@@ -5871,11 +5985,16 @@ function BotCoach() {
                   <button key={i} onClick={()=>setDraft(qr)} style={{padding:'4px 10px',borderRadius:999,fontSize:11,border:'1px solid var(--stone)',background:'var(--cream)',cursor:'pointer'}}>{qr}</button>
                 ))}
               </div>
-              {/* Aviso override: Marta cambió la acción propuesta por el bot */}
-              {selPending && overrideAction && (
+              {/* Aviso override: Marta cambió la acción propuesta por el bot.
+                  Con `varias` no sale — la tarjeta de filas de abajo ya trae su
+                  propio aviso por fila, y "el bot proponía varias" no dice nada útil. */}
+              {selPending && overrideAction && !efectivaEsVarias && (
                 <div style={{border:'1px dashed #d97706',background:'#fef3c7',borderRadius:'var(--radius-lg)',padding:'6px 12px',marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
                   <span style={{fontSize:12,color:'#92400e',fontWeight:600}}>✏️ Acción corregida a <strong>{overrideAction.type}</strong> (el bot proponía <em>{selPending.proposed_action?.type || '—'}</em>)</span>
-                  <button onClick={()=>{ setOverrideAction(null); setDraft(selPending.proposed_text || '') }}
+                  <button onClick={()=>{
+                    setOverrideAction(null); setDraft(selPending.proposed_text || '')
+                    setMarcadasVarias(accionesDe(selPending.proposed_action).map(() => true))
+                  }}
                     style={{marginLeft:'auto',fontSize:11,padding:'2px 8px',border:'1px solid #92400e',background:'#fff',color:'#92400e',borderRadius:999,cursor:'pointer'}}>
                     Descartar cambio
                   </button>
@@ -5901,7 +6020,7 @@ function BotCoach() {
                   </button>
                 </div>
               )}
-              {selPending?.proposed_action && actionDesc && (() => {
+              {selPending?.proposed_action && actionDesc && !efectivaEsVarias && (() => {
                 // Paleta por familia; unresolved fuerza tratamiento rojo de alerta.
                 const PAL = {
                   destructive: { bg:'#fef2f2', bd:'#fecaca', ac:'#dc2626' },
@@ -5918,7 +6037,7 @@ function BotCoach() {
                       <span style={{fontSize:11,fontWeight:700,letterSpacing:.3,textTransform:'uppercase',color:p.ac}}>{actionDesc.label}</span>
                       {actionDesc.destructive && <span style={{fontSize:9,fontWeight:700,color:'#fff',background:p.ac,borderRadius:999,padding:'1px 6px'}}>acción real</span>}
                       {showCal && <button onClick={openCalendar} title="Cambiar fecha/hora" style={{marginLeft:'auto',fontSize:11,padding:'3px 8px',border:`1px solid ${p.ac}`,background:'#fff',color:p.ac,borderRadius:999,cursor:'pointer'}}>📅 Cambiar fecha</button>}
-                      <button onClick={()=>setActionEditorOpen(true)} title="Cambiar TIPO de acción (ej. cancelar → reprogramar)"
+                      <button onClick={()=>{ setVariasEditIdx(null); setActionEditorOpen(true) }} title="Cambiar TIPO de acción (ej. cancelar → reprogramar)"
                         style={{marginLeft: showCal ? 4 : 'auto',fontSize:11,padding:'3px 8px',border:'1px solid var(--text-muted)',background:'#fff',color:'var(--body)',borderRadius:999,cursor:'pointer'}}>
                         ✏️ Cambiar acción
                       </button>
@@ -5927,6 +6046,74 @@ function BotCoach() {
                       ? <div style={{fontSize:12,fontWeight:600,color:'#dc2626'}}>⚠️ No se pudo resolver la cita (id {actionLookupId(selPending.proposed_action) || '—'}). No apruebes sin verificar.</div>
                       : <div style={{fontSize:13,color:'var(--body)'}}>{actionDesc.line}</div>}
                     {actionDesc.note && <div style={{fontSize:11,color:'#b45309',marginTop:2}}>⚠ {actionDesc.note}</div>}
+                  </div>
+                )
+              })()}
+              {/* Encargo 6.2: la acción efectiva es `varias` — una fila por
+                  sub-acción en vez de la tarjeta única. Se pinta por el TIPO,
+                  no por el flag: solo un bot migrado la emite, y esconderla
+                  haría aprobar a ciegas (ver CONTRATO-BOTCOACH-API.md). */}
+              {efectivaEsVarias && (() => {
+                const acciones = efectivaAcciones
+                const marks = marcadasVarias.length === acciones.length ? marcadasVarias : acciones.map(() => true)
+                const algunaDesmarcada = marks.some(m => !m)
+                const PAL = {
+                  destructive: { bg:'#fef2f2', bd:'#fecaca', ac:'#dc2626' },
+                  confirm:     { bg:'#f0fdf4', bd:'#bbf7d0', ac:'var(--green)' },
+                  list:        { bg:'var(--cream)', bd:'var(--border)', ac:'var(--text-muted)' },
+                  neutral:     { bg:'#f9fafb', bd:'var(--border)', ac:'var(--text-muted)' },
+                }
+                return (
+                  <div style={{border:'1px solid var(--border)',background:'#fff',borderRadius:'var(--radius-lg)',padding:'8px 12px',marginBottom:8}}>
+                    <div style={{fontSize:11,fontWeight:700,letterSpacing:.3,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:6}}>
+                      🧩 Varias acciones ({acciones.length})
+                    </div>
+                    {acciones.map((sub, i) => {
+                      const d = variasDescs[i] || describeProposedAction(sub, {})
+                      const p = d.unresolved ? PAL.destructive : (PAL[d.family] || PAL.neutral)
+                      const marcada = marks[i]
+                      return (
+                        <div key={i} style={{
+                          display:'flex',alignItems:'flex-start',gap:8,padding:'6px 8px',marginBottom:4,
+                          border:`1px solid ${p.bd}`,background:p.bg,borderRadius:8,
+                          opacity: marcada ? 1 : 0.55,
+                        }}>
+                          <input type="checkbox" checked={marcada} style={{marginTop:3,flexShrink:0}}
+                            onChange={() => setMarcadasVarias(marks.map((v, idx) => idx === i ? !v : v))} />
+                          <div style={{flex:1,minWidth:0,textDecoration: marcada ? 'none' : 'line-through'}}>
+                            <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:2,flexWrap:'wrap'}}>
+                              <span style={{fontSize:13}}>{d.icon}</span>
+                              <span style={{fontSize:11,fontWeight:700,letterSpacing:.3,textTransform:'uppercase',color:p.ac}}>{d.label}</span>
+                              {d.destructive && <span style={{fontSize:9,fontWeight:700,color:'#fff',background:p.ac,borderRadius:999,padding:'1px 6px'}}>acción real</span>}
+                              <button onClick={()=>{ setVariasEditIdx(i); setActionEditorOpen(true) }} title="Cambiar esta acción"
+                                style={{marginLeft:'auto',fontSize:10,padding:'2px 7px',border:'1px solid var(--text-muted)',background:'#fff',color:'var(--body)',borderRadius:999,cursor:'pointer'}}>
+                                ✏️ Cambiar
+                              </button>
+                            </div>
+                            {d.unresolved
+                              ? <div style={{fontSize:12,fontWeight:600,color:'#dc2626'}}>⚠️ No se pudo resolver la cita (id {actionLookupId(sub) || '—'}). No apruebes sin verificar.</div>
+                              : <div style={{fontSize:13,color:'var(--body)'}}>{d.line}</div>}
+                            {d.note && <div style={{fontSize:11,color:'#b45309',marginTop:2}}>⚠ {d.note}</div>}
+                          </div>
+                        </div>
+                      )
+                    })}
+                    {(algunaDesmarcada || !!overrideAction) && (
+                      <div style={{fontSize:12,fontWeight:600,color:'#92400e',background:'#fef3c7',border:'1px solid #fcd34d',borderRadius:6,padding:'6px 10px',marginTop:2}}>
+                        ⚠️ Has quitado/cambiado alguna acción: revisa el texto antes de enviar.
+                        {/* Con `varias` no sale el aviso "Acción corregida" de arriba,
+                            así que la vuelta a lo que propuso el bot va aquí. */}
+                        {selPending && (
+                          <button onClick={()=>{
+                            setOverrideAction(null); setDraft(selPending.proposed_text || '')
+                            setMarcadasVarias(accionesDe(selPending.proposed_action).map(() => true))
+                          }}
+                            style={{marginLeft:8,fontSize:11,padding:'2px 8px',border:'1px solid #92400e',background:'#fff',color:'#92400e',borderRadius:999,cursor:'pointer'}}>
+                            Deshacer cambios
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )
               })()}
@@ -6098,19 +6285,44 @@ function BotCoach() {
         full_name: selPending?.conversations?.patients?.full_name || selConv?.patients?.full_name,
         phone: selPending?.conversations?.patients?.phone || selPending?.patient_phone || selConv?.phone,
       }}
-      currentAction={overrideAction || selPending?.proposed_action || null}
+      // Encargo 6.2: con `varias`, "✏️ Cambiar" en una fila edita SOLO esa
+      // sub-acción (variasEditIdx la señala); sin fila (null) es el caso de
+      // siempre — la acción entera, o crearla desde cero sin propuesta previa.
+      currentAction={variasEditIdx != null ? efectivaAcciones[variasEditIdx] : (overrideAction || selPending?.proposed_action || null)}
       currentText={draft}
       services={services}
       professionals={professionals}
       sb={sb}
       botFetch={(path, init) => botFetch(path, init)}
       personalizadaEnabled={personalizadaEnabled}
-      onCancel={()=> setActionEditorOpen(false)}
+      variasEnabled={variasEnabled}
+      excluirIds={variasEditIdx != null ? idsYaUsados(efectivaAcciones, variasEditIdx) : []}
+      onCancel={()=> { setActionEditorOpen(false); setVariasEditIdx(null) }}
       onConfirm={(newAction, newText) => {
-        setOverrideAction(newAction)
-        setDraft(newText)
+        if (variasEditIdx == null) {
+          // Caso de siempre: la acción entera (suelta, o recién creada). Si
+          // newAction resulta ser una `varias` (Marta marcó "anular también"),
+          // accionesDe la desenvuelve igual que si ya viniera del bot así.
+          setOverrideAction(newAction)
+          setDraft(newText)
+          setMarcadasVarias(accionesDe(newAction).map(() => true))
+          setToast({msg: `✓ Acción cambiada a ${newAction.type}. Aprueba para ejecutar.`, type:'ok'})
+        } else {
+          // Edición de UNA fila de una `varias`: se sustituye en su posición
+          // (aplanando si newAction es a su vez una varias) y esa fila queda
+          // marcada. El borrador de texto NO se toca — el modal solo describía
+          // esa sub-acción — de ahí el aviso en la propia tarjeta.
+          const nuevoArray = reemplazarAccion(efectivaAcciones, variasEditIdx, newAction)
+          setOverrideAction(nuevoArray.length === 1 ? nuevoArray[0] : { type: 'varias', acciones: nuevoArray })
+          const insertCount = esVarias(newAction) ? accionesDe(newAction).length : 1
+          setMarcadasVarias(m => {
+            const base = m.length === efectivaAcciones.length ? m : efectivaAcciones.map(() => true)
+            return [...base.slice(0, variasEditIdx), ...Array(insertCount).fill(true), ...base.slice(variasEditIdx + 1)]
+          })
+          setToast({msg: '✓ Acción cambiada. Revisa el texto antes de enviar.', type:'ok'})
+        }
         setActionEditorOpen(false)
-        setToast({msg: `✓ Acción cambiada a ${newAction.type}. Aprueba para ejecutar.`, type:'ok'})
+        setVariasEditIdx(null)
       }}
     />
   )}

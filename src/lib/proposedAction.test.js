@@ -72,6 +72,36 @@ describe('isDestructiveAction', () => {
   })
 })
 
+describe('isDestructiveAction — varias (encargo 6.2)', () => {
+  it('destructiva si CUALQUIER sub-acción lo es, esté donde esté', () => {
+    expect(isDestructiveAction({
+      type: 'varias',
+      acciones: [{ type: 'confirmar_propuesta' }, { type: 'cancelar_cita' }],
+    })).toBe(true)
+  })
+  it('no destructiva si ninguna sub-acción lo es', () => {
+    expect(isDestructiveAction({
+      type: 'varias',
+      acciones: [{ type: 'confirmar_propuesta' }, { type: 'proponer_cita' }],
+    })).toBe(false)
+  })
+  it('varias sin acciones (forma inválida) → false, no revienta', () => {
+    expect(isDestructiveAction({ type: 'varias' })).toBe(false)
+  })
+})
+
+describe('describeProposedAction — varias (encargo 6.2)', () => {
+  it('usa el META de varias: label, icono y destructive por sub-acción', () => {
+    const d = describeProposedAction({
+      type: 'varias',
+      acciones: [{ type: 'confirmar_propuesta' }, { type: 'descartar_propuesta' }],
+    })
+    expect(d.label).toBe('Varias acciones')
+    expect(d.icon).toBe('🧩')
+    expect(d.destructive).toBe(true)
+  })
+})
+
 describe('describeProposedAction — AUTODESCRITOS (día/hora viajan en el action)', () => {
   it('cancelar_cita FSM usa date/time/prof del propio action, no del lookup', () => {
     const action = { type: 'cancelar_cita', appointment_id: 'X', date: '2026-06-27', time: '10:30', patient_name: 'Lucía Pérez', prof: 'Marta C.' }

@@ -59,6 +59,11 @@ const META = {
   // ni estado. La usa el bot cuando el paciente dice para quién es la cita o que
   // va otra persona en su lugar ("irá mi tía", "en mi lugar va mi cuñado Óscar").
   anotar_cita:                 { label: 'Anotar en la cita',        icon: '📝', family: 'list' },
+  // Compuesta (encargo 6.2, fase 6 del bot): varias acciones del mismo turno en
+  // una sola review. El panel la pinta como filas, una por sub-acción — ver
+  // src/lib/variasAcciones.js. Esta entrada de META es el fallback (aviso de
+  // "acción corregida", exportCsv, etc.) para cuando solo hace falta un label.
+  varias:                      { label: 'Varias acciones',         icon: '🧩', family: 'confirm' },
 }
 
 const DESTRUCTIVE = new Set(['cancelar_cita', 'descartar_propuesta', 'rechazar_propuesta'])
@@ -77,8 +82,12 @@ const LOOKUP_ID_FIELD = {
   anotar_cita:                 'appointment_id',
 }
 
+// Una `varias` es destructiva si CUALQUIERA de sus sub-acciones lo es — Marta
+// tiene que ver el aviso aunque lo destructivo vaya escondido en la 2ª de 3.
 export function isDestructiveAction(action) {
-  return !!action && DESTRUCTIVE.has(action.type)
+  if (!action) return false
+  if (action.type === 'varias') return Array.isArray(action.acciones) && action.acciones.some(isDestructiveAction)
+  return DESTRUCTIVE.has(action.type)
 }
 
 // Devuelve el id de `appointments` a resolver para este action, o null si el
@@ -135,7 +144,9 @@ export function describeProposedAction(action, { patientName = null, appt = null
 
   const meta = META[action.type] || { label: action.type, icon: '⚙️', family: 'neutral' }
   const label = isPersonalizada ? 'Cita personalizada' : meta.label
-  const destructive = DESTRUCTIVE.has(action.type)
+  // isDestructiveAction (no el Set directo): así una `varias` con una sub-acción
+  // destructiva escondida también sale marcada, sin duplicar la regla aquí.
+  const destructive = isDestructiveAction(action)
   const patient = action.patient_name || patientName || null
   // El campo viaja en el action (el bot ya lo rellena en pedir_cita/anotar) o,
   // si la identidad de la cita se resolvió por lookup, en la fila de appointments.
