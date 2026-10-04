@@ -2666,13 +2666,13 @@ function Horarios(){
       <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Notificaciones del profesional</div>
       <div style={{display:'grid',gridTemplateColumns:'2fr 1fr',gap:10,marginBottom:10}}>
         <Inp label="WhatsApp del profesional" placeholder="34612345678" value={waPhone} onChange={e=>setWaPhone(e.target.value)}/>
-        <Inp label="Hora envío agenda" type="time" step="900" value={agendaTime} onChange={e=>setAgendaTime(e.target.value)}/>
+        <Inp label="Hora envío agenda" type="time" value={agendaTime} onChange={e=>setAgendaTime(e.target.value)}/>
       </div>
       <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
         <Btn onClick={saveProfNotifs}>Guardar</Btn>
         <Btn variant="ghost" onClick={sendAgendaNow} disabled={sendingAgenda||!waPhone} title="Enviar ahora la agenda de mañana a este profesional">{sendingAgenda?'Enviando…':'📲 Enviar agenda ahora'}</Btn>
       </div>
-      <div style={{fontSize:11,color:'var(--text-muted)',marginTop:8}}>El bot envía esta agenda cada día a la hora indicada. El botón la manda ahora (prueba).</div>
+      <div style={{fontSize:11,color:'var(--text-muted)',marginTop:8}}>Se envía en cuanto llega esa hora (como tarde hasta las 23:00). El botón la manda ahora (prueba).</div>
     </div>}
 
   </>
