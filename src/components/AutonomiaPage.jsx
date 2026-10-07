@@ -25,7 +25,7 @@
 //   - onToast({msg, type}): type 'ok' | 'error'. Puede no venir.
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
-import { clasificarVerdict, calcularAcierto } from '../lib/autonomiaStats.js'
+import { clasificarVerdict, calcularAcierto, inicioEstadisticas } from '../lib/autonomiaStats.js'
 
 // ─── Catálogo de casuísticas (copia manual — ver cabecera) ─────────────────
 const CASUISTICAS = {
@@ -258,15 +258,26 @@ export function AutonomiaPage({ sb, onToast }) {
   const [reviews, setReviews] = useState([])
   const [reviewsLoading, setReviewsLoading] = useState(true)
   const [reviewsError, setReviewsError] = useState(null)
+  // Fecha de app_config.autonomia_desde si recorta la ventana (contador a cero).
+  const [reiniciado, setReiniciado] = useState(null)
 
   const loadReviews = useCallback(async () => {
     setReviewsLoading(true); setReviewsError(null)
     try {
+      // Sin la fila (o si falla la lectura) se cuenta como siempre: N semanas.
+      let valorReinicio = null
+      try {
+        const { data: cfg } = await sb.from('app_config')
+          .select('value').eq('key', 'autonomia_desde').maybeSingle()
+        valorReinicio = cfg?.value ?? null
+      } catch { /* sin reinicio */ }
+      const { desde, reiniciado: r } = inicioEstadisticas(cutoffIso(Number(weeks)), valorReinicio)
+      setReiniciado(r)
       const { data, error } = await sb.from('bot_coach_reviews')
         // rejection_reason hace falta para reclasificar las filas anteriores a
         // sql/0018, que estan guardadas como 'rejected' con su motivo.
         .select('casuistica, verdict, rejection_reason, created_at')
-        .gte('created_at', cutoffIso(Number(weeks)))
+        .gte('created_at', desde)
         .limit(5000)
       if (error) throw error
       setReviews(data || [])
@@ -449,6 +460,7 @@ export function AutonomiaPage({ sb, onToast }) {
         </div>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
           Ventana de datos: últimas {weeks} semanas
+          {reiniciado && ` · contando desde el ${fmtWeek(reiniciado)} (bot nuevo)`}
         </span>
       </div>
 

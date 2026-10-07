@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { esAdelantamientoHumano, clasificarVerdict, calcularAcierto } from './autonomiaStats.js'
+import { esAdelantamientoHumano, clasificarVerdict, calcularAcierto, inicioEstadisticas } from './autonomiaStats.js'
 
 describe('esAdelantamientoHumano', () => {
   it('reconoce los cinco motivos que escribe el bot', () => {
@@ -75,5 +75,27 @@ describe('calcularAcierto', () => {
   it('tolera que no le pasen nada', () => {
     expect(calcularAcierto().total).toBe(0)
     expect(calcularAcierto().pct).toBe(null)
+  })
+})
+
+describe('inicioEstadisticas', () => {
+  const corte = '2026-08-12T00:00:00'
+
+  it('sin fecha de reinicio, manda la ventana de semanas', () => {
+    expect(inicioEstadisticas(corte, null)).toEqual({ desde: corte, reiniciado: null })
+    expect(inicioEstadisticas(corte, '')).toEqual({ desde: corte, reiniciado: null })
+  })
+
+  it('un reinicio posterior al corte recorta la ventana', () => {
+    expect(inicioEstadisticas(corte, '2026-10-05')).toEqual({ desde: '2026-10-05T00:00:00', reiniciado: '2026-10-05' })
+  })
+
+  it('un reinicio anterior al corte no amplía la ventana', () => {
+    expect(inicioEstadisticas(corte, '2026-07-01')).toEqual({ desde: corte, reiniciado: null })
+  })
+
+  it('ignora valores que no son una fecha AAAA-MM-DD', () => {
+    expect(inicioEstadisticas(corte, '05/10/2026')).toEqual({ desde: corte, reiniciado: null })
+    expect(inicioEstadisticas(corte, '"2026-10-05"')).toEqual({ desde: corte, reiniciado: null })
   })
 })

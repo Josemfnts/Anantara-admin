@@ -68,3 +68,23 @@ export function calcularAcierto({ sent = 0, auto = 0, modified = 0, rejected = 0
     pct: total > 0 ? Math.round((aciertos / total) * 1000) / 10 : null,
   }
 }
+
+/**
+ * Desde cuándo se cuentan las reviews en la pantalla de Autonomía. PURA.
+ *
+ * `app_config.autonomia_desde` ('AAAA-MM-DD') pone el contador a cero sin borrar
+ * nada: al cambiar el bot (camino de comandos en producción desde el 05/10/2026)
+ * el acierto del bot viejo no dice nada del nuevo, y es justo el número que usa
+ * el freno para dejar graduar a automático. Gana la fecha más reciente entre el
+ * corte de semanas y el reinicio; un valor que no sea una fecha se ignora.
+ *
+ * @param {string} corte       'AAAA-MM-DDT00:00:00' de las últimas N semanas
+ * @param {string|null} valor  app_config.autonomia_desde
+ * @returns {{desde: string, reiniciado: string|null}}
+ */
+export function inicioEstadisticas(corte, valor) {
+  const v = typeof valor === 'string' ? valor.trim() : ''
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return { desde: corte, reiniciado: null }
+  const reinicio = `${v}T00:00:00`
+  return reinicio > corte ? { desde: reinicio, reiniciado: v } : { desde: corte, reiniciado: null }
+}
