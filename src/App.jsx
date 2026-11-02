@@ -16,7 +16,7 @@ import { mergeProfNotifs } from './lib/profNotifs.js'
 import { featuresBot } from './lib/featuresBot.js'
 import { AusenciasPage } from './components/AusenciasPage.jsx'
 import { BotMovil } from './components/BotMovil.jsx'
-import { citaEnPasado, estadoAlta } from './lib/altaCita.js'
+import { citaEnPasado, estadoAlta, horaSiguiente } from './lib/altaCita.js'
 import { AutonomiaPage } from './components/AutonomiaPage.jsx'
 import { conversationPayloadFor } from './lib/newConversation.js'
 import { normBusqueda } from './lib/busqueda.js'
@@ -653,6 +653,8 @@ function Agenda(){
   const[followupWaitlist,setFollowupWaitlist]=useState(false)
   const[followupMessage,setFollowupMessage]=useState('')
   const[followupBusy,setFollowupBusy]=useState(false)
+  // Cita pasada desde la que se abrió «Nueva cita» (se marca gestionada al guardar).
+  const[altaOrigenId,setAltaOrigenId]=useState(null)
   const[nextApptBusy,setNextApptBusy]=useState(false)
   // Ausencias: la ventana que sale al marcar que el paciente no vino.
   const[noShowOpen,setNoShowOpen]=useState(false)
@@ -1385,7 +1387,7 @@ function Agenda(){
   }
 
 
-  const createAppt=async()=>{
+  const createAppt=async({otra=false}={})=>{
     if(!selPat||!form.prof_id||!form.svc_id||!form.date||!form.time)return
     const esCustom = form.svc_id==='custom'
     const svc=esCustom?null:services.find(s=>s.id===form.svc_id)
@@ -1422,7 +1424,15 @@ function Agenda(){
       if(!error) setToast({msg:'Cita creada, pero los acompañantes no se guardaron: falta aplicar sql/0016',type:'error'})
     }
     if(error){setToast({msg:error.message,type:'error'});return}
-    setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:'',leave_pending:true,custom_min:60,companions:'',para_quien:''})
+    // La cita pasada de la que salió queda gestionada (morado oscuro).
+    if(altaOrigenId){await markFollowupHandled(altaOrigenId);setAltaOrigenId(null)}
+    if(otra){
+      // Misma persona que pide, mismo profesional y día, seguida de la anterior.
+      // Servicio, nota y para quién se vacían: cada cita lleva los suyos.
+      setForm(f=>({...f,svc_id:'',notes:'',para_quien:'',companions:'',custom_min:60,time:horaSiguiente(endDT)}))
+    }else{
+      setModal(null);setSelPat(null);setPatSearch('');setForm({prof_id:'',svc_id:'',date:'',time:'',notes:'',payment_method:'',leave_pending:true,custom_min:60,companions:'',para_quien:''})
+    }
     // Si se dejó en pending, notificar al paciente por WhatsApp
     if(status==='pending' && newAppt?.id){
       try{
@@ -1777,7 +1787,7 @@ function Agenda(){
     </div>}
 
     {/* Create modal */}
-    {modal==='create'&&<Modal title="Nueva cita"onClose={()=>setModal(null)}>
+    {modal==='create'&&<Modal title="Nueva cita"onClose={()=>{setModal(null);setAltaOrigenId(null)}}>
       <div style={{position:'relative',marginBottom:14}}>
         <label className="field-label">Paciente</label>
         <input className="field-input"placeholder="Buscar…"value={selPat?selPat.full_name:patSearch}
@@ -1858,9 +1868,11 @@ function Agenda(){
       <Sel label="Forma de pago (opcional)"value={form.payment_method}onChange={e=>setForm(f=>({...f,payment_method:e.target.value}))}options={[['','No especificada'],['efectivo','Efectivo'],['tarjeta','Tarjeta'],['bizum','Bizum'],['transferencia','Transferencia']]}/>
       <div className="field"><label className="field-label">Notas (opcional)</label><textarea className="notes-area"value={form.notes}onChange={e=>setForm(f=>({...f,notes:e.target.value}))}placeholder="Observaciones…"/></div>
       <div style={{display:'flex',gap:10,marginTop:4}}>
-        <Btn variant="ghost"onClick={()=>setModal(null)}style={{flex:1}}>Cancelar</Btn>
-        <Btn onClick={createAppt}disabled={!selPat||!form.prof_id||!form.svc_id||!form.date||!form.time}style={{flex:1}}>Guardar</Btn>
+        <Btn variant="ghost"onClick={()=>{setModal(null);setAltaOrigenId(null)}}style={{flex:1}}>Cancelar</Btn>
+        <Btn onClick={()=>createAppt()}disabled={!selPat||!form.prof_id||!form.svc_id||!form.date||!form.time}style={{flex:1}}>Guardar</Btn>
       </div>
+      <Btn variant="ghost" onClick={()=>createAppt({otra:true})} disabled={!selPat||!form.prof_id||!form.svc_id||!form.date||!form.time} style={{width:'100%',marginTop:10}}
+        title="Guarda esta cita y deja el formulario listo para otra seguida, con su propio servicio y nota">＋ Guardar y añadir otra</Btn>
       <Btn variant="ghost" onClick={enqueueWaitlist} disabled={!selPat||!form.prof_id||!form.svc_id} style={{width:'100%',marginTop:10}}
         title="Sin hueco: encolar al paciente en la lista de espera (no crea cita)">→ Lista de espera (sin hueco)</Btn>
     </Modal>}
@@ -2043,6 +2055,20 @@ function Agenda(){
               </div>
             </div>
           )}
+
+          {/* Cita concreta con todas las opciones (personalizada, nota, para quién,
+              varias seguidas): abre «Nueva cita» rellenada desde esta. */}
+          <div style={{marginBottom:10}}>
+            <Btn variant="ghost" style={{width:'100%',fontSize:13}}
+              onClick={()=>{
+                setAltaOrigenId(modal.id)
+                setSelPat(modal.patients);setPatSearch('')
+                setForm({prof_id:modal.professional_id||'',svc_id:followupServiceId||modal.service_id||'',date:'',time:'',notes:'',payment_method:'',leave_pending:true,custom_min:60,companions:'',para_quien:''})
+                setModal('create')
+              }}>
+              📅 Poner cita concreta (más opciones)
+            </Btn>
+          </div>
 
           {/* Meter en lista de espera */}
           <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginBottom:10,cursor:'pointer'}}>

@@ -8,3 +8,13 @@ export function citaEnPasado(inicio, ahora = new Date()) {
 export function estadoAlta({ dejarPendiente, inicio, ahora = new Date() }) {
   return dejarPendiente && !citaEnPasado(inicio, ahora) ? 'pending' : 'confirmed'
 }
+
+// Hora de la siguiente cita encadenada (dos personas seguidas): la del final de la
+// anterior, redondeada hacia arriba a la media hora, que es lo que ofrece el selector.
+// Pasa de las 21:30 (última del selector) → '' y Marta la elige a mano.
+export function horaSiguiente(fin) {
+  const min = fin.getHours() * 60 + fin.getMinutes()
+  const redondeado = Math.ceil(min / 30) * 30
+  if (redondeado > 21 * 60 + 30) return ''
+  return String(Math.floor(redondeado / 60)).padStart(2, '0') + ':' + String(redondeado % 60).padStart(2, '0')
+}
