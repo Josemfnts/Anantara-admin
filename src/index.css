@@ -89,7 +89,7 @@ button, input, select, textarea { font-family: inherit }
 @media(max-width: 768px) { .sidebar { transform: translateX(-100%) } .sidebar.open { transform: translateX(0) } }
 .sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(28,43,34,.5); backdrop-filter: blur(2px); z-index: 99; animation: modalFade 220ms ease }
 @media(max-width: 768px) { .sidebar-overlay.open { display: block } }
-.sidebar-logo { padding: 22px 18px 16px; font-family: var(--font-display); font-size: 19px; font-weight: 700; letter-spacing: 0.04em; border-bottom: 1px solid rgba(255,255,255,.08) }
+.sidebar-logo { padding: calc(env(safe-area-inset-top) + 22px) 18px 16px; font-family: var(--font-display); font-size: 19px; font-weight: 700; letter-spacing: 0.04em; border-bottom: 1px solid rgba(255,255,255,.08) }
 .sidebar-logo span { color: var(--gold); font-style: italic }
 .sidebar-nav { flex: 1; padding: 12px 10px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.15) transparent }
 .sidebar-nav::-webkit-scrollbar { width: 4px }
@@ -101,11 +101,14 @@ button, input, select, textarea { font-family: inherit }
 .nav-btn.active { background: rgba(255,255,255,.12); color: #fff; font-weight: 600; padding-left: 14px }
 .nav-btn.active::before { content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; background: var(--terra); border-radius: 0 3px 3px 0 }
 .nav-btn .ico { font-size: 16px; flex-shrink: 0; width: 20px; text-align: center }
-.sidebar-footer { padding: 14px 10px; border-top: 1px solid rgba(255,255,255,.08) }
+.sidebar-footer { padding: 14px 10px calc(env(safe-area-inset-bottom) + 14px); border-top: 1px solid rgba(255,255,255,.08) }
 
 /* ── Topbar ── */
-.topbar { height: 60px; background: rgba(250,247,242,.85); backdrop-filter: blur(8px); border-bottom: 1px solid var(--stone); display: flex; align-items: center; justify-content: space-between; padding: 0 24px; position: sticky; top: 0; z-index: 50 }
-@media (max-width: 600px) { .topbar { padding: 0 16px } }
+/* viewport-fit=cover + status bar translucent: en la PWA instalada la página se
+   pinta debajo de la barra del móvil. Sin el inset, el ☰ queda debajo de ella y
+   no se puede pulsar (Marta, 02/11). height = 60 útiles + inset; box-sizing ya es border-box. */
+.topbar { height: calc(60px + env(safe-area-inset-top)); padding-top: env(safe-area-inset-top); background: rgba(250,247,242,.85); backdrop-filter: blur(8px); border-bottom: 1px solid var(--stone); display: flex; align-items: center; justify-content: space-between; padding-left: calc(env(safe-area-inset-left) + 24px); padding-right: calc(env(safe-area-inset-right) + 24px); position: sticky; top: 0; z-index: 50 }
+@media (max-width: 600px) { .topbar { padding-left: calc(env(safe-area-inset-left) + 16px); padding-right: calc(env(safe-area-inset-right) + 16px) } }
 .topbar-left { display: flex; align-items: center; gap: 12px; min-width: 0 }
 .topbar-title { font-family: var(--font-display); font-size: 19px; font-weight: 700; color: var(--ink); letter-spacing: var(--ls-display); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .hamburger { display: none; background: none; border: none; font-size: 22px; cursor: pointer; color: var(--ink); padding: 8px; border-radius: var(--r-sm); min-width: 40px; min-height: 40px; align-items: center; justify-content: center; transition: background 150ms ease }
@@ -194,7 +197,7 @@ button, input, select, textarea { font-family: inherit }
 @keyframes modalFade { from { opacity: 0 } to { opacity: 1 } }
 @keyframes modalIn { from { opacity: 0; transform: translateY(8px) scale(.98) } to { opacity: 1; transform: translateY(0) scale(1) } }
 @media (min-width: 1024px) { .modal { max-width: 520px } }
-@media (max-width: 600px) { .modal { padding: 18px; border-radius: var(--r-lg) } .modal-overlay { padding: 10px } }
+@media (max-width: 600px) { .modal { padding: 18px; border-radius: var(--r-lg) } .modal-overlay { padding: calc(env(safe-area-inset-top) + 10px) 10px calc(env(safe-area-inset-bottom) + 10px) } }
 .modal-title { font-family: var(--font-display); font-size: var(--text-xl); font-weight: 700; margin-bottom: 20px; color: var(--ink); letter-spacing: var(--ls-display); padding-bottom: 14px; border-bottom: 1px solid var(--stone) }
 
 /* ── Toast ── */
