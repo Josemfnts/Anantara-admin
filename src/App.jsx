@@ -16,6 +16,7 @@ import { mergeProfNotifs } from './lib/profNotifs.js'
 import { featuresBot } from './lib/featuresBot.js'
 import { AusenciasPage } from './components/AusenciasPage.jsx'
 import { BotMovil } from './components/BotMovil.jsx'
+import { citaEnPasado, estadoAlta } from './lib/altaCita.js'
 import { AutonomiaPage } from './components/AutonomiaPage.jsx'
 import { conversationPayloadFor } from './lib/newConversation.js'
 import { normBusqueda } from './lib/busqueda.js'
@@ -1397,8 +1398,8 @@ function Agenda(){
       profId: form.prof_id, startsAt: localDT(startDT), endsAt: localDT(endDT),
     })
     if(conflictos.length && !window.confirm(textoConflictos(conflictos))) return
-    const status = form.leave_pending ? 'pending' : 'confirmed'
-    const proposedUntil = form.leave_pending ? nuevoProposedUntil() : null
+    const status = estadoAlta({ dejarPendiente: form.leave_pending, inicio: startDT })
+    const proposedUntil = status==='pending' ? nuevoProposedUntil() : null
     const acompanantes = parseCompanions(form.companions)
     const fila = {
       // En personalizada no hay servicio: la duración la fija la secretaria.
@@ -1429,7 +1430,7 @@ function Agenda(){
           method:'POST',
           body:JSON.stringify({appointment_id:newAppt.id})
         })
-        setToast({msg: r.ok ? 'Cita creada. WhatsApp enviado al paciente.' : 'Cita creada. ⚠️ WhatsApp no enviado (bot apagado?)',type:r.ok?'ok':'error'})
+        setToast({msg: r.ok ? 'Cita creada. WhatsApp enviado al paciente.' : r.status===409 ? 'Cita creada. No se envía WhatsApp: la cita ya no se puede ofrecer.' : 'Cita creada. ⚠️ WhatsApp no enviado (bot apagado?)',type:r.ok?'ok':'error'})
       }catch(e){
         setToast({msg:'Cita creada. ⚠️ Bot no disponible.',type:'error'})
       }
@@ -1845,10 +1846,14 @@ function Agenda(){
         <Sel label="Hora"value={form.time}onChange={e=>setForm(f=>({...f,time:e.target.value}))}options={[['','--:--'],...Array.from({length:(21-7)*2+2},(_,i)=>{const h=7+Math.floor(i/2),m=(i%2)*30;const v=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;return[v,v]}).filter(([v])=>v<='21:30')]}/>
       </div>
       <div className="field" style={{display:'flex',alignItems:'center',gap:8,marginBottom:14}}>
-        <Toggle on={form.leave_pending} onChange={v=>setForm(f=>({...f,leave_pending:v}))}/>
-        <label className="field-label" style={{marginBottom:0}}>
-          Dejar pendiente de confirmación (naranja)
-        </label>
+        {form.date&&form.time&&citaEnPasado(new Date(form.date+'T'+form.time+':00'))
+          ? <span className="field-label" style={{marginBottom:0}}>Cita en el pasado: se guarda confirmada y no se envía WhatsApp.</span>
+          : <>
+            <Toggle on={form.leave_pending} onChange={v=>setForm(f=>({...f,leave_pending:v}))}/>
+            <label className="field-label" style={{marginBottom:0}}>
+              Dejar pendiente de confirmación (naranja)
+            </label>
+          </>}
       </div>
       <Sel label="Forma de pago (opcional)"value={form.payment_method}onChange={e=>setForm(f=>({...f,payment_method:e.target.value}))}options={[['','No especificada'],['efectivo','Efectivo'],['tarjeta','Tarjeta'],['bizum','Bizum'],['transferencia','Transferencia']]}/>
       <div className="field"><label className="field-label">Notas (opcional)</label><textarea className="notes-area"value={form.notes}onChange={e=>setForm(f=>({...f,notes:e.target.value}))}placeholder="Observaciones…"/></div>
