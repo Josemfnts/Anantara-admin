@@ -5345,8 +5345,9 @@ function BotCoach() {
     // El bot lo ejecuta como si el bot lo hubiera propuesto originalmente, y el
     // par (proposed_action, final_action) queda como training data del loop.
     const act = overrideAction || selPending.proposed_action
-    const horaOmitida = horaPropuestaOmitida(act, draft, selPending.proposed_text)
-    if (horaOmitida && !window.confirm(`Has cambiado el texto y ya no menciona las ${horaOmitida}, pero la propuesta sigue en pie: si el paciente dice «vale», se le confirma esa cita.\n\nAceptar = enviar así.\nCancelar = volver y quitar la acción.`)) return
+    // Si Marta tocó la acción en el editor, lo decidió ella: no se pregunta.
+    const horaOmitida = overrideAction ? null : horaPropuestaOmitida(act, draft, selPending.proposed_text)
+    if (horaOmitida && !window.confirm(`Has cambiado el texto y ya no menciona las ${horaOmitida}: no se creará esa propuesta.\n\nAceptar = enviar solo tu texto.\nCancelar = volver.`)) return
     const esVariasAct = esVarias(act)
     // Encargo 6.2: acciones + marcas de la varias, con longitud garantizada
     // (si algo dejó marcadasVarias desincronizada, se trata como "todo marcado"
@@ -5371,6 +5372,10 @@ function BotCoach() {
       finalAction = act || null
       actionApproved = !!act
       actionChanged = !!overrideAction && overrideAction.type !== selPending.proposed_action?.type
+    }
+    if (horaOmitida) {
+      finalAction = null
+      actionApproved = false
     }
 
     const textChanged = draft.trim() !== (selPending.proposed_text||'').trim()

@@ -766,8 +766,9 @@ export function BotMovil({ sb, botFetch }) {
   const sendProposal = async () => {
     if (!pendingForSelected) return
     const act = overrideAction || pendingForSelected.proposed_action || null
-    const horaOmitida = horaPropuestaOmitida(act, proposalDraft, pendingForSelected.proposed_text)
-    if (horaOmitida && !window.confirm(`Has cambiado el texto y ya no menciona las ${horaOmitida}, pero la propuesta sigue en pie: si el paciente dice «vale», se le confirma esa cita.\n\nAceptar = enviar así.\nCancelar = volver y quitar la acción.`)) return
+    // Si Marta tocó la acción en el editor, lo decidió ella: no se pregunta.
+    const horaOmitida = overrideAction ? null : horaPropuestaOmitida(act, proposalDraft, pendingForSelected.proposed_text)
+    if (horaOmitida && !window.confirm(`Has cambiado el texto y ya no menciona las ${horaOmitida}: no se creará esa propuesta.\n\nAceptar = enviar solo tu texto.\nCancelar = volver.`)) return
     const esVariasAct = esVarias(act)
     const acciones = esVariasAct ? accionesDe(act) : []
     const marks = esVariasAct
@@ -787,6 +788,10 @@ export function BotMovil({ sb, botFetch }) {
       finalAction = act
       actionApproved = !!act
       actionChanged = !!overrideAction
+    }
+    if (horaOmitida) {
+      finalAction = null
+      actionApproved = false
     }
 
     // Bot Móvil no tenía confirm para destructivas sueltas y con UNA acción
