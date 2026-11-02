@@ -39,6 +39,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fClock, fDayLabel, madridDay } from '../lib/datetime.js'
 import { describeProposedAction, isDestructiveAction, actionLookupId } from '../lib/proposedAction.js'
+import { horaPropuestaOmitida } from '../lib/ajustesBot.js'
 import { esVarias, accionesDe, finalActionDe, reemplazarAccion, hayDestructivaMarcada, idsYaUsados } from '../lib/variasAcciones.js'
 import { quickRepliesFor } from '../lib/quickReplies.js'
 import { ActionEditorModal } from './ActionEditorModal.jsx'
@@ -765,6 +766,8 @@ export function BotMovil({ sb, botFetch }) {
   const sendProposal = async () => {
     if (!pendingForSelected) return
     const act = overrideAction || pendingForSelected.proposed_action || null
+    const horaOmitida = horaPropuestaOmitida(act, proposalDraft, pendingForSelected.proposed_text)
+    if (horaOmitida && !window.confirm(`Has cambiado el texto y ya no menciona las ${horaOmitida}, pero la propuesta sigue en pie: si el paciente dice «vale», se le confirma esa cita.\n\nAceptar = enviar así.\nCancelar = volver y quitar la acción.`)) return
     const esVariasAct = esVarias(act)
     const acciones = esVariasAct ? accionesDe(act) : []
     const marks = esVariasAct

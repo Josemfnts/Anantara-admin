@@ -17,6 +17,7 @@ import { featuresBot } from './lib/featuresBot.js'
 import { AusenciasPage } from './components/AusenciasPage.jsx'
 import { BotMovil } from './components/BotMovil.jsx'
 import { citaEnPasado, estadoAlta, horaSiguiente } from './lib/altaCita.js'
+import { leerLista, normalizarTelefono, anadirALista, diasVigentes, horaPropuestaOmitida } from './lib/ajustesBot.js'
 import { AutonomiaPage } from './components/AutonomiaPage.jsx'
 import { conversationPayloadFor } from './lib/newConversation.js'
 import { normBusqueda } from './lib/busqueda.js'
@@ -2312,6 +2313,10 @@ function Horarios(){
   const[waPhone,setWaPhone]=useState('')
   const[agendaTime,setAgendaTime]=useState('')
   const[reminderTime,setReminderTime]=useState('10:00')
+  const[diasSinRec,setDiasSinRec]=useState([])
+  const[diaSinRecNuevo,setDiaSinRecNuevo]=useState('')
+  const[numerosIgnorados,setNumerosIgnorados]=useState([])
+  const[numeroNuevo,setNumeroNuevo]=useState('')
   const[savingReminder,setSavingReminder]=useState(false)
   // Encargo 3.4: texto libre que Marta añade al final del recordatorio D-1
   // SOLO en la primera cita del paciente (lo aplica el bot, en otro encargo).
@@ -2339,6 +2344,10 @@ function Horarios(){
   useEffect(()=>{
     sb.from('app_config').select('value').eq('key','reminder_time').maybeSingle()
       .then(({data})=>{ if(data?.value) setReminderTime(data.value) })
+    sb.from('app_config').select('value').eq('key','dias_sin_recordatorios').maybeSingle()
+      .then(({data})=>setDiasSinRec(diasVigentes(leerLista(data?.value),localDT(new Date()).slice(0,10))))
+    sb.from('app_config').select('value').eq('key','numeros_ignorados').maybeSingle()
+      .then(({data})=>setNumerosIgnorados(leerLista(data?.value)))
     // ?? y no ||: si ya se guardó vacío a propósito (= no añadir nada), que no
     // se pierda por tratar '' como falsy.
     sb.from('app_config').select('value').eq('key','d1_info_primera_cita').maybeSingle()
@@ -2402,6 +2411,22 @@ function Horarios(){
     setManualBusy(false)
   }
 
+  // Guarda una lista JSON de app_config; solo toca el estado si se ha guardado.
+  const guardarLista = async (key, lista, setLista, msg) => {
+    const{error}=await sb.from('app_config').upsert({key,value:JSON.stringify(lista)},{onConflict:'key'})
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return false}
+    setLista(lista);setToast({msg,type:'ok'});return true
+  }
+  const anadirDiaSinRec = async () => {
+    if(!diaSinRecNuevo)return
+    const lista=diasVigentes(anadirALista(diasSinRec,diaSinRecNuevo),localDT(new Date()).slice(0,10))
+    if(await guardarLista('dias_sin_recordatorios',lista,setDiasSinRec,'Ese día no saldrá ningún recordatorio'))setDiaSinRecNuevo('')
+  }
+  const anadirNumeroIgnorado = async () => {
+    const n=normalizarTelefono(numeroNuevo)
+    if(!n){setToast({msg:'Escribe un teléfono de 9 cifras',type:'error'});return}
+    if(await guardarLista('numeros_ignorados',anadirALista(numerosIgnorados,n),setNumerosIgnorados,'El bot ignorará ese número'))setNumeroNuevo('')
+  }
   const saveReminderTime = async () => {
     setSavingReminder(true)
     const{error}=await sb.from('app_config')
@@ -2565,6 +2590,25 @@ function Horarios(){
 
   return<>
     {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
+
+    <div className="card" style={{padding:'14px 16px',marginBottom:16}}>
+      <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+        <span style={{fontWeight:700,fontSize:13}}>🔕 Días sin recordatorios</span>
+        <input type="date" className="field-input" style={{width:'auto'}} value={diaSinRecNuevo} min={localDT(new Date()).slice(0,10)} onChange={e=>setDiaSinRecNuevo(e.target.value)}/>
+        <Btn onClick={anadirDiaSinRec} disabled={!diaSinRecNuevo}>Añadir</Btn>
+        {diasSinRec.map(d=><button key={d} type="button" title="Quitar" onClick={()=>guardarLista('dias_sin_recordatorios',diasSinRec.filter(x=>x!==d),setDiasSinRec,'Día quitado')}
+          style={{fontSize:12,padding:'3px 10px',border:'1px solid var(--stone)',borderRadius:999,background:'#fff',cursor:'pointer'}}>{d.split('-').reverse().join('/')} ✕</button>)}
+      </div>
+      <div style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>Ese día el bot no manda ninguno, y las citas que tocaban no se reenvían al día siguiente. El envío manual sigue funcionando.</div>
+      <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginTop:14}}>
+        <span style={{fontWeight:700,fontSize:13}}>🙈 Números que el bot ignora</span>
+        <input className="field-input" style={{width:150}} inputMode="tel" placeholder="600 111 222" value={numeroNuevo} onChange={e=>setNumeroNuevo(e.target.value)}/>
+        <Btn onClick={anadirNumeroIgnorado} disabled={!numeroNuevo.trim()}>Añadir</Btn>
+        {numerosIgnorados.map(n=><button key={n} type="button" title="Quitar" onClick={()=>guardarLista('numeros_ignorados',numerosIgnorados.filter(x=>x!==n),setNumerosIgnorados,'Número quitado')}
+          style={{fontSize:12,padding:'3px 10px',border:'1px solid var(--stone)',borderRadius:999,background:'#fff',cursor:'pointer'}}>{n} ✕</button>)}
+      </div>
+      <div style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>Profesionales y números que no son pacientes: no se les contesta ni te avisa de ellos.</div>
+    </div>
 
     <div className="card" style={{padding:'14px 16px',marginBottom:16,display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
       <span style={{fontWeight:700,fontSize:13}}>Hora recordatorios D-1</span>
@@ -5301,6 +5345,8 @@ function BotCoach() {
     // El bot lo ejecuta como si el bot lo hubiera propuesto originalmente, y el
     // par (proposed_action, final_action) queda como training data del loop.
     const act = overrideAction || selPending.proposed_action
+    const horaOmitida = horaPropuestaOmitida(act, draft, selPending.proposed_text)
+    if (horaOmitida && !window.confirm(`Has cambiado el texto y ya no menciona las ${horaOmitida}, pero la propuesta sigue en pie: si el paciente dice «vale», se le confirma esa cita.\n\nAceptar = enviar así.\nCancelar = volver y quitar la acción.`)) return
     const esVariasAct = esVarias(act)
     // Encargo 6.2: acciones + marcas de la varias, con longitud garantizada
     // (si algo dejó marcadasVarias desincronizada, se trata como "todo marcado"
@@ -5507,6 +5553,24 @@ function BotCoach() {
     setSending(false)
   }
 
+  // P5: la orden la atiende anantara-watchdog (otro proceso del OptiPlex), porque con el
+  // bot colgado el panel no le puede pedir nada a él. Tarda hasta 2 min en cogerla. La
+  // consulta de estado solo corre tras pulsar y con tope: 12 lecturas como mucho.
+  const [reinicio, setReinicio] = useState(null)
+  const pedirReinicio = async () => {
+    if (!window.confirm('¿Reiniciar el bot? Tarda 1-3 minutos y no contesta mientras tanto. Úsalo solo si está colgado. El ordenador del centro tiene que estar encendido.')) return
+    const { data, error } = await sb.from('bot_ordenes').insert({ orden: 'reiniciar' }).select('id').single()
+    if (error) { setReinicio('No se pudo pedir: ' + error.message); return }
+    setReinicio('esperando')
+    for (let i = 0; i < 12; i++) {
+      await new Promise(r => setTimeout(r, 15000))
+      const { data: o } = await sb.from('bot_ordenes').select('estado,detalle').eq('id', data.id).maybeSingle()
+      if (o?.estado === 'hecha') { setReinicio('✓ Reiniciado. Tarda un minuto en conectar a WhatsApp.'); return }
+      if (o?.estado === 'fallida' || o?.estado === 'caducada') { setReinicio('No se reinició: ' + (o.detalle || o.estado)); return }
+    }
+    setReinicio('Sin respuesta. ¿Está encendido el ordenador del centro?')
+  }
+
   const primaryAction = () => {
     if (selPending) sendProposal()
     else if (overrideAction) sendSecretaryAction()   // acción sin propuesta previa
@@ -5711,6 +5775,11 @@ function BotCoach() {
           {togglingPause && <span style={{fontSize:11,color:'var(--text-muted)'}}>…</span>}
         </div>
       )}
+      <div className="card" style={{padding:'12px 16px',display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        <div style={{fontSize:13,fontWeight:700}}>Bot colgado</div>
+        <Btn variant="ghost" onClick={pedirReinicio} disabled={reinicio==='esperando'}>{reinicio==='esperando'?'Reiniciando…':'🔄 Reiniciar bot'}</Btn>
+        {reinicio&&reinicio!=='esperando'&&<span style={{fontSize:12,color:'var(--text-muted)'}}>{reinicio}</span>}
+      </div>
 
       {/* Filtros */}
       <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
