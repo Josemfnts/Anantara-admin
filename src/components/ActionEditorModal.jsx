@@ -164,7 +164,11 @@ export function ActionEditorModal({
   // del paciente (pending, sin hold) — el resto de tipos siguen viendo todas
   // las pending/confirmed futuras, como hasta ahora.
   const apptOptions = useMemo(() => (
-    type === 'descartar_propuesta' ? propuestasAnulables(patAppts, { excluirIds }) : patAppts
+    type === 'descartar_propuesta' ? propuestasAnulables(patAppts, { excluirIds })
+      // Confirmar una cita ya confirmada no hace nada, y como oferta de seguimiento
+      // falla en la cola sin que Marta lo vea. Solo se ofrecen las pendientes.
+      : (type === 'confirmar_propuesta' || type === 'confirmar_followup_oferta') ? patAppts.filter(a => a.status === 'pending')
+      : patAppts
   ), [type, patAppts, excluirIds])
 
   // Propuestas vivas anulables desde el bloque "anular también" (solo con
@@ -374,7 +378,9 @@ export function ActionEditorModal({
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '6px 10px', border: '1px dashed var(--border)', borderRadius: 6 }}>
                   {type === 'descartar_propuesta'
                     ? 'Este paciente no tiene propuestas vivas (pending sin hold) que descartar.'
-                    : 'Este paciente no tiene citas pending/confirmed futuras.'}
+                    : (type === 'confirmar_propuesta' || type === 'confirmar_followup_oferta')
+                      ? 'No tiene citas pendientes de confirmar. Si la cita ya está confirmada no hace falta acción: contesta solo con el texto.'
+                      : 'Este paciente no tiene citas pending/confirmed futuras.'}
                 </div>
               ) : (
                 <select value={selectedApptId || ''} onChange={e => { setSelectedApptId(e.target.value || null); setUserEditedText(false) }}
