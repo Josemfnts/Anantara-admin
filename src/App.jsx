@@ -22,6 +22,9 @@ import { AutonomiaPage } from './components/AutonomiaPage.jsx'
 import { conversationPayloadFor } from './lib/newConversation.js'
 import { normBusqueda } from './lib/busqueda.js'
 import { ProposalCalendar } from './components/ProposalCalendar.jsx'
+import { EscaladaPage } from './components/EscaladaPage.jsx'
+import { BellezaPage } from './components/BellezaPage.jsx'
+import { etiquetaSeccion } from './lib/clases.js'
 
 const sb = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -175,6 +178,7 @@ function Sp(){return<div style={{display:'flex',alignItems:'center',justifyConte
 function Em({icon='📋',title,sub}){return<div className="empty-state"><div className="empty-state-icon">{icon}</div>{title&&<div className="empty-state-title">{title}</div>}{sub&&<div className="empty-state-sub">{sub}</div>}</div>}
 function Bg({variant='gray',children}){return<span className={`badge badge-${variant}`}>{children}</span>}
 function Toggle({on,onChange}){return<button className={`toggle ${on?'on':'off'}`}onClick={()=>onChange(!on)}><span className="toggle-knob"/></button>}
+const UI={get Btn(){return Btn},get Inp(){return Inp},get Sel(){return Sel},get Modal(){return Modal},get Sp(){return Sp},get Em(){return Em},get Bg(){return Bg},get Toggle(){return Toggle},get Toast(){return Toast}}
 function Toast({msg,type='ok',onDone}){useEffect(()=>{const t=setTimeout(onDone,3000);return()=>clearTimeout(t)},[onDone]);return<div className={`toast${type==='error'?' error':''}`}>{msg}</div>}
 
 // ─── Login ────────────────────────────────────────────────────────────────────
@@ -3643,10 +3647,10 @@ function Pacientes(){
     setHistLoad(true)
     const[appts,bookings]=await Promise.all([
       sb.from('appointments').select('id,starts_at,status,professionals(name),services(name)').eq('patient_id',patId).order('starts_at',{ascending:false}).limit(20),
-      sb.from('bookings').select('id,status,created_at,availability_slots(starts_at,services(name))').eq('patient_id',patId).order('created_at',{ascending:false}).limit(10),
+      sb.from('bookings').select('id,status,created_at,availability_slots(starts_at,services(name,section))').eq('patient_id',patId).order('created_at',{ascending:false}).limit(10),
     ])
     const a=(appts.data||[]).map(x=>({id:x.id,type:'osteo',typeLabel:'Osteopatía',name:x.services?.name||'Osteopatía',pro:x.professionals?.name,date:x.starts_at,status:x.status}))
-    const b=(bookings.data||[]).map(x=>{const name=x.availability_slots?.services?.name||'Clase';return{id:x.id,type:name.toLowerCase().includes('yoga')?'yoga':'belleza',typeLabel:name.toLowerCase().includes('yoga')?'Yoga':'Belleza',name,date:x.availability_slots?.starts_at||x.created_at,status:x.status}})
+    const b=(bookings.data||[]).map(x=>{const sec=x.availability_slots?.services?.section;const name=x.availability_slots?.services?.name||'Clase';return{id:x.id,type:sec==='yoga'?'yoga':sec==='beauty'?'belleza':'escalada',typeLabel:etiquetaSeccion(sec),name,date:x.availability_slots?.starts_at||x.created_at,status:x.status}})
     setHistory([...a,...b].sort((x,y)=>new Date(y.date)-new Date(x.date)));setHistLoad(false)
   }
 
@@ -3760,7 +3764,7 @@ function Pacientes(){
         {histLoad?[1,2,3].map(i=><div key={i}className="skel"style={{height:64,marginBottom:8,borderRadius:12}}/>)
         :history.length===0?<Em icon="📋"title="Sin historial"sub="Este paciente no tiene citas registradas"/>
         :history.map(item=><div key={`${item.type}-${item.id}`}style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',background:'var(--white)',borderRadius:'var(--radius-lg)',border:'1px solid var(--border)',marginBottom:8}}>
-          <Bg variant={item.type==='osteo'?'green':item.type==='yoga'?'gold':'purple'}>{item.typeLabel}</Bg>
+          <Bg variant={item.type==='osteo'?'green':item.type==='yoga'?'gold':item.type==='escalada'?'blue':'purple'}>{item.typeLabel}</Bg>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:13,fontWeight:700}}>{item.name}{item.pro?` · ${item.pro}`:''}</div>
             <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>{fDT(item.date)}</div>
@@ -3796,173 +3800,6 @@ function Pacientes(){
   </div>
 }
 
-// ─── Belleza Admin ────────────────────────────────────────────────────────────
-function BellezaAdmin(){
-  const[tab,setTab]=useState('espera')
-  const[requests,setRequests]=useState([])
-  const[sessions,setSessions]=useState([])
-  const[loading,setLoading]=useState(true)
-  const[toast,setToast]=useState(null)
-  const[modal,setModal]=useState(null)
-  const[sessionDate,setSessionDate]=useState('')
-  const[selected,setSelected]=useState(new Set())
-  const[saving,setSaving]=useState(false)
-  const[sending,setSending]=useState(null)
-
-  const load=useCallback(async()=>{
-    setLoading(true)
-    const{data}=await sb.from('beauty_requests')
-      .select('id,status,session_date,session_time,created_at,patients(id,full_name,phone),services(id,name)')
-      .in('status',tab==='espera'?['waiting']:['confirmed'])
-      .order('created_at')
-    if(tab==='espera'){
-      setRequests(data||[])
-    } else {
-      const groups={}
-      for(const r of (data||[])){
-        const key=`${r.session_date}__${r.services?.id}`
-        if(!groups[key]) groups[key]={date:r.session_date,service:r.services,patients:[]}
-        groups[key].patients.push({...r.patients,reqId:r.id,session_time:r.session_time||''})
-      }
-      setSessions(Object.values(groups).sort((a,b)=>a.date<b.date?-1:1))
-    }
-    setLoading(false)
-  },[tab])
-  useEffect(()=>{load()},[load])
-
-  const byService={}
-  for(const r of requests){
-    const sid=r.services?.id
-    if(!byService[sid]) byService[sid]={service:r.services,patients:[]}
-    byService[sid].patients.push({...r.patients,reqId:r.id})
-  }
-  const groups=Object.values(byService)
-
-  const openModal=g=>{setModal(g);setSessionDate('');setSelected(new Set(g.patients.map(p=>p.reqId)))}
-
-  const createSession=async()=>{
-    if(!sessionDate||selected.size===0)return
-    setSaving(true)
-    const{error}=await sb.from('beauty_requests').update({status:'confirmed',session_date:sessionDate}).in('id',[...selected])
-    setSaving(false)
-    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    setModal(null)
-    setToast({msg:`Sesión creada · ${selected.size} paciente${selected.size!==1?'s':''} confirmado${selected.size!==1?'s':''}`,type:'ok'})
-    load()
-  }
-
-  const cancelRequest=async id=>{
-    await sb.from('beauty_requests').update({status:'cancelled'}).eq('id',id)
-    setToast({msg:'Solicitud cancelada',type:'ok'}); load()
-  }
-
-  const cancelSession=async s=>{
-    const ids=s.patients.map(p=>p.reqId)
-    const{error}=await sb.from('beauty_requests').update({status:'waiting',session_date:null,session_time:null}).in('id',ids)
-    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    setToast({msg:'Sesión cancelada',type:'ok'}); load()
-  }
-
-  const saveTime=async(reqId,time)=>{
-    await sb.from('beauty_requests').update({session_time:time||null}).eq('id',reqId)
-  }
-
-  const sendWhatsApp=async s=>{
-    const msgs=s.patients.filter(p=>p.session_time).map(p=>({
-      phone:p.phone,
-      text:`Hola ${p.full_name} 👋\n\nTe confirmamos tu cita de *${s.service?.name}* el *${fD(s.date)}* a las *${p.session_time?.slice(0,5)}*.\n\n¡Te esperamos en Anantara! 🌿`
-    }))
-    if(msgs.length===0){setToast({msg:'Asigna horas antes de enviar',type:'error'});return}
-    setSending(s.date+'__'+s.service?.id)
-    try{
-      const res=await botFetch('/send-beauty',{method:'POST',body:JSON.stringify({messages:msgs})})
-      if(!res.ok)throw new Error(await res.text())
-      setToast({msg:`${msgs.length} mensaje${msgs.length!==1?'s':''} enviado${msgs.length!==1?'s':''}`,type:'ok'})
-    }catch(e){
-      setToast({msg:'Error al enviar: '+e.message,type:'error'})
-    }finally{setSending(null)}
-  }
-
-  return<>
-    {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
-    <div className="section-header">
-      <span className="section-title">Belleza</span>
-      <div className="tab-pills"style={{margin:0}}>
-        {[['espera','Lista de espera'],['sesiones','Sesiones']].map(([id,l])=>
-          <button key={id}className={`tab-pill ${tab===id?'active':''}`}onClick={()=>setTab(id)}>{l}</button>
-        )}
-      </div>
-    </div>
-
-    {loading&&<Sp/>}
-
-    {!loading&&tab==='espera'&&(groups.length===0
-      ?<Em icon="✨"title="Sin solicitudes"sub="Nadie está esperando ningún servicio"/>
-      :groups.map(g=><div key={g.service?.id}className="card"style={{padding:'16px 20px',marginBottom:12}}>
-          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
-            <div>
-              <div style={{fontWeight:700,fontSize:15}}>{g.service?.name}</div>
-              <div style={{fontSize:12,color:'var(--text-muted)',marginTop:2}}>{g.patients.length} persona{g.patients.length!==1?'s':''} esperando</div>
-            </div>
-            <Btn onClick={()=>openModal(g)}>Crear sesión</Btn>
-          </div>
-          <div style={{display:'flex',flexDirection:'column',gap:6}}>
-            {g.patients.map(p=><div key={p.reqId}style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',background:'var(--cream)',borderRadius:8}}>
-              <div><div style={{fontSize:13,fontWeight:600}}>{p.full_name}</div><div style={{fontSize:11,color:'var(--text-muted)'}}>{p.phone}</div></div>
-              <Btn variant="ghost"style={{padding:'4px 10px',fontSize:11}}onClick={()=>cancelRequest(p.reqId)}>Cancelar</Btn>
-            </div>)}
-          </div>
-        </div>
-      )
-    )}
-
-    {!loading&&tab==='sesiones'&&(sessions.length===0
-      ?<Em icon="📅"title="Sin sesiones"sub="Aún no hay sesiones creadas"/>
-      :sessions.map((s,i)=>{
-        const key=s.date+'__'+s.service?.id
-        const isSending=sending===key
-        return<div key={i}className="card"style={{padding:'16px 20px',marginBottom:12}}>
-          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:2}}>
-            <div style={{fontWeight:700,fontSize:15}}>{s.service?.name}</div>
-            <Btn variant="ghost"style={{padding:'4px 10px',fontSize:11,color:'var(--red)'}}onClick={()=>cancelSession(s)}>Cancelar sesión</Btn>
-          </div>
-          <div style={{fontSize:13,color:'var(--text-muted)',marginBottom:12}}>📅 {fD(s.date)}</div>
-          <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:14}}>
-            {s.patients.map((p,j)=><div key={j}style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',background:'var(--cream)',borderRadius:8}}>
-              <div className="pac-avatar"style={{width:32,height:32,fontSize:12}}>{p?.full_name?.slice(0,2).toUpperCase()||'?'}</div>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:13,fontWeight:600}}>{p?.full_name||'—'}</div>
-                <div style={{fontSize:11,color:'var(--text-muted)'}}>{p?.phone}</div>
-              </div>
-              <input type="time"defaultValue={p.session_time?.slice(0,5)||''}
-                style={{border:'1px solid var(--border)',borderRadius:6,padding:'4px 8px',fontSize:12,color:'var(--text)',background:'white',width:90}}
-                onBlur={e=>saveTime(p.reqId,e.target.value)}/>
-            </div>)}
-          </div>
-          <Btn onClick={()=>sendWhatsApp(s)}disabled={isSending}style={{width:'100%'}}>
-            {isSending?'Enviando…':'📲 Enviar citas por WhatsApp'}
-          </Btn>
-        </div>
-      })
-    )}
-
-    {modal&&<Modal title={`Crear sesión — ${modal.service?.name}`}onClose={()=>setModal(null)}>
-      <Inp label="Fecha de la sesión"type="date"value={sessionDate}onChange={e=>setSessionDate(e.target.value)}/>
-      <div style={{marginTop:12,marginBottom:8,fontWeight:700,fontSize:13}}>Pacientes a incluir</div>
-      <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:16}}>
-        {modal.patients.map(p=><label key={p.reqId}style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',background:'var(--cream)',borderRadius:8,cursor:'pointer'}}>
-          <input type="checkbox"checked={selected.has(p.reqId)}onChange={e=>{setSelected(prev=>{const s=new Set(prev);e.target.checked?s.add(p.reqId):s.delete(p.reqId);return s})}}/>
-          <div><div style={{fontSize:13,fontWeight:600}}>{p.full_name}</div><div style={{fontSize:11,color:'var(--text-muted)'}}>{p.phone}</div></div>
-        </label>)}
-      </div>
-      <div style={{display:'flex',gap:10}}>
-        <Btn variant="ghost"onClick={()=>setModal(null)}style={{flex:1}}>Cancelar</Btn>
-        <Btn onClick={createSession}disabled={!sessionDate||selected.size===0||saving}style={{flex:1}}>{saving?'Guardando…':'Crear sesión'}</Btn>
-      </div>
-    </Modal>}
-  </>
-}
-
 // ─── Servicios ────────────────────────────────────────────────────────────────
 function Servicios(){
   const[items,setItems]=useState([])
@@ -3975,7 +3812,7 @@ function Servicios(){
   const[saving,setSaving]=useState(false)
   const[toast,setToast]=useState(null)
   const CATS=[['osteopathy','Osteopatía'],['yoga','Yoga'],['escalada','Escalada'],['beauty','Belleza']]
-  const CAT_CLS={osteopathy:'osteopatia',yoga:'yoga',beauty:'belleza'}
+  const CAT_CLS={osteopathy:'osteopatia',yoga:'yoga',escalada:'yoga',beauty:'belleza'}
 
   const load=useCallback(async()=>{
     setLoading(true)
@@ -4157,7 +3994,7 @@ function Profesionales(){
   }
 
   const upd=e=>setForm(f=>({...f,[e.target.name]:e.target.value}))
-  const SPECIALTIES=['Osteópata','Fisioterapeuta','Terapeuta','Instructora de Yoga','Esteticista','Masajista','Nutricionista','Otro']
+  const SPECIALTIES=['Osteópata','Fisioterapeuta','Terapeuta','Instructora de Yoga','Monitor de escalada','Esteticista','Masajista','Nutricionista','Otro']
 
   return<>
     <div className="section-header">
@@ -4245,270 +4082,6 @@ function Profesionales(){
       <div style={{display:'flex',gap:10}}>
         <Btn variant="ghost" onClick={()=>setDelConfirm(null)} style={{flex:1}}>Cancelar</Btn>
         <Btn variant="danger" onClick={()=>del(delConfirm)} style={{flex:1}}>Eliminar</Btn>
-      </div>
-    </Modal>}
-  </>
-}
-
-// ─── Escalada ─────────────────────────────────────────────────────────────────
-function Escalada({onNav}){
-  const[tab,setTab]=useState('clases')
-  const[slotsTab,setSlotsTab]=useState('upcoming')
-  const[slots,setSlots]=useState([])
-  const[templates,setTemplates]=useState([])
-  const[services,setServices]=useState([])
-  const[professionals,setProfessionals]=useState([])
-  const[loading,setLoading]=useState(true)
-  const[tplModal,setTplModal]=useState(null)
-  const[slotModal,setSlotModal]=useState(null)
-  const[bookingsModal,setBookingsModal]=useState(null)
-  const[cancelModal,setCancelModal]=useState(null)
-  const[toast,setToast]=useState(null)
-  const[saving,setSaving]=useState(false)
-  const DAYS=['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
-  const QHOURS=Array.from({length:(21-7)*4+1},(_,i)=>{const h=7+Math.floor(i/4),m=(i%4)*15;return`${pad(h)}:${pad(m)}`})
-  const EMPTY_TPL={day_of_week:2,start_time:'17:00',end_time:'18:30',max_bookings:10,service_id:'',professional_id:'',is_active:true}
-  const[tplForm,setTplForm]=useState(EMPTY_TPL)
-  const[slotForm,setSlotForm]=useState({date:'',start_time:'',end_time:'',max_bookings:10,service_id:'',professional_id:''})
-
-  const load=useCallback(async()=>{
-    setLoading(true)
-    const now=localDT(new Date())
-    const[{data:svcs},{data:profs},{data:tpls}]=await Promise.all([
-      sb.from('services').select('id,name,duration_minutes').eq('section','escalada').eq('is_active',true),
-      sb.from('professionals').select('id,name').eq('is_active',true).order('name',{ascending:false}),
-      sb.from('class_templates').select('*,services(name),professionals(name)').eq('section','escalada').order('day_of_week').order('start_time'),
-    ])
-    setServices(svcs||[])
-    setProfessionals(profs||[])
-    setTemplates(tpls||[])
-    // Filtrar las clases por los SERVICIOS de escalada (robusto), no por
-    // template_id: así aparecen tanto las generadas por plantilla como las
-    // creadas directamente con "+ Nueva clase". Mismo criterio que yoga.
-    const svcIds=(svcs||[]).map(s=>s.id)
-    if(svcIds.length===0){setSlots([]);setLoading(false);return}
-    let q=sb.from('availability_slots')
-      .select('id,starts_at,ends_at,max_bookings,is_published,template_id,professionals(id,name),services(id,name),bookings(id,status,patients(full_name,phone))')
-      .in('service_id',svcIds)
-      .order('starts_at',{ascending:slotsTab==='upcoming'})
-    if(slotsTab==='upcoming') q=q.gte('starts_at',now); else q=q.lt('starts_at',now)
-    const{data:sl}=await q.limit(40)
-    setSlots((sl||[]).map(s=>({...s,booked:(s.bookings||[]).filter(b=>b.status!=='cancelled').length})))
-    setLoading(false)
-  },[slotsTab])
-
-  useEffect(()=>{load()},[load])
-
-  const saveTpl=async()=>{
-    if(!tplForm.service_id||!tplForm.professional_id){setToast({msg:'Selecciona servicio y profesional',type:'error'});return}
-    setSaving(true)
-    const payload={section:'escalada',day_of_week:Number(tplForm.day_of_week),start_time:tplForm.start_time+':00',end_time:tplForm.end_time+':00',max_bookings:Number(tplForm.max_bookings),service_id:tplForm.service_id,professional_id:tplForm.professional_id,is_active:tplForm.is_active}
-    let error
-    if(tplModal?.id)({error}=await sb.from('class_templates').update(payload).eq('id',tplModal.id))
-    else({error}=await sb.from('class_templates').insert(payload))
-    setSaving(false)
-    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    setTplModal(null);setToast({msg:tplModal?.id?'Plantilla actualizada':'Plantilla creada',type:'ok'});load()
-  }
-
-  const deleteTpl=async id=>{
-    const{error}=await sb.from('class_templates').delete().eq('id',id)
-    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    setToast({msg:'Plantilla eliminada',type:'ok'});load()
-  }
-
-  const generateFromTpl=async(tpl,weeks=8)=>{
-    const today=new Date()
-    const end=new Date(today.getTime()+weeks*7*86400000)
-    const dates=[]
-    for(let d=new Date(today);d<=end;d.setDate(d.getDate()+1)){
-      if(d.getDay()===tpl.day_of_week) dates.push(`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`)
-    }
-    const{data:existing}=await sb.from('availability_slots').select('starts_at').eq('template_id',tpl.id).gte('starts_at',today.toISOString().slice(0,10))
-    const existingDates=new Set((existing||[]).map(s=>s.starts_at.slice(0,10)))
-    const toCreate=dates.filter(d=>!existingDates.has(d)).map(d=>({
-      service_id:tpl.service_id,professional_id:tpl.professional_id,
-      starts_at:`${d}T${tpl.start_time.slice(0,5)}:00`,
-      ends_at:`${d}T${tpl.end_time.slice(0,5)}:00`,
-      max_bookings:tpl.max_bookings,is_published:false,template_id:tpl.id,
-    }))
-    if(toCreate.length===0){setToast({msg:'Todas las clases ya existen para ese periodo',type:'ok'});return}
-    const{error}=await sb.from('availability_slots').insert(toCreate)
-    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    setToast({msg:`${toCreate.length} clase${toCreate.length!==1?'s':''} generada${toCreate.length!==1?'s':''}`,type:'ok'});load()
-  }
-
-  // Crea (slotModal==='new') o edita una clase individual (availability_slot).
-  const saveSlot=async()=>{
-    if(!slotForm.date||!slotForm.start_time||!slotForm.end_time)return
-    const isNew=slotModal==='new'
-    if(isNew&&(!slotForm.service_id||!slotForm.professional_id)){setToast({msg:'Selecciona servicio y profesional',type:'error'});return}
-    setSaving(true)
-    const base={
-      starts_at:`${slotForm.date}T${slotForm.start_time}:00`,
-      ends_at:`${slotForm.date}T${slotForm.end_time}:00`,
-      max_bookings:Number(slotForm.max_bookings),
-    }
-    let error
-    if(isNew)({error}=await sb.from('availability_slots').insert({...base,service_id:slotForm.service_id,professional_id:slotForm.professional_id,is_published:false,template_id:null}))
-    else({error}=await sb.from('availability_slots').update(base).eq('id',slotModal.id))
-    setSaving(false)
-    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    setSlotModal(null);setToast({msg:isNew?'Clase creada':'Clase actualizada',type:'ok'});load()
-  }
-  const openNewClass=()=>{
-    setSlotForm({date:'',start_time:'17:00',end_time:'18:30',max_bookings:10,service_id:services[0]?.id||'',professional_id:professionals[0]?.id||''})
-    setSlotModal('new')
-  }
-
-  const deleteSlot=async id=>{
-    const{error}=await sb.from('availability_slots').delete().eq('id',id)
-    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
-    setToast({msg:'Clase eliminada',type:'ok'});load()
-  }
-
-  const cancelClass=async slot=>{
-    await sb.from('availability_slots').update({is_published:false}).eq('id',slot.id)
-    await sb.from('bookings').update({status:'cancelled',cancelled_by:'secretary'}).eq('slot_id',slot.id).neq('status','cancelled')
-    setCancelModal(null);setToast({msg:'Clase cancelada',type:'ok'});load()
-  }
-
-  const togglePublish=async slot=>{
-    await sb.from('availability_slots').update({is_published:!slot.is_published}).eq('id',slot.id)
-    setToast({msg:slot.is_published?'Clase ocultada':'Clase publicada',type:'ok'});load()
-  }
-
-  if(loading)return<Sp/>
-  return<>
-    {toast&&<Toast msg={toast.msg}type={toast.type}onDone={()=>setToast(null)}/>}
-    <div className="section-header">
-      <span className="section-title">Escalada</span>
-      <div className="tab-pills"style={{margin:0}}>
-        <button className={`tab-pill${tab==='clases'?' active':''}`}onClick={()=>setTab('clases')}>Clases</button>
-        <button className={`tab-pill${tab==='plantillas'?' active':''}`}onClick={()=>setTab('plantillas')}>Plantillas recurrentes</button>
-      </div>
-    </div>
-
-    {services.length===0&&<div style={{background:'#fffbeb',border:'1px solid #fde68a',borderRadius:10,padding:'12px 14px',marginBottom:12,fontSize:13,color:'#92400e',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-      <span>⚠ No hay servicios de escalada, así que no se pueden crear clases todavía. Crea uno en <strong>Servicios</strong> (sección Escalada).</span>
-      {onNav&&<Btn variant="ghost"style={{padding:'4px 10px',fontSize:12}}onClick={()=>onNav('servicios')}>Ir a Servicios</Btn>}
-    </div>}
-
-    {tab==='plantillas'&&<>
-      <div style={{display:'flex',justifyContent:'flex-end',marginBottom:12}}>
-        <Btn onClick={()=>{setTplForm({...EMPTY_TPL,service_id:services[0]?.id||'',professional_id:professionals[0]?.id||''});setTplModal('new')}}>+ Nueva plantilla</Btn>
-      </div>
-      {templates.length===0
-        ?<Em icon="🔁"title="Sin plantillas"sub="Crea una plantilla para generar clases recurrentes"/>
-        :<div className="card"style={{overflow:'hidden'}}>
-          {templates.map(tpl=><div key={tpl.id}style={{display:'flex',alignItems:'center',gap:12,padding:'14px 16px',borderBottom:'1px solid var(--border)'}}>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:8}}>
-                {DAYS[tpl.day_of_week]}s · {tpl.start_time?.slice(0,5)} – {tpl.end_time?.slice(0,5)}
-                <Bg variant={tpl.is_active?'green':'gray'}>{tpl.is_active?'Activa':'Pausada'}</Bg>
-              </div>
-              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>
-                {tpl.services?.name||'—'} · {tpl.professionals?.name||'—'} · {tpl.max_bookings} plazas
-              </div>
-            </div>
-            <div style={{display:'flex',gap:6,flexWrap:'wrap',justifyContent:'flex-end'}}>
-              <Btn variant="ghost"style={{padding:'4px 10px',fontSize:11}}onClick={()=>generateFromTpl(tpl,8)}>⚡ Generar 8 sem.</Btn>
-              <Btn variant="ghost"style={{padding:'4px 10px',fontSize:11}}onClick={()=>{setTplForm({day_of_week:tpl.day_of_week,start_time:tpl.start_time?.slice(0,5),end_time:tpl.end_time?.slice(0,5),max_bookings:tpl.max_bookings,service_id:tpl.service_id||'',professional_id:tpl.professional_id||'',is_active:tpl.is_active});setTplModal(tpl)}}>✏️</Btn>
-              <Toggle on={tpl.is_active}onChange={async()=>{await sb.from('class_templates').update({is_active:!tpl.is_active}).eq('id',tpl.id);load()}}/>
-              <Btn variant="danger"style={{padding:'4px 10px',fontSize:11}}onClick={()=>deleteTpl(tpl.id)}>🗑</Btn>
-            </div>
-          </div>)}
-        </div>}
-    </>}
-
-    {tab==='clases'&&<>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-        <div className="tab-pills"style={{margin:0}}>
-          {[['upcoming','Próximas'],['past','Pasadas']].map(([id,l])=><button key={id}className={`tab-pill${slotsTab===id?' active':''}`}onClick={()=>setSlotsTab(id)}>{l}</button>)}
-        </div>
-        <Btn onClick={openNewClass}disabled={services.length===0}title={services.length===0?'Primero crea un servicio de escalada':'Crear una clase individual'}>+ Nueva clase</Btn>
-      </div>
-      <div className="card"style={{overflow:'hidden'}}>
-        {slots.length===0
-          ?<Em icon="🧗"title="Sin clases"sub={`No hay clases ${slotsTab==='upcoming'?'próximas':'pasadas'}. Crea una con "+ Nueva clase" o genera varias desde Plantillas.`}/>
-          :slots.map(slot=>{
-            const pct=slot.max_bookings>0?Math.round(slot.booked/slot.max_bookings*100):0
-            return<div key={slot.id}className="slot-card">
-              <div className="slot-info">
-                <div className="slot-title">{slot.services?.name||'Escalada'}</div>
-                <div className="slot-meta">{fDT(slot.starts_at)} · {slot.professionals?.name||''}{slot.professionals?.name?' · ':''}{slot.booked}/{slot.max_bookings} reservas</div>
-                <div className="slot-bar"><div className="slot-bar-fill"style={{width:`${pct}%`}}/></div>
-              </div>
-              <div style={{display:'flex',flexDirection:'column',gap:4,alignItems:'flex-end'}}>
-                <Bg variant={slot.is_published?'green':'gray'}>{slot.is_published?'Publicada':'Borrador'}</Bg>
-                <div style={{display:'flex',gap:4,marginTop:4}}>
-                  <Btn variant="ghost"style={{padding:'4px 8px',fontSize:11}}onClick={()=>setBookingsModal(slot)}>👥 {slot.booked}</Btn>
-                  <Btn variant="ghost"style={{padding:'4px 8px',fontSize:11}}onClick={()=>{setSlotForm({date:slot.starts_at?.slice(0,10)||'',start_time:slot.starts_at?.slice(11,16)||'',end_time:slot.ends_at?.slice(11,16)||'',max_bookings:slot.max_bookings});setSlotModal(slot)}}>✏️</Btn>
-                  <Btn variant={slot.is_published?'secondary':'primary'}style={{padding:'4px 8px',fontSize:11}}onClick={()=>togglePublish(slot)}>{slot.is_published?'Ocultar':'Publicar'}</Btn>
-                  {slot.booked>0&&<Btn variant="danger"style={{padding:'4px 8px',fontSize:11}}onClick={()=>setCancelModal(slot)}>Cancelar</Btn>}
-                  <Btn variant="danger"style={{padding:'4px 8px',fontSize:11}}onClick={()=>deleteSlot(slot.id)}>🗑</Btn>
-                </div>
-              </div>
-            </div>
-          })}
-      </div>
-    </>}
-
-    {tplModal&&<Modal title={tplModal?.id?'Editar plantilla':'Nueva plantilla recurrente'}onClose={()=>setTplModal(null)}>
-      <Sel label="Servicio"value={tplForm.service_id}onChange={e=>setTplForm(f=>({...f,service_id:e.target.value}))}options={[['','Seleccionar…'],...services.map(s=>[s.id,s.name])]}/>
-      <Sel label="Profesional / Monitor"value={tplForm.professional_id}onChange={e=>setTplForm(f=>({...f,professional_id:e.target.value}))}options={[['','Seleccionar…'],...professionals.map(p=>[p.id,p.name])]}/>
-      <Sel label="Día de la semana"value={String(tplForm.day_of_week)}onChange={e=>setTplForm(f=>({...f,day_of_week:Number(e.target.value)}))}options={DAYS.map((d,i)=>[String(i),d]).filter(([i])=>i>='1'&&i<='6')}/>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10}}>
-        <Sel label="Hora inicio"value={tplForm.start_time}onChange={e=>setTplForm(f=>({...f,start_time:e.target.value}))}options={QHOURS.map(h=>[h,h])}/>
-        <Sel label="Hora fin"value={tplForm.end_time}onChange={e=>setTplForm(f=>({...f,end_time:e.target.value}))}options={QHOURS.map(h=>[h,h])}/>
-        <Inp label="Plazas máx."type="number"min={1}value={tplForm.max_bookings}onChange={e=>setTplForm(f=>({...f,max_bookings:e.target.value}))}/>
-      </div>
-      <label style={{display:'flex',alignItems:'center',gap:10,fontSize:13,marginBottom:16,cursor:'pointer'}}>
-        <Toggle on={tplForm.is_active}onChange={v=>setTplForm(f=>({...f,is_active:v}))}/>
-        Plantilla activa
-      </label>
-      <div style={{display:'flex',gap:10}}>
-        <Btn variant="ghost"onClick={()=>setTplModal(null)}style={{flex:1}}>Cancelar</Btn>
-        <Btn onClick={saveTpl}disabled={!tplForm.service_id||!tplForm.professional_id||saving}style={{flex:1}}>{saving?'Guardando…':'Guardar'}</Btn>
-      </div>
-    </Modal>}
-
-    {slotModal&&<Modal title={slotModal==='new'?'Nueva clase':'Editar clase individual'}onClose={()=>setSlotModal(null)}>
-      <p style={{fontSize:12,color:'var(--text-muted)',marginBottom:12}}>{slotModal==='new'?'Clase suelta (no recurrente). Para varias semanas, usa Plantillas recurrentes.':'Solo modifica esta clase. No afecta a la plantilla ni al resto de semanas.'}</p>
-      {slotModal==='new'&&<>
-        <Sel label="Servicio"value={slotForm.service_id}onChange={e=>setSlotForm(f=>({...f,service_id:e.target.value}))}options={[['','Seleccionar…'],...services.map(s=>[s.id,s.name])]}/>
-        <Sel label="Profesional / Monitor"value={slotForm.professional_id}onChange={e=>setSlotForm(f=>({...f,professional_id:e.target.value}))}options={[['','Seleccionar…'],...professionals.map(p=>[p.id,p.name])]}/>
-      </>}
-      <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr',gap:10}}>
-        <Inp label="Fecha"type="date"value={slotForm.date}onChange={e=>setSlotForm(f=>({...f,date:e.target.value}))}/>
-        <Sel label="Hora inicio"value={slotForm.start_time}onChange={e=>setSlotForm(f=>({...f,start_time:e.target.value}))}options={[['','--:--'],...QHOURS.map(h=>[h,h])]}/>
-        <Sel label="Hora fin"value={slotForm.end_time}onChange={e=>setSlotForm(f=>({...f,end_time:e.target.value}))}options={[['','--:--'],...QHOURS.map(h=>[h,h])]}/>
-      </div>
-      <Inp label="Plazas máximas"type="number"min={1}value={slotForm.max_bookings}onChange={e=>setSlotForm(f=>({...f,max_bookings:e.target.value}))}style={{marginTop:10}}/>
-      <div style={{display:'flex',gap:10,marginTop:16}}>
-        <Btn variant="ghost"onClick={()=>setSlotModal(null)}style={{flex:1}}>Cancelar</Btn>
-        <Btn onClick={saveSlot}disabled={!slotForm.date||!slotForm.start_time||!slotForm.end_time||(slotModal==='new'&&(!slotForm.service_id||!slotForm.professional_id))||saving}style={{flex:1}}>{saving?'Guardando…':'Guardar'}</Btn>
-      </div>
-    </Modal>}
-
-    {bookingsModal&&<Modal title={`Reservas — ${bookingsModal.services?.name}`}onClose={()=>setBookingsModal(null)}>
-      <div style={{marginBottom:14,fontSize:13,color:'var(--text-muted)'}}>{fDT(bookingsModal.starts_at)} · {bookingsModal.booked}/{bookingsModal.max_bookings} plazas</div>
-      {(bookingsModal.bookings||[]).filter(b=>b.status!=='cancelled').length===0?<Em icon="👥"title="Sin reservas"/>
-      :(bookingsModal.bookings||[]).filter(b=>b.status!=='cancelled').map(b=><div key={b.id}style={{display:'flex',alignItems:'center',gap:10,padding:'10px 0',borderBottom:'1px solid var(--border)'}}>
-        <div className="pac-avatar">{b.patients?.full_name?.slice(0,2).toUpperCase()||'?'}</div>
-        <div><div style={{fontSize:13,fontWeight:700}}>{b.patients?.full_name||'—'}</div><div style={{fontSize:11,color:'var(--text-muted)'}}>{b.patients?.phone||'Sin teléfono'}</div></div>
-      </div>)}
-      <Btn variant="ghost"onClick={()=>setBookingsModal(null)}style={{width:'100%',marginTop:16}}>Cerrar</Btn>
-    </Modal>}
-
-    {cancelModal&&<Modal title="¿Cancelar esta clase?"onClose={()=>setCancelModal(null)}>
-      <p style={{fontSize:13,color:'var(--text-muted)',marginBottom:16,lineHeight:1.6}}>
-        Se cancelará la clase del <strong>{fDT(cancelModal.starts_at)}</strong>.<br/>
-        Las <strong>{cancelModal.booked} reserva{cancelModal.booked!==1?'s':''}</strong> activas también se cancelarán.
-      </p>
-      <div style={{display:'flex',gap:10}}>
-        <Btn variant="ghost"onClick={()=>setCancelModal(null)}style={{flex:1}}>Volver</Btn>
-        <Btn variant="danger"onClick={()=>cancelClass(cancelModal)}style={{flex:1}}>Cancelar clase</Btn>
       </div>
     </Modal>}
   </>
@@ -6771,8 +6344,8 @@ export default function App(){
       case 'bloqueados': return<Bloqueados/>
       case 'espera':     return<Espera/>
       case 'yoga':       return<SlotsManager section="yoga"/>
-      case 'escalada':   return<Escalada onNav={navigate}/>
-      case 'belleza':    return<BellezaAdmin/>
+      case 'escalada':   return<EscaladaPage sb={sb} botFetch={botFetch} ui={UI} onNav={navigate}/>
+      case 'belleza':    return<BellezaPage sb={sb} botFetch={botFetch} ui={UI} onNav={navigate}/>
       case 'pacientes':     return<Pacientes/>
       case 'profesionales': return<Profesionales/>
       case 'servicios':     return<Servicios/>
