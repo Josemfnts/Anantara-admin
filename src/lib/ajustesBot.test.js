@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { leerLista, normalizarTelefono, anadirALista, diasVigentes, horaPropuestaOmitida } from './ajustesBot.js'
+import { leerLista, normalizarTelefono, anadirALista, diasVigentes, horaPropuestaOmitida, conReintento, esFalloDeRed } from './ajustesBot.js'
 
 describe('leerLista', () => {
   it('lee JSON y aguanta basura', () => {
@@ -50,5 +50,27 @@ describe('horaPropuestaOmitida', () => {
   })
   it('otras acciones → nada', () => {
     expect(horaPropuestaOmitida({ type: 'cancelar_cita' }, 'x', orig)).toBeNull()
+  })
+})
+
+describe('conReintento', () => {
+  const red = { error: { message: 'TypeError: Load failed' } }
+  it('reintenta los fallos de red hasta que entra', async () => {
+    let n = 0
+    const r = await conReintento(async () => (++n < 3 ? red : { error: null }), { esperaMs: 0 })
+    expect(n).toBe(3)
+    expect(r.error).toBeNull()
+  })
+  it('no reintenta un error de la base', async () => {
+    let n = 0
+    const r = await conReintento(async () => { n++; return { error: { message: 'permission denied' } } }, { esperaMs: 0 })
+    expect(n).toBe(1)
+    expect(r.error.message).toBe('permission denied')
+  })
+  it('se rinde tras los intentos y devuelve el fallo de red', async () => {
+    let n = 0
+    const r = await conReintento(async () => { n++; return red }, { esperaMs: 0 })
+    expect(n).toBe(3)
+    expect(esFalloDeRed(r.error)).toBe(true)
   })
 })

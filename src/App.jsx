@@ -17,7 +17,7 @@ import { featuresBot } from './lib/featuresBot.js'
 import { AusenciasPage } from './components/AusenciasPage.jsx'
 import { BotMovil } from './components/BotMovil.jsx'
 import { citaEnPasado, estadoAlta, horaSiguiente } from './lib/altaCita.js'
-import { leerLista, normalizarTelefono, anadirALista, diasVigentes, horaPropuestaOmitida } from './lib/ajustesBot.js'
+import { leerLista, normalizarTelefono, anadirALista, diasVigentes, horaPropuestaOmitida, conReintento, esFalloDeRed } from './lib/ajustesBot.js'
 import { AutonomiaPage } from './components/AutonomiaPage.jsx'
 import { conversationPayloadFor } from './lib/newConversation.js'
 import { normBusqueda } from './lib/busqueda.js'
@@ -2417,8 +2417,8 @@ function Horarios(){
 
   // Guarda una lista JSON de app_config; solo toca el estado si se ha guardado.
   const guardarLista = async (key, lista, setLista, msg) => {
-    const{error}=await sb.from('app_config').upsert({key,value:JSON.stringify(lista)},{onConflict:'key'})
-    if(error){setToast({msg:'Error: '+error.message,type:'error'});return false}
+    const{error}=await conReintento(()=>sb.from('app_config').upsert({key,value:JSON.stringify(lista)},{onConflict:'key'}))
+    if(error){setToast({msg:esFalloDeRed(error)?'Sin conexión: no se ha guardado. Revisa el wifi y vuelve a darle.':'Error: '+error.message,type:'error'});return false}
     setLista(lista);setToast({msg,type:'ok'});return true
   }
   const anadirDiaSinRec = async () => {
@@ -2433,8 +2433,8 @@ function Horarios(){
   }
   const saveReminderTime = async () => {
     setSavingReminder(true)
-    const{error}=await sb.from('app_config')
-      .upsert({key:'reminder_time', value:reminderTime}, {onConflict:'key'})
+    const{error}=await conReintento(()=>sb.from('app_config')
+      .upsert({key:'reminder_time', value:reminderTime}, {onConflict:'key'}))
     setSavingReminder(false)
     if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
     setToast({msg:`Recordatorios a las ${reminderTime}`,type:'ok'})
@@ -2445,10 +2445,10 @@ function Horarios(){
   const saveD1Info = async () => {
     setSavingD1Info(true)
     const trimmed = d1Info.trim().slice(0, D1_INFO_MAX)
-    const{error}=await sb.from('app_config')
-      .upsert({key:'d1_info_primera_cita', value:trimmed}, {onConflict:'key'})
+    const{error}=await conReintento(()=>sb.from('app_config')
+      .upsert({key:'d1_info_primera_cita', value:trimmed}, {onConflict:'key'}))
     setSavingD1Info(false)
-    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    if(error){setToast({msg:esFalloDeRed(error)?'Sin conexión: no se ha guardado. Revisa el wifi y vuelve a darle.':'Error: '+error.message,type:'error'});return}
     setD1Info(trimmed)
     setToast({msg:trimmed?'Información de la primera cita guardada':'Información de la primera cita vaciada — ya no se añade nada',type:'ok'})
   }

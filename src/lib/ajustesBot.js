@@ -43,3 +43,22 @@ export function horaPropuestaOmitida(accion, textoFinal, textoOriginal) {
     || (mm === '00' && new RegExp('\\blas\\s+0?' + hh + '\\b', 'i').test(texto))
   return menciona ? null : hhmm
 }
+
+/**
+ * Error de red de supabase-js (fetch rechazado: "TypeError: Load failed" en Safari/Chrome iOS,
+ * "Failed to fetch" en Chrome). La petición no llegó a la base: reintentar es seguro en un upsert.
+ */
+export function esFalloDeRed(error) {
+  return /Load failed|Failed to fetch|NetworkError|network connection was lost/i.test(error?.message || '')
+}
+
+/** Lanza `op` (devuelve {error}) y la repite si falla la red, con espera entre intentos. */
+export async function conReintento(op, { intentos = 3, esperaMs = 800 } = {}) {
+  let r
+  for (let i = 0; i < intentos; i++) {
+    r = await op()
+    if (!esFalloDeRed(r?.error)) return r
+    if (i < intentos - 1) await new Promise(res => setTimeout(res, esperaMs * (i + 1)))
+  }
+  return r
+}
