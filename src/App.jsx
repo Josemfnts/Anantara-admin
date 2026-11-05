@@ -2317,8 +2317,20 @@ function Horarios(){
   const[waPhone,setWaPhone]=useState('')
   const[agendaTime,setAgendaTime]=useState('')
   const[reminderTime,setReminderTime]=useState('10:00')
-  const[diasSinRec,setDiasSinRec]=useState([])
-  const[diaSinRecNuevo,setDiaSinRecNuevo]=useState('')
+  // Festivos (05/11/2026): días que la clínica no abre. El bot no recuerda esos días y el
+  // último día abierto manda los del primero abierto después; además se bloquean en la
+  // agenda de cada profesional (blocked_days, motivo 'Festivo') para que no se ofrezcan.
+  const[festivos,setFestivos]=useState([])
+  const[festivoNuevo,setFestivoNuevo]=useState('')
+  // Días de CITAS cuyos recordatorios automáticos no salen (ya se mandaron a mano).
+  const[citasSinRec,setCitasSinRec]=useState([])
+  const[citaSinRecNueva,setCitaSinRecNueva]=useState('')
+  const[manualAbierto,setManualAbierto]=useState(()=>{try{return localStorage.getItem('envio_manual_abierto')==='1'}catch{return false}})
+  const plegarManual=()=>setManualAbierto(v=>{const n=!v;try{localStorage.setItem('envio_manual_abierto',n?'1':'0')}catch{/* sin storage */}return n})
+  // Reseñas (sql/0034): 5 min antes de que acabe la cita, una vez por paciente.
+  const[resenasOn,setResenasOn]=useState(false)
+  const[resenaMsg,setResenaMsg]=useState('')
+  const[resenaBusy,setResenaBusy]=useState(false)
   const[numerosIgnorados,setNumerosIgnorados]=useState([])
   const[numeroNuevo,setNumeroNuevo]=useState('')
   const[savingReminder,setSavingReminder]=useState(false)
@@ -2348,17 +2360,21 @@ function Horarios(){
   useEffect(()=>{
     sb.from('app_config').select('value').eq('key','reminder_time').maybeSingle()
       .then(({data})=>{ if(data?.value) setReminderTime(data.value) })
-    sb.from('app_config').select('value').eq('key','dias_sin_recordatorios').maybeSingle()
-      .then(({data})=>setDiasSinRec(diasVigentes(leerLista(data?.value),localDT(new Date()).slice(0,10))))
+    sb.from('app_config').select('value').eq('key','festivos').maybeSingle()
+      .then(({data})=>setFestivos(diasVigentes(leerLista(data?.value),localDT(new Date()).slice(0,10))))
+    sb.from('app_config').select('value').eq('key','citas_sin_recordatorio').maybeSingle()
+      .then(({data})=>setCitasSinRec(diasVigentes(leerLista(data?.value),localDT(new Date()).slice(0,10))))
     sb.from('app_config').select('value').eq('key','numeros_ignorados').maybeSingle()
       .then(({data})=>setNumerosIgnorados(leerLista(data?.value)))
     // ?? y no ||: si ya se guardó vacío a propósito (= no añadir nada), que no
     // se pierda por tratar '' como falsy.
     sb.from('app_config').select('value').eq('key','d1_info_primera_cita').maybeSingle()
       .then(({data})=>{ setD1Info(data?.value ?? '') })
-    sb.from('bot_config').select('vacation_mode,vacation_message,welcome_message').eq('id',1).maybeSingle()
+    sb.from('bot_config').select('vacation_mode,vacation_message,welcome_message,resenas_activas,resena_mensaje').eq('id',1).maybeSingle()
       .then(({data})=>{
         if(!data)return
+        setResenasOn(data.resenas_activas===true)
+        setResenaMsg(data.resena_mensaje ?? '')
         setVacMode(data.vacation_mode===true)
         if(data.vacation_message)setVacMsg(data.vacation_message)
         setWelcomeMsg(data.welcome_message ?? '')
@@ -2421,10 +2437,51 @@ function Horarios(){
     if(error){setToast({msg:esFalloDeRed(error)?'Sin conexión: no se ha guardado. Revisa el wifi y vuelve a darle.':'Error: '+error.message,type:'error'});return false}
     setLista(lista);setToast({msg,type:'ok'});return true
   }
-  const anadirDiaSinRec = async () => {
-    if(!diaSinRecNuevo)return
-    const lista=diasVigentes(anadirALista(diasSinRec,diaSinRecNuevo),localDT(new Date()).slice(0,10))
-    if(await guardarLista('dias_sin_recordatorios',lista,setDiasSinRec,'Ese día no saldrá ningún recordatorio'))setDiaSinRecNuevo('')
+  const anadirFestivo = async () => {
+    if(!festivoNuevo)return
+    const dia=festivoNuevo
+    const lista=diasVigentes(anadirALista(festivos,dia),localDT(new Date()).slice(0,10))
+    const{data:profs,error:pErr}=await sb.from('professionals').select('id').eq('is_active',true)
+    if(pErr){setToast({msg:'Error: '+pErr.message,type:'error'});return}
+    // ignoreDuplicates: si Marta ya lo tenía bloqueado con otro motivo, se queda el suyo.
+    const{error:bErr}=await conReintento(()=>sb.from('blocked_days').upsert((profs||[]).map(p=>({professional_id:p.id,date:dia,reason:'Festivo'})),{onConflict:'professional_id,date',ignoreDuplicates:true}))
+    if(bErr){setToast({msg:'Error bloqueando el día: '+bErr.message,type:'error'});return}
+    if(!await guardarLista('festivos',lista,setFestivos,'Festivo guardado: ese día no se dan citas ni salen recordatorios'))return
+    setFestivoNuevo('')
+    const{count}=await sb.from('appointments').select('id',{count:'exact',head:true}).in('status',['pending','confirmed']).gte('starts_at',dia+'T00:00:00').lte('starts_at',dia+'T23:59:59')
+    if(count)setToast({msg:`⚠️ Festivo guardado, pero ese día hay ${count} cita(s): muévelas o anúlalas`,type:'error'})
+  }
+  const quitarFestivo = async (dia) => {
+    const{error}=await conReintento(()=>sb.from('blocked_days').delete().eq('date',dia).eq('reason','Festivo'))
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    await guardarLista('festivos',festivos.filter(x=>x!==dia),setFestivos,'Festivo quitado')
+  }
+  const anadirCitaSinRec = async () => {
+    if(!citaSinRecNueva)return
+    const lista=diasVigentes(anadirALista(citasSinRec,citaSinRecNueva),localDT(new Date()).slice(0,10))
+    if(await guardarLista('citas_sin_recordatorio',lista,setCitasSinRec,'Las citas de ese día no recibirán el recordatorio automático'))setCitaSinRecNueva('')
+  }
+  const toggleResenas = async () => {
+    if(resenaBusy)return
+    const nuevo=!resenasOn
+    if(nuevo&&!resenaMsg.trim()){setToast({msg:'Escribe antes el mensaje con el enlace de la reseña',type:'error'});return}
+    setResenaBusy(true)
+    const{error}=await conReintento(()=>sb.from('bot_config').update({resenas_activas:nuevo,resena_mensaje:resenaMsg.trim(),updated_at:new Date().toISOString()}).eq('id',1))
+    setResenaBusy(false)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setResenasOn(nuevo)
+    try{await botFetch('/training-mode-refresh',{method:'POST'})}catch{/* el bot refresca por TTL igualmente */}
+    setToast({msg:nuevo?'⭐ Petición de reseñas ACTIVADA':'Petición de reseñas desactivada',type:'ok'})
+  }
+  const saveResenaMsg = async () => {
+    setResenaBusy(true)
+    const trimmed=resenaMsg.trim()
+    const{error}=await conReintento(()=>sb.from('bot_config').update({resena_mensaje:trimmed,updated_at:new Date().toISOString()}).eq('id',1))
+    setResenaBusy(false)
+    if(error){setToast({msg:'Error: '+error.message,type:'error'});return}
+    setResenaMsg(trimmed)
+    try{await botFetch('/training-mode-refresh',{method:'POST'})}catch{/* el bot refresca por TTL igualmente */}
+    setToast({msg:'Mensaje de reseña guardado',type:'ok'})
   }
   const anadirNumeroIgnorado = async () => {
     const n=normalizarTelefono(numeroNuevo)
@@ -2597,13 +2654,13 @@ function Horarios(){
 
     <div className="card" style={{padding:'14px 16px',marginBottom:16}}>
       <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-        <span style={{fontWeight:700,fontSize:13}}>🔕 Días sin recordatorios</span>
-        <input type="date" className="field-input" style={{width:'auto'}} value={diaSinRecNuevo} min={localDT(new Date()).slice(0,10)} onChange={e=>setDiaSinRecNuevo(e.target.value)}/>
-        <Btn onClick={anadirDiaSinRec} disabled={!diaSinRecNuevo}>Añadir</Btn>
-        {diasSinRec.map(d=><button key={d} type="button" title="Quitar" onClick={()=>guardarLista('dias_sin_recordatorios',diasSinRec.filter(x=>x!==d),setDiasSinRec,'Día quitado')}
+        <span style={{fontWeight:700,fontSize:13}}>🎌 Festivos (la clínica cierra)</span>
+        <input type="date" className="field-input" style={{width:'auto'}} value={festivoNuevo} min={localDT(new Date()).slice(0,10)} onChange={e=>setFestivoNuevo(e.target.value)}/>
+        <Btn onClick={anadirFestivo} disabled={!festivoNuevo}>Añadir</Btn>
+        {festivos.map(d=><button key={d} type="button" title="Quitar" onClick={()=>quitarFestivo(d)}
           style={{fontSize:12,padding:'3px 10px',border:'1px solid var(--stone)',borderRadius:999,background:'#fff',cursor:'pointer'}}>{d.split('-').reverse().join('/')} ✕</button>)}
       </div>
-      <div style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>Ese día el bot no manda ninguno, y las citas que tocaban no se reenvían al día siguiente. El envío manual sigue funcionando.</div>
+      <div style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>Ese día no se dan citas (se bloquea para todos los profesionales) ni salen recordatorios. Los del primer día que abrís después salen el último día abierto antes: si cerráis lunes 7 y martes 8, los del miércoles 9 salen el viernes 4. Igual con la agenda de los profesionales.</div>
       <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginTop:14}}>
         <span style={{fontWeight:700,fontSize:13}}>🙈 Números que el bot ignora</span>
         <input className="field-input" style={{width:150}} inputMode="tel" placeholder="600 111 222" value={numeroNuevo} onChange={e=>setNumeroNuevo(e.target.value)}/>
@@ -2624,11 +2681,26 @@ function Horarios(){
       <Btn onClick={saveReminderTime} disabled={savingReminder}>{savingReminder?'Guardando…':'Guardar hora'}</Btn>
       <span style={{fontSize:11,color:'var(--text-muted)'}}>El bot manda WhatsApp a los pacientes del día siguiente a esta hora</span>
       {/* Envío manual: elegir el día de las citas y mandar sus recordatorios YA */}
-      <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',borderLeft:'1px solid var(--border)',paddingLeft:16}}>
-        <span style={{fontWeight:700,fontSize:13}}>📤 Envío manual</span>
-        <input className="field-input" type="date" style={{width:'auto',minHeight:34}} value={manualDate} onChange={e=>setManualDate(e.target.value)} title="Día de las citas que quieres recordar"/>
-        <Btn variant="ghost" onClick={sendManualReminders} disabled={!manualDate||manualBusy}>{manualBusy?'Enviando…':'Enviar'}</Btn>
-        <span style={{fontSize:11,color:'var(--text-muted)'}}>Manda ahora los recordatorios de las citas de ese día</span>
+      <div style={{flexBasis:'100%',borderTop:'1px solid var(--border)',paddingTop:10}}>
+        <button type="button" onClick={plegarManual} aria-expanded={manualAbierto}
+          style={{background:'none',border:'none',padding:0,cursor:'pointer',fontWeight:700,fontSize:13,color:'inherit'}}>
+          {manualAbierto?'▾':'▸'} 📤 Envío manual (emergencias){!manualAbierto&&citasSinRec.length>0&&<span style={{fontWeight:400,fontSize:11,color:'var(--text-muted)'}}> · {citasSinRec.length} día(s) sin automático</span>}
+        </button>
+        {manualAbierto&&<div style={{marginTop:10,display:'flex',flexDirection:'column',gap:12}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+            <input className="field-input" type="date" style={{width:'auto',minHeight:34}} value={manualDate} onChange={e=>setManualDate(e.target.value)} title="Día de las citas que quieres recordar"/>
+            <Btn variant="ghost" onClick={sendManualReminders} disabled={!manualDate||manualBusy}>{manualBusy?'Enviando…':'Enviar'}</Btn>
+            <span style={{fontSize:11,color:'var(--text-muted)'}}>Manda ahora los recordatorios de las citas de ese día</span>
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+            <span style={{fontSize:12,fontWeight:600}}>🔕 No mandar el automático de las citas del</span>
+            <input className="field-input" type="date" style={{width:'auto',minHeight:34}} value={citaSinRecNueva} min={localDT(new Date()).slice(0,10)} onChange={e=>setCitaSinRecNueva(e.target.value)}/>
+            <Btn variant="ghost" onClick={anadirCitaSinRec} disabled={!citaSinRecNueva}>Añadir</Btn>
+            {citasSinRec.map(d=><button key={d} type="button" title="Quitar" onClick={()=>guardarLista('citas_sin_recordatorio',citasSinRec.filter(x=>x!==d),setCitasSinRec,'Día quitado')}
+              style={{fontSize:12,padding:'3px 10px',border:'1px solid var(--stone)',borderRadius:999,background:'#fff',cursor:'pointer'}}>{d.split('-').reverse().join('/')} ✕</button>)}
+          </div>
+          <div style={{fontSize:11,color:'var(--text-muted)'}}>Si ya mandaste a mano los recordatorios de un día, márcalo aquí y el bot no los repite.</div>
+        </div>}
       </div>
 
       {/* Encargo 3.4: texto extra SOLO en el D-1 de la primera cita del
@@ -2651,6 +2723,22 @@ function Horarios(){
         <div style={{display:'flex',gap:8,marginTop:6,alignItems:'center',flexWrap:'wrap'}}>
           <Btn variant="ghost" onClick={saveD1Info} disabled={savingD1Info}>{savingD1Info?'Guardando…':'Guardar información'}</Btn>
           <span style={{fontSize:11,color:'var(--text-muted)'}}>{d1Info.length}/{D1_INFO_MAX}</span>
+        </div>
+      </div>
+
+      <div style={{flexBasis:'100%',marginTop:4,paddingTop:12,borderTop:'1px solid var(--border)'}}>
+        <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',marginBottom:6}}>
+          <span style={{fontWeight:700,fontSize:13}}>⭐ Pedir reseña al acabar la cita</span>
+          <Toggle on={resenasOn} onChange={toggleResenas}/>
+          {resenasOn&&<span style={{fontSize:12,fontWeight:700,color:'var(--sage)'}}>ACTIVO</span>}
+        </div>
+        <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:6}}>
+          5 minutos antes de que acabe la cita (cita a la 13:00 de una hora → 13:55) le llega este mensaje. Una sola vez por paciente.
+        </div>
+        <textarea className="notes-area" rows={3} value={resenaMsg} onChange={e=>setResenaMsg(e.target.value)} style={{width:'100%'}}
+          placeholder="Ej: ¡Gracias por venir! Si te ha gustado, nos ayuda mucho una reseña: https://g.page/r/…"/>
+        <div style={{display:'flex',gap:8,marginTop:6,alignItems:'center',flexWrap:'wrap'}}>
+          <Btn variant="ghost" onClick={saveResenaMsg} disabled={resenaBusy}>{resenaBusy?'Guardando…':'Guardar mensaje'}</Btn>
         </div>
       </div>
     </div>
@@ -2685,7 +2773,7 @@ function Horarios(){
           <Btn variant="ghost" onClick={saveWelcomeMsg} disabled={welcomeBusy}>{welcomeBusy?'Guardando…':'Guardar mensaje'}</Btn>
         </div>
         <div style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>
-          Se manda UNA vez, al momento, a un número que escribe y no es paciente; el bot avisa a Marta y no le gestiona citas hasta que lo dé de alta. Vacío = no se manda nada (el aviso a Marta sale igual). Con vacaciones activas, al número nuevo solo le llega el de vacaciones.
+          Se manda UNA vez en la vida, al momento, a un número que escribe y no es paciente, y solo cuando no estás (fuera de L-V 9:00-14:00, findes y festivos); el bot avisa a Marta y no le gestiona citas hasta que lo dé de alta. Vacío = no se manda nada (el aviso a Marta sale igual). Con vacaciones activas, al número nuevo solo le llega el de vacaciones.
         </div>
       </div>
     </div>
